@@ -210,6 +210,15 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "mcp.maxReconnects", schema: int(0, 100), default: 6, scopes: [U, G], owner: "SPEC-MCP-022" },
   { key: "environment.variables", schema: Type.Record(Type.String(), Type.String()), default: {}, scopes: [U, G], owner: "SPEC-CFG-007", widening: true },
 
+  // SPEC-IHM-001, SPEC-IHM-002: rendering and layout of the interactive interface (lot 5; values in English, gap E-093).
+  { key: "ui.colorMode", schema: enumOf(["auto", "none", "16", "256", "truecolor"]), default: "auto", scopes: [U], owner: "SPEC-IHM-001" },
+  { key: "ui.maxFramesPerSecond", schema: int(1, 240), default: 30, scopes: [U], owner: "SPEC-IHM-001" },
+  { key: "ui.minColumns", schema: int(10, 1_000), default: 60, scopes: [U], owner: "SPEC-IHM-001" },
+  { key: "ui.unicodeLevel", schema: enumOf(["full", "restricted", "ascii"]), default: "full", scopes: [U], owner: "SPEC-IHM-001" },
+  { key: "ui.retainedLines", schema: int(10, 1_000_000), default: 2_000, scopes: [U], owner: "SPEC-IHM-002" },
+  { key: "ui.inputMinHeight", schema: int(1, 100), default: 1, scopes: [U], owner: "SPEC-IHM-002" },
+  { key: "ui.inputMaxHeight", schema: int(1, 100), default: 10, scopes: [U], owner: "SPEC-IHM-002" },
+
   // Options forbidden by the managed policy (SPEC-MOD-011 § 11, decision D-13, gap E-029).
   { key: "policy.forbiddenOptions", schema: strList(), default: [], scopes: [G], owner: "SPEC-MOD-011", merge: "concat" },
 ];

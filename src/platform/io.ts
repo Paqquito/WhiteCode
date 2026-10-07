@@ -2,6 +2,7 @@
 // Runtime adapter: standard streams, terminal detection and termination signals.
 
 import { createInterface } from "node:readline";
+import { processTerminal, type Terminal } from "./terminal";
 
 export interface StandardStreams {
   writeOut(text: string): void;
@@ -11,10 +12,13 @@ export interface StandardStreams {
   stdinLines(): AsyncIterable<string>;
   readonly stdinIsTTY: boolean;
   readonly stdoutIsTTY: boolean;
+  /** The terminal, for the interactive mode (SPEC-MOD-001); absent when input or output is not a terminal. */
+  readonly terminal?: Terminal;
 }
 
 export function processStreams(): StandardStreams {
   return {
+    terminal: processTerminal(),
     writeOut: (text) => void process.stdout.write(text),
     writeErr: (text) => void process.stderr.write(text),
     readAllStdin: async () => {
