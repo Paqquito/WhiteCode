@@ -1,0 +1,65 @@
+# Continuous integration (SPEC-BLD-007, decision D-01): Windows, macOS and Linux from increment 1.
+# No test reaches the network; the real provider is never called here (no key in the repository).
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun run gen
+      - run: bun run typecheck
+      - name: Static checks (forbidden terms from a private CI file, decision E-015)
+        shell: bash
+        env:
+          FORBIDDEN_TERMS: ${{ secrets.FORBIDDEN_TERMS }}
+        run: |
+          if [ -n "$FORBIDDEN_TERMS" ]; then
+            printf '%s\n' "$FORBIDDEN_TERMS" > "$RUNNER_TEMP/forbidden-terms.txt"
+            bun scripts/check-static.ts --forbidden-terms "$RUNNER_TEMP/forbidden-terms.txt"
+          else
+            bun scripts/check-static.ts
+          fi
+      - name: System search engine, so that search_content is tested on both engines (SPEC-OUT-007 FA-02)
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux) sudo apt-get install -y ripgrep ;;
+            macOS) brew install ripgrep ;;
+            Windows) choco install ripgrep -y ;;
+          esac
+      - run: bun test
+      - run: bun run trace
+      - run: bun scripts/build.ts
+      - name: Smoke test of the standalone executable
+        shell: bash
+        run: |
+          exe=$(ls dist | grep -v manifest.json | head -n 1)
+          ./dist/$exe --version
+
+  cross-compile:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun scripts/build.ts --all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: executables
+          path: dist/

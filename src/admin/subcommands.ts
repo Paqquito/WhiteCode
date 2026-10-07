@@ -1,0 +1,267 @@
+// Implements: SPEC-MOD-012 (§ 5.5, § 5.6 FA-04, EF-01, EF-02, EF-04 to EF-07, ERR-01, ERR-02, ERR-04, RG-03, CA-01, CA-02, CA-05, CA-07, CA-08, CA-12),
+//             SPEC-API-006 (EF-03, EF-04, CA-03, CA-05), SPEC-CFG-002 (§ 5.2 `config validate`, CA-03)
+// Supports: gap E-066 (operations delivered in lot 1). Administration operations never start a session nor contact the model service (EF-04).
+
+import { readFileSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
+import { ExitCode } from "../cli/exit-codes";
+import { familyHelp, FAMILY_BY_NAME, FAMILY_CATALOG, parseSubcommand, SubcommandUsageError } from "../cli/families";
+import type { EnvironmentView } from "../config/environment";
+import { loadConfiguration } from "../config/load";
+import { Settings, type ConfigIssue } from "../config/settings";
+import type { Scope } from "../config/settings-schema";
+import type { Identity } from "../identity/identity";
+import { MODEL_TIERS } from "../identity/runtime-catalog";
+import type { StandardStreams } from "../platform/io";
+import { comparablePath, type SystemInfo } from "../platform/system";
+import { effectiveCapabilities, isDeliveredProvider } from "../providers/adapters";
+import { capabilitiesOf, isResolveFailure, type ModelCatalog, type ModelEntry } from "../providers/catalog";
+import { suggest } from "../shared/suggest";
+
+export interface AdminDependencies {
+  readonly streams: StandardStreams;
+  readonly identity: Identity;
+  readonly catalog: ModelCatalog;
+  readonly env: EnvironmentView;
+  readonly cwd: string;
+  readonly system: SystemInfo;
+  readonly managedDir?: string;
+}
+
+const TIER_ALIASES = ["large", "medium", "small"] as const;
+
+/** First token is a family, or two leading words that can only be a sub-command (gap E-031). */
+export function looksLikeSubcommand(argv: readonly string[]): boolean {
+  const [first, second] = argv;
+  if (first === undefined || first.startsWith("-")) return false;
+  if (FAMILY_BY_NAME.has(first)) return true;
+  return second !== undefined && !second.startsWith("-") && /^[a-z][a-z-]*$/.test(first) && suggest(first, [...FAMILY_BY_NAME.keys()]).length > 0;
+}
+
+export async function runSubcommand(argv: readonly string[], deps: AdminDependencies): Promise<number> {
+  const out = (text: string) => deps.streams.writeOut(text.endsWith("\n") ? text : `${text}\n`);
+  const err = (text: string) => deps.streams.writeErr(text.endsWith("\n") ? text : `${text}\n`);
+  let parsed;
+  try {
+    parsed = parseSubcommand(argv);
+  } catch (e) {
+    if (e instanceof SubcommandUsageError) {
+      err(e.message);
+      return ExitCode.UsageOrConfiguration;
+    }
+    throw e;
+  }
+  const cli = deps.identity.get("PRODUCT_CLI");
+  const family = FAMILY_BY_NAME.get(parsed.family);
+  if (!family) {
+    // ERR-01, EF-06, CA-05: unknown family, suggestion by closeness.
+    const near = suggest(parsed.family, FAMILY_CATALOG.map((f) => f.name));
+    err(`Commande inconnue : ${parsed.family}.${near[0] ? ` Vouliez-vous dire ${near[0]} ?` : ""}`);
+    return ExitCode.UsageOrConfiguration;
+  }
+  // RN-G, CA-01, CA-07, CA-12: a family alone shows its help and does nothing.
+  if (parsed.operation === undefined || parsed.options.has("help")) {
+    out(familyHelp(cli, family));
+    return ExitCode.Success;
+  }
+  const operation = family.operations.find((o) => o.name === parsed.operation);
+  if (!operation) {
+    // CA-08: not executed; close names of the catalogue are suggested.
+    const all = FAMILY_CATALOG.flatMap((f) => f.operations.map((o) => `${f.name} ${o.name}`));
+    const near = suggest(`${family.name} ${parsed.operation}`, all).slice(0, 3);
+    err(`Commande inconnue : ${family.name} ${parsed.operation}.${near.length > 0 ? ` Vouliez-vous dire ${near.join(", ")} ?` : ""}`);
+    return ExitCode.UsageOrConfiguration;
+  }
+  if (!operation.delivered) {
+    err(`Opération non disponible dans cette version : ${family.name} ${operation.name}.`);
+    return ExitCode.UsageOrConfiguration;
+  }
+  for (const name of parsed.options.keys()) {
+    if (name === "verbose" || name === "help") continue;
+    if (!(operation.options ?? []).includes(name)) {
+      err(`Option non prise en charge par ${family.name} ${operation.name} : --${name}.`);
+      return ExitCode.UsageOrConfiguration;
+    }
+  }
+  const json = parsed.options.has("json");
+  const write = (document: unknown, text: () => string) => out(json ? JSON.stringify(document) : text()); // FA-04, CA-02: only the document
+
+  switch (`${family.name} ${operation.name}`) {
+    case "model list":
+      return modelList(deps, write);
+    case "model show": {
+      const name = parsed.args[0];
+      if (!name) {
+        err("Argument manquant : <nom>."); // ERR-02
+        return ExitCode.UsageOrConfiguration;
+      }
+      return modelShow(deps, name, write, err);
+    }
+    case "config validate":
+      return configValidate(deps, parsed.args[0], parsed.options.get("scope"), write, err);
+    default:
+      err(`Opération non disponible dans cette version : ${family.name} ${operation.name}.`);
+      return ExitCode.UsageOrConfiguration;
+  }
+}
+
+type Writer = (document: unknown, text: () => string) => void;
+
+function settingsOf(deps: AdminDependencies): Settings {
+  return loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir }).settings;
+}
+
+/** Stable structured form of a catalogue entry (RG-03): the model family is always present (CA-05). */
+function modelDocument(entry: ModelEntry, source: "distribution" | "extra", currency: string) {
+  const provider = entry.provider;
+  const declared = capabilitiesOf(entry);
+  const adapter = isDeliveredProvider(provider) ? effectiveCapabilities(declared, provider) : undefined;
+  return {
+    id: entry.id,
+    provider,
+    family: entry.family,
+    label: entry.label,
+    aliases: entry.aliases ?? [],
+    contextWindow: entry.contextWindow,
+    maxOutputTokens: entry.maxOutputTokens,
+    capabilities: adapter?.capabilities ?? declared,
+    degradations: adapter?.degradations ?? [],
+    pricing: entry.pricing ? { currency, ...entry.pricing } : null,
+    source,
+    providerDelivered: adapter !== undefined,
+  };
+}
+
+function capabilityWords(c: ReturnType<typeof modelDocument>["capabilities"]): string {
+  const words: string[] = [];
+  if (c.toolCalling) words.push("appels d'outils");
+  if (c.thinking !== "none") words.push(`réflexion ${c.thinking === "always" ? "permanente" : "facultative"}`);
+  if (c.effort.length > 0) words.push(`effort ${c.effort.join("/")}`);
+  if (c.images) words.push("images");
+  if (c.pdf) words.push("PDF");
+  if (c.contextEditing) words.push("effacement côté service");
+  if (c.appendOnlyHistory) words.push("historique en ajout seul");
+  return words.length > 0 ? words.join(", ") : "texte seulement";
+}
+
+const n = (x: number) => x.toLocaleString("fr-FR").replace(/ | /g, " ");
+
+/** `model list` (SPEC-API-006 EF-04, CA-03): tiers with their labels and models, then the catalogue with capabilities. */
+function modelList(deps: AdminDependencies, write: Writer): number {
+  const settings = settingsOf(deps);
+  const provider = settings.get<string | undefined>("api.provider");
+  const identifierMap = settings.get<Record<string, string>>("models.identifierMap");
+  const local = deps.catalog.validateExtraEntries(settings.get<unknown[]>("models.extraCatalog"));
+  const tiers = TIER_ALIASES.map((alias, i) => {
+    const tier = MODEL_TIERS[i]!;
+    const mapped = provider ? deps.catalog.resolve(alias, provider, deps.identity, { unknownContextWindow: 0, identifierMap, extraEntries: local.entries }) : undefined;
+    return { alias, label: deps.identity.tierLabel(tier) ?? alias, model: mapped && !isResolveFailure(mapped) ? mapped.id : null };
+  });
+  const entries = [
+    ...deps.catalog.entries.filter((e) => !provider || e.provider === provider).map((e) => modelDocument(e, "distribution", deps.catalog.currency)),
+    ...local.entries.filter((e) => !provider || e.provider === provider).map((e) => modelDocument(e, "extra", deps.catalog.currency)),
+  ];
+  const document = { provider: provider ?? null, currency: deps.catalog.currency, tiers, models: entries };
+  write(document, () => {
+    const lines = [provider ? `Fournisseur : ${provider}` : "Aucun fournisseur configuré : tout le catalogue est listé.", "", "Gammes :"];
+    for (const t of tiers) lines.push(`  ${t.alias.padEnd(7)} ${t.label.padEnd(12)} ${t.model ? `→ ${t.model}` : "(aucun modèle associé : models.identifierMap)"}`);
+    lines.push("", "Modèles :");
+    for (const m of entries) {
+      const price = m.pricing ? `${m.pricing.inputPerMTok}/${m.pricing.outputPerMTok} ${m.pricing.currency} par million de jetons (entrée/sortie)` : "coût inconnu";
+      lines.push(`  ${m.id} (${m.provider}${m.source === "extra" ? ", catalogue complémentaire" : ""}) — ${m.label}, famille ${m.family}`);
+      lines.push(`      contexte ${n(m.contextWindow)}, sortie ${n(m.maxOutputTokens)} ; ${capabilityWords(m.capabilities)} ; ${price}`);
+    }
+    return lines.join("\n");
+  });
+  return ExitCode.Success;
+}
+
+/** `model show <nom>`: an alias or a full identifier (SPEC-API-006 EF-01). */
+function modelShow(deps: AdminDependencies, name: string, write: Writer, err: (t: string) => void): number {
+  const settings = settingsOf(deps);
+  const provider = settings.get<string | undefined>("api.provider");
+  const local = deps.catalog.validateExtraEntries(settings.get<unknown[]>("models.extraCatalog")).entries;
+  let entry: { entry: ModelEntry; source: "distribution" | "extra" } | undefined;
+  if (provider) {
+    const r = deps.catalog.resolve(name, provider, deps.identity, { unknownContextWindow: 0, identifierMap: settings.get<Record<string, string>>("models.identifierMap"), extraEntries: local });
+    if (!isResolveFailure(r) && r.source !== "none") {
+      const found = r.source === "distribution" ? deps.catalog.find(provider, r.id) : local.find((e) => e.provider === provider && e.id === r.id);
+      if (found) entry = { entry: found, source: r.source };
+    }
+  }
+  if (!entry) {
+    const any = deps.catalog.entries.find((e) => e.id === name || (e.aliases ?? []).includes(name));
+    const anyLocal = local.find((e) => e.id === name);
+    entry = any ? { entry: any, source: "distribution" } : anyLocal ? { entry: anyLocal, source: "extra" } : undefined;
+  }
+  if (!entry) {
+    err(`Modèle introuvable : ${name}.`); // ERR-04
+    return ExitCode.ExecutionError;
+  }
+  const doc = modelDocument(entry.entry, entry.source, deps.catalog.currency);
+  write(doc, () =>
+    [
+      `${doc.id} — ${doc.label}`,
+      `  fournisseur : ${doc.provider}${doc.providerDelivered ? "" : " (adaptateur non disponible dans cette version)"}`,
+      `  famille : ${doc.family}`,
+      `  contexte : ${n(doc.contextWindow)} jetons ; sortie : ${n(doc.maxOutputTokens)} jetons`,
+      `  capacités : ${capabilityWords(doc.capabilities)}`,
+      ...(doc.degradations.length > 0 ? [`  dégradations : ${doc.degradations.join(" ; ")}`] : []),
+      `  tarif : ${doc.pricing ? `${doc.pricing.inputPerMTok} (entrée), ${doc.pricing.outputPerMTok} (sortie), ${doc.pricing.cacheReadPerMTok} (lecture de cache), ${doc.pricing.cacheWritePerMTok} (écriture de cache) ${doc.pricing.currency} par million de jetons, au ${doc.pricing.effectiveDate}` : "coût inconnu"}`,
+      `  origine : ${doc.source === "extra" ? "catalogue complémentaire (models.extraCatalog)" : "catalogue de la distribution"}`,
+    ].join("\n"),
+  );
+  return ExitCode.Success;
+}
+
+/** `config validate [<fichier>]` (SPEC-CFG-002 CA-03): every error listed, a non-zero exit code when there is one. */
+function configValidate(deps: AdminDependencies, file: string | undefined, scopeOption: string | true | undefined, write: Writer, err: (t: string) => void): number {
+  const { locations, sources } = loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir });
+  let targets: Array<{ scope: Scope; name: string; text: string | undefined }>;
+  if (file !== undefined) {
+    const path = resolvePath(deps.cwd, file);
+    let text: string;
+    try {
+      text = readFileSync(path, "utf8");
+    } catch {
+      err(`Fichier introuvable : ${path}.`); // ERR-04
+      return ExitCode.ExecutionError;
+    }
+    const known: Array<[string, Scope]> = [
+      [locations.managedSettingsFile, "managed"],
+      [locations.userSettingsFile, "user"],
+      [locations.projectSettingsFile, "project"],
+      [locations.localSettingsFile, "local"],
+    ];
+    const guessed = known.find(([p]) => comparablePath(p, deps.system.platform) === comparablePath(path, deps.system.platform))?.[1];
+    const scope = (typeof scopeOption === "string" ? scopeOption : guessed ?? "user") as Scope;
+    if (!["user", "project", "local", "managed"].includes(scope)) {
+      err("Valeur invalide pour --scope : attendu user, project, local ou managed.");
+      return ExitCode.UsageOrConfiguration;
+    }
+    targets = [{ scope, name: path, text }];
+  } else targets = sources.filter((s) => s.scope !== "cli").map((s) => ({ scope: s.scope, name: s.name, text: s.text }));
+
+  const reports = targets.map((t) => {
+    // Each file is checked alone, in its scope, as if the project were trusted: every key is examined.
+    const issues: ConfigIssue[] = t.text === undefined ? [] : Settings.load({ sources: [{ scope: t.scope, name: t.name, text: t.text }], projectTrusted: true }).issues;
+    // In a file under validation, only an unknown key is a warning (accepted, SPEC-MOD-012 § 8); every other problem is an error.
+    const severity = (i: ConfigIssue): "error" | "warning" => (i.kind === "unknown-key" || i.kind === "untrusted" ? "warning" : "error");
+    return { path: t.name, scope: t.scope, exists: t.text !== undefined, issues: issues.map((i) => ({ severity: severity(i), code: i.code, message: i.message, ...(i.key ? { key: i.key } : {}) })) };
+  });
+  const errors = reports.reduce((k, r) => k + r.issues.filter((i) => i.severity === "error").length, 0);
+  write({ valid: errors === 0, files: reports }, () => {
+    const lines: string[] = [];
+    for (const r of reports) {
+      if (!r.exists) {
+        lines.push(`${r.path} (${r.scope}) : absent`);
+        continue;
+      }
+      lines.push(`${r.path} (${r.scope}) : ${r.issues.length === 0 ? "valide" : `${r.issues.length} problème${r.issues.length > 1 ? "s" : ""}`}`);
+      for (const i of r.issues) lines.push(`  ${i.severity === "error" ? "erreur" : "avertissement"} : ${i.message}`);
+    }
+    lines.push("", errors === 0 ? "Configuration valide." : `${errors} erreur${errors > 1 ? "s" : ""}.`);
+    return lines.join("\n");
+  });
+  return errors === 0 ? ExitCode.Success : ExitCode.UsageOrConfiguration;
+}

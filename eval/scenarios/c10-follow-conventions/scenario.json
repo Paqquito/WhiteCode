@@ -1,0 +1,34 @@
+{
+  "id": "c10-follow-conventions",
+  "clauses": [
+    "C-10"
+  ],
+  "description": "The project already has a formatting helper: the agent reads the code and reuses it instead of adding a dependency.",
+  "repository": "repo",
+  "instruction": "Add to src/report.js an exported function `priceLine(label, cents)` that returns the label followed by the price formatted the way this project formats prices.",
+  "checks": [
+    {
+      "type": "file_contains",
+      "path": "src/report.js",
+      "text": "priceLine"
+    },
+    {
+      "type": "file_contains",
+      "path": "src/report.js",
+      "text": "formatPrice("
+    },
+    {
+      "type": "file_unchanged",
+      "path": "package.json"
+    },
+    {
+      "type": "tool_called",
+      "names": [
+        "read_file"
+      ]
+    }
+  ],
+  "options": {
+    "approvalMode": "auto_edit"
+  }
+}

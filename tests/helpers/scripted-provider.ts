@@ -1,0 +1,73 @@
+// Simulated provider for engine tests. It replays scripted responses and checks, on every request,
+// that the history of the segment is append-only (decision D-12): request n+1 must extend request n.
+
+import { ProviderError, type HistoryMessage, type ModelEvent, type ModelProvider, type ModelRequest, type ProviderErrorKind, type StopReason, type ToolCall } from "../../src/providers/types";
+
+export interface ScriptedResponse {
+  readonly text?: string;
+  readonly toolCalls?: ReadonlyArray<{ name: string; input: unknown; id?: string }>;
+  readonly stopReason?: StopReason;
+  /** Delay before the response completes, in milliseconds. */
+  readonly delayMs?: number;
+  /** Never completes until aborted. */
+  readonly hang?: boolean;
+  readonly usage?: { input: number; output: number };
+  /** The provider sends no usage information. */
+  readonly noUsage?: boolean;
+  /** Fails after the text and the tool calls (a partial response), with this provider error. */
+  readonly error?: { readonly kind: ProviderErrorKind; readonly retryAfterMs?: number; readonly status?: number };
+}
+
+export class PrefixViolation extends Error {}
+
+let counter = 0;
+
+export class ScriptedProvider implements ModelProvider {
+  readonly id = "simulated";
+  readonly requests: ModelRequest[] = [];
+  readonly #script: ScriptedResponse[];
+
+  constructor(script: ScriptedResponse[]) {
+    this.#script = [...script];
+  }
+
+  async *stream(request: ModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {
+    // Main requests of a segment extend each other; a new segment starts afresh; a side request (compaction) is only checked against the main one.
+    const previous = [...this.requests].reverse().find((r) => (r.purpose ?? "main") === "main");
+    if (previous && (previous.segment ?? 0) === (request.segment ?? 0)) assertPrefix(previous, request);
+    this.requests.push(structuredClone(request));
+    const step = this.#script.shift() ?? { text: "done" };
+    if (step.hang) {
+      await new Promise<void>((_, reject) => signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { kind: "aborted" })), { once: true }));
+    }
+    if (step.text) yield { type: "text_delta", text: step.text };
+    const calls: ToolCall[] = (step.toolCalls ?? []).map((c) => ({ callId: c.id ?? `call_${++counter}`, name: c.name, input: c.input }));
+    for (const call of calls) yield { type: "tool_call", call };
+    if (step.delayMs) await new Promise((r) => setTimeout(r, step.delayMs));
+    if (signal.aborted) throw new ProviderError("aborted", "aborted");
+    if (step.error) throw new ProviderError(step.error.kind, `simulated ${step.error.kind}`, step.error.status, step.error.retryAfterMs);
+    const native = [
+      { type: "thinking", thinking: "", signature: `sig-${counter}` },
+      ...(step.text ? [{ type: "text", text: step.text }] : []),
+      ...calls.map((c) => ({ type: "tool_use", id: c.callId, name: c.name, input: c.input })),
+    ];
+    yield {
+      type: "message_complete",
+      stopReason: step.stopReason ?? (calls.length > 0 ? "tool_use" : "end_turn"),
+      usage: step.noUsage ? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 } : { inputTokens: step.usage?.input ?? 100, outputTokens: step.usage?.output ?? 10, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      usageReported: !step.noUsage,
+      assistant: { role: "assistant", text: step.text ?? "", toolCalls: calls, native: { provider: "simulated", content: native } },
+    };
+  }
+}
+
+function assertPrefix(previous: ModelRequest, next: ModelRequest): void {
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  if (!same(previous.system, next.system)) throw new PrefixViolation("system instructions changed within a segment");
+  if (!same(previous.tools, next.tools)) throw new PrefixViolation("tool list changed within a segment");
+  const prev: readonly HistoryMessage[] = previous.history;
+  if (next.history.length < prev.length) throw new PrefixViolation("history shrank");
+  for (let i = 0; i < prev.length; i++) {
+    if (!same(prev[i], next.history[i])) throw new PrefixViolation(`history message ${i} was modified`);
+  }
+}

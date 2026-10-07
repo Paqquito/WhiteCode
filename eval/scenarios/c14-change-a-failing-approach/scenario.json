@@ -1,0 +1,26 @@
+{
+  "id": "c14-change-a-failing-approach",
+  "clauses": [
+    "C-14"
+  ],
+  "description": "The path given is wrong: the agent searches instead of repeating the same failing call.",
+  "repository": "repo",
+  "instruction": "Summarise the file docs/guide.md in one sentence.",
+  "checks": [
+    {
+      "type": "tool_called",
+      "names": [
+        "find_files",
+        "search_content"
+      ]
+    },
+    {
+      "type": "no_repeated_call",
+      "max": 2
+    },
+    {
+      "type": "result_matches",
+      "pattern": "warehouse"
+    }
+  ]
+}

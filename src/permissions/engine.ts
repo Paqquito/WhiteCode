@@ -1,0 +1,85 @@
+// Implements: SPEC-PER-001 (§ 5.3 steps 1 to 8, EF-01 to EF-05, EF-08, EF-09, RG-01, RG-03, ENF-02), SPEC-PER-003 (RG-01, RG-02)
+// Pure decision function: the same call and context always yield the same decision.
+
+import type { PermissionMode } from "../config/settings-schema";
+import type { PlatformName } from "../platform/system";
+import type { RuleSubject, ToolFlags } from "../tools/types";
+import { ruleMatches, suggestRule, type Rule } from "./rules";
+
+export type AskOrigin = "managed" | "explicit" | "tool_check" | "default";
+
+export type Decision =
+  | { readonly kind: "allow"; readonly step: number; readonly why: string }
+  | { readonly kind: "deny"; readonly step: number; readonly reason: string }
+  | { readonly kind: "ask"; readonly step: number; readonly origin: AskOrigin; readonly reason: string; readonly suggestions: readonly string[] };
+
+export interface PermissionQuery {
+  readonly toolName: string;
+  readonly subject: RuleSubject;
+  readonly flags: ToolFlags;
+  /** Tool-specific contribution (step 5). */
+  readonly contribution?: "allow" | "ask";
+  /** Decision of a `before_tool` hook, if any (steps 1, 4 and 6). */
+  readonly hookDecision?: "allow" | "ask" | "deny";
+  readonly hookReason?: string;
+  /** Tool available in this session and within its perimeter (step 1). */
+  readonly available: boolean;
+  /** File write inside the allowed folders (step 7). */
+  readonly fileWriteInsideAllowed?: boolean;
+}
+
+export interface PermissionContext {
+  readonly mode: PermissionMode;
+  readonly rules: readonly Rule[];
+  readonly sessionAllows: readonly Rule[];
+  readonly managedRulesOnly: boolean;
+  readonly cwd: string;
+  readonly home: string;
+  readonly platform: PlatformName;
+}
+
+/** The tool that leaves planning mode is the only non-read-only tool allowed in `planning` (step 1). */
+export const PLANNING_EXIT_TOOL = "submit_plan";
+
+export function decide(q: PermissionQuery, ctx: PermissionContext): Decision {
+  const rules = ctx.managedRulesOnly ? ctx.rules.filter((r) => r.scope === "managed") : ctx.rules;
+  const match = (r: Rule) => ruleMatches(r, q.toolName, q.subject, ctx);
+
+  // Step 1: invariants. Nothing lifts these refusals (EF-02, EF-09).
+  if (!q.available) return { kind: "deny", step: 1, reason: "Tool not available in this session." };
+  const deny = rules.find((r) => r.decision === "deny" && match(r));
+  if (deny) return { kind: "deny", step: 1, reason: `Denied by the rule ${deny.raw} (${deny.scope} scope).` };
+  if (q.hookDecision === "deny") return { kind: "deny", step: 1, reason: q.hookReason ?? "Denied by a hook." };
+  if (ctx.mode === "planning" && !q.flags.readOnly && q.toolName !== PLANNING_EXIT_TOOL) {
+    return { kind: "deny", step: 1, reason: "Planning mode: no modification is allowed." };
+  }
+
+  const suggestions = [suggestRule(q.toolName, q.subject, ctx.platform)];
+
+  // Step 2: requests imposed by the managed policy, even in `unrestricted`.
+  const managedAsk = rules.find((r) => r.decision === "ask" && r.scope === "managed" && match(r));
+  if (managedAsk) return { kind: "ask", step: 2, origin: "managed", reason: `Confirmation required by the managed rule ${managedAsk.raw}.`, suggestions: [] };
+
+  // Step 3: unrestricted mode allows ordinary requests.
+  if (ctx.mode === "unrestricted") return { kind: "allow", step: 3, why: "unrestricted mode" };
+
+  // Step 4: explicit requests (non-managed `ask` rules, hook asking).
+  const ask = rules.find((r) => r.decision === "ask" && r.scope !== "managed" && match(r));
+  if (ask) return { kind: "ask", step: 4, origin: "explicit", reason: `Confirmation required by the rule ${ask.raw} (${ask.scope} scope).`, suggestions: [] };
+  if (q.hookDecision === "ask") return { kind: "ask", step: 4, origin: "explicit", reason: q.hookReason ?? "Confirmation requested by a hook.", suggestions: [] };
+
+  // Step 5: tool-specific contribution.
+  if (q.contribution === "allow") return { kind: "allow", step: 5, why: "tool check" };
+  if (q.contribution === "ask") return { kind: "ask", step: 5, origin: "tool_check", reason: "Confirmation required by the tool check.", suggestions };
+
+  // Step 6: authorisations.
+  const allow = rules.find((r) => r.decision === "allow" && match(r)) ?? ctx.sessionAllows.find(match);
+  if (allow) return { kind: "allow", step: 6, why: `rule ${allow.raw}` };
+  if (q.hookDecision === "allow") return { kind: "allow", step: 6, why: "hook" };
+
+  // Step 7: auto_edit allows file writes inside the allowed folders.
+  if (ctx.mode === "auto_edit" && q.fileWriteInsideAllowed === true) return { kind: "allow", step: 7, why: "auto_edit mode" };
+
+  // Step 8: default.
+  return { kind: "ask", step: 8, origin: "default", reason: "This action requires a permission.", suggestions };
+}

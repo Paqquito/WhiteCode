@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "defaultLanguage": "en",
+  "identity": {
+    "SOCIETY": "Omega Test",
+    "SOCIETY_DOMAIN": "omega-test.example",
+    "PRODUCT": "Outil Zeta"
+  },
+  "models": {
+    "MODEL_MEDIUM": {
+      "label": "Standard"
+    }
+  },
+  "services": {
+    "SERVICE_DOCS": "https://docs.omega-test.example/outil-zeta",
+    "SERVICE_DOWNLOADS": "https://downloads.omega-test.example/outil-zeta"
+  },
+  "visual": {
+    "BRAND_COLOR_PRIMARY": "#7A3B99"
+  }
+}

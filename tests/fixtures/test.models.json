@@ -1,0 +1,189 @@
+{
+  "schemaVersion": 1,
+  "currency": "USD",
+  "models": [
+    {
+      "id": "test-large",
+      "provider": "openai_compatible",
+      "family": "test",
+      "label": "Test large",
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "capabilities": {
+        "toolCalling": true,
+        "images": true
+      },
+      "pricing": {
+        "inputPerMTok": 4,
+        "outputPerMTok": 20,
+        "cacheReadPerMTok": 0.4,
+        "cacheWritePerMTok": 5,
+        "effectiveDate": "2026-09-30",
+        "source": "Fictitious test prices."
+      }
+    },
+    {
+      "id": "test-medium",
+      "provider": "openai_compatible",
+      "family": "test",
+      "label": "Test medium",
+      "contextWindow": 128000,
+      "maxOutputTokens": 16000,
+      "capabilities": {
+        "toolCalling": true
+      }
+    },
+    {
+      "id": "test-small",
+      "provider": "openai_compatible",
+      "family": "test",
+      "label": "Test small",
+      "contextWindow": 32000,
+      "maxOutputTokens": 8000,
+      "capabilities": {
+        "toolCalling": true
+      }
+    },
+    {
+      "id": "test-no-tools",
+      "provider": "openai_compatible",
+      "family": "test",
+      "label": "Test without tools",
+      "contextWindow": 32000,
+      "maxOutputTokens": 8000
+    },
+    {
+      "id": "test-options",
+      "provider": "openai_compatible",
+      "family": "test",
+      "label": "Test with options",
+      "contextWindow": 32000,
+      "maxOutputTokens": 8000,
+      "capabilities": {
+        "toolCalling": true,
+        "thinking": "optional",
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "providerOptions": {
+        "maxTokensParameter": "max_completion_tokens",
+        "effortParameter": "reasoning_effort",
+        "thinkingOff": {
+          "think": false
+        },
+        "thinkingOn": {
+          "think": true
+        }
+      }
+    },
+    {
+      "id": "vendor-always",
+      "provider": "anthropic",
+      "family": "test",
+      "label": "Vendor always",
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "capabilities": {
+        "toolCalling": true,
+        "thinking": "always",
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "toolInputStreaming": true,
+        "appendOnlyHistory": true,
+        "systemMessages": true,
+        "contextEditing": true,
+        "images": true
+      }
+    },
+    {
+      "id": "vendor-optional",
+      "provider": "anthropic",
+      "family": "test",
+      "label": "Vendor optional",
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "capabilities": {
+        "toolCalling": true,
+        "thinking": "optional",
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "toolInputStreaming": true
+      },
+      "providerOptions": {
+        "thinkingOff": {
+          "type": "between_tools"
+        }
+      }
+    },
+    {
+      "id": "vendor-budget",
+      "provider": "anthropic",
+      "family": "test",
+      "label": "Vendor budget",
+      "contextWindow": 200000,
+      "maxOutputTokens": 64000,
+      "capabilities": {
+        "toolCalling": true,
+        "thinking": "optional",
+        "thinkingBudget": true
+      }
+    },
+    {
+      "id": "vendor-context",
+      "provider": "anthropic",
+      "family": "test",
+      "label": "Vendor context editing",
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "capabilities": {
+        "toolCalling": true,
+        "thinking": "optional",
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "toolInputStreaming": true,
+        "contextEditing": true,
+        "appendOnlyHistory": true
+      },
+      "providerOptions": {
+        "thinkingOff": {
+          "type": "between_tools"
+        }
+      }
+    },
+    {
+      "id": "test-openai",
+      "provider": "openai",
+      "family": "generic",
+      "label": "Test OpenAI",
+      "contextWindow": 64000,
+      "maxOutputTokens": 8000,
+      "capabilities": {
+        "toolCalling": true,
+        "images": true,
+        "contextEditing": true
+      },
+      "pricing": {
+        "inputPerMTok": 1,
+        "outputPerMTok": 2,
+        "cacheReadPerMTok": 0.1,
+        "cacheWritePerMTok": 1,
+        "effectiveDate": "2026-09-30",
+        "source": "test fixture"
+      }
+    }
+  ]
+}

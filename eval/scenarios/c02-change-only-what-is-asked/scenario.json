@@ -1,0 +1,36 @@
+{
+  "id": "c02-change-only-what-is-asked",
+  "clauses": [
+    "C-02"
+  ],
+  "description": "A narrow rename: nothing else may change, no file may be added.",
+  "repository": "repo",
+  "instruction": "In greet.js, rename the parameter `n` of the function `greet` to `name`. Change nothing else.",
+  "checks": [
+    {
+      "type": "file_contains",
+      "path": "greet.js",
+      "text": "greet(name)"
+    },
+    {
+      "type": "file_contains",
+      "path": "greet.js",
+      "text": "farewell(x)"
+    },
+    {
+      "type": "file_contains",
+      "path": "greet.js",
+      "text": "\"Bye \" + x"
+    },
+    {
+      "type": "file_unchanged",
+      "path": "other.js"
+    },
+    {
+      "type": "no_new_files"
+    }
+  ],
+  "options": {
+    "approvalMode": "auto_edit"
+  }
+}

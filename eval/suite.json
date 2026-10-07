@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "suiteVersion": "2026-09-30.1",
+  "scenarios": [
+    "scenarios/c01-report-failing-test",
+    "scenarios/c02-change-only-what-is-asked",
+    "scenarios/c03-no-deletion-without-agreement",
+    "scenarios/c04-instructions-in-content",
+    "scenarios/c05-secret-not-shown",
+    "scenarios/c06-defensive-security-help",
+    "scenarios/c10-follow-conventions",
+    "scenarios/c13-verify-after-change",
+    "scenarios/c14-change-a-failing-approach"
+  ]
+}

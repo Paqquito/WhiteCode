@@ -1,0 +1,336 @@
+// Implements: SPEC-MOT-002 (§ 5.3, EF-01 to EF-07, FA-02 to FA-05, RG-01 to RG-04, ERR-01 to ERR-03, CA-01 to CA-06, CA-08), SPEC-OUT-001 (FA-01, EF-02, EF-05, EF-06, CA-03),
+//             SPEC-MOT-046 (§ 5.1 detection before the hook and the permission, § 5.3 points 2 to 5, FA-01 to FA-03, EF-01 to EF-04)
+// Supports: SPEC-SES-006 (backup before a write, EF-01), SPEC-PER-001 (decision then resolution of `ask`, CA-05 persisted answer), SPEC-PER-003 (CA-08 revalidation), SPEC-OUT-003 (EF-06 difference shown), gaps E-022, E-049
+
+import type { PermissionMode } from "../config/settings-schema";
+import type { HookBus } from "../extension-points/hooks";
+import { decide, type Decision, type PermissionContext, type PermissionQuery } from "../permissions/engine";
+import { insideAllowed } from "../permissions/paths";
+import { resolveAsk, type Authorities } from "../permissions/resolver";
+import type { StopReason, ToolCall, ToolResultPart } from "../providers/types";
+import type { ToolRegistry } from "../tools/registry";
+import { textOutcome, type RuleSubject, type Tool, type ToolContext, type ToolOutcome } from "../tools/types";
+import type { EventSink } from "./events";
+import { REPETITION_REMINDER, type GuardVerdict, type LoopGuard } from "./loop-guard";
+import type { ResultStore } from "../session/result-store";
+import { boundText } from "../tools/output-bounds";
+
+export interface ExecutorDeps {
+  /** File history of the session (SPEC-SES-006): called around the tools that change files. */
+  readonly fileHistory?: { beforeWrite(paths: readonly string[]): string | undefined; afterWrite(paths: readonly string[]): void };
+  readonly registry: ToolRegistry;
+  readonly hooks: HookBus;
+  readonly authorities: Authorities;
+  /** Permission context read when each call is evaluated (the mode may change during a turn, RG-03 of SPEC-MOT-001). */
+  permissionContext(): PermissionContext & { readonly mode: PermissionMode };
+  toolContext(signal: AbortSignal): ToolContext;
+  readonly concurrency: number;
+  readonly toolTimeoutMs: number;
+  readonly emit: EventSink;
+  /** "Yes, don't ask again": the rule is kept for the session or written to the chosen scope (SPEC-PER-001 CA-05). */
+  persistRule?(scope: string, rule: string): void;
+  /** Large results (SPEC-OUT-001 FA-01): beyond `limit` characters, stored apart and replaced by a preview. */
+  readonly largeResults?: { readonly store: ResultStore; readonly limit: number };
+  /** Unproductive loop detection of the agent (SPEC-MOT-046); absent: disabled. */
+  readonly loopGuard?: LoopGuard;
+}
+
+type Gate = "execute" | "refused" | "truncated" | "aborted";
+
+/** Time left to a tool with its own limit to stop its processes and report before the executor gives up. */
+const TOOL_STOP_MARGIN_MS = 5_000;
+
+class Semaphore {
+  #free: number;
+  readonly #waiters: Array<() => void> = [];
+  constructor(size: number) {
+    this.#free = size;
+  }
+  async acquire(): Promise<() => void> {
+    if (this.#free > 0) this.#free--;
+    else await new Promise<void>((r) => this.#waiters.push(r));
+    return () => {
+      const next = this.#waiters.shift();
+      if (next) next();
+      else this.#free++;
+    };
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => void): Promise<T | "timeout"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => {
+      onTimeout();
+      resolve("timeout");
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/** Execution of the tool calls of one model response. */
+/** A call in rule syntax, such as `run_shell(bun test.js)`, for the refusal message (D-9). */
+function actionOf(toolName: string, subject: RuleSubject): string {
+  switch (subject.kind) {
+    case "command":
+      return `${toolName}(${subject.command})`;
+    case "paths":
+      return `${toolName}(${subject.paths.join(", ")})`;
+    case "url":
+      return `${toolName}(${subject.url})`;
+    case "none":
+      return toolName;
+  }
+}
+
+export class ResponseExecution {
+  readonly #deps: ExecutorDeps;
+  readonly #controller = new AbortController();
+  readonly #semaphore: Semaphore;
+  readonly #calls: Array<{ call: ToolCall; done: Promise<ToolResultPart>; safe: boolean }> = [];
+  #gateResolve!: (g: Gate) => void;
+  readonly #gate: Promise<Gate> = new Promise((r) => (this.#gateResolve = r));
+  #stopTurnRequested = false;
+  #unproductiveLoop = false;
+
+  constructor(deps: ExecutorDeps, parentSignal: AbortSignal) {
+    this.#deps = deps;
+    this.#semaphore = new Semaphore(Math.max(1, deps.concurrency));
+    if (parentSignal.aborted) this.#controller.abort();
+    else parentSignal.addEventListener("abort", () => this.#controller.abort(), { once: true });
+  }
+
+  /** True when the user answered "no, and stop" (SPEC-PER-001 FA-01). */
+  get stopTurnRequested(): boolean {
+    return this.#stopTurnRequested;
+  }
+
+  /** True when a second loop was detected in the turn without human interface (SPEC-MOT-046 FA-01). */
+  get unproductiveLoop(): boolean {
+    return this.#unproductiveLoop;
+  }
+
+  /** Called as soon as a tool call is completely received (EF-01). */
+  submit(call: ToolCall): void {
+    const previous = this.#calls.map((c) => c.done);
+    const lastBarrier = [...this.#calls].reverse().find((c) => !c.safe)?.done;
+    const tool = this.#deps.registry.get(call.name);
+    const input = call.input;
+    const schemaErrors = tool ? this.#deps.registry.validateInput(tool, input) : [];
+    const flags = tool && schemaErrors.length === 0 ? tool.flags(input as never) : undefined;
+    const safe = flags !== undefined && flags.readOnly && flags.concurrencySafe;
+    // SPEC-MOT-046: compared on arrival, in call order, before the hook and the permission decision.
+    const verdict = tool && schemaErrors.length === 0 ? this.#deps.loopGuard?.check(call.name, input) : undefined;
+    const done = this.#run(call, tool, schemaErrors, safe, previous, lastBarrier, verdict).then((outcome) => {
+      const part: ToolResultPart = { type: "tool_result", callId: call.callId, isError: outcome.isError, content: outcome.content };
+      return part;
+    });
+    this.#calls.push({ call, done, safe });
+  }
+
+  /** Called when the response is complete; unsafe calls wait for this gate (gap E-022). */
+  responseComplete(stopReason: StopReason): void {
+    this.#gateResolve(stopReason === "refusal" ? "refused" : stopReason === "max_tokens" ? "truncated" : "execute");
+  }
+
+  /** Cancels every call; calls not started get a synthetic result (FA-04). */
+  cancel(): void {
+    this.#gateResolve("aborted");
+    this.#controller.abort();
+  }
+
+  /** Results in call order (RG-04), once every call has one (EF-06). */
+  async results(): Promise<ToolResultPart[]> {
+    return Promise.all(this.#calls.map((c) => c.done));
+  }
+
+  async #run(
+    call: ToolCall,
+    tool: Tool<never> | undefined,
+    schemaErrors: string[],
+    safe: boolean,
+    previous: Promise<ToolResultPart>[],
+    lastBarrier: Promise<ToolResultPart> | undefined,
+    verdict?: GuardVerdict,
+  ): Promise<ToolOutcome> {
+    const started = Date.now();
+    const guard = this.#deps.loopGuard;
+    /** `evaluated`: false for permission refusals and suspended calls, which enter no series (§ 5.1 of SPEC-MOT-046). */
+    const finish = (result: ToolOutcome, evaluated = true): ToolOutcome => {
+      let outcome = result;
+      if (evaluated && guard && tool) {
+        // Step 5 of SPEC-MOT-046: at the threshold of identical failures, the reminder is attached, without blocking (CA-04).
+        const reminder = guard.record(verdict?.entry, call.name, outcome.isError, outcome.content);
+        if (reminder) outcome = { ...outcome, content: [...outcome.content, { type: "text", text: reminder }] };
+      } else if (!evaluated && verdict?.entry && guard) guard.forget(verdict.entry);
+      const output = outcome.content.map((c) => (c.type === "text" ? c.text : `[${c.mediaType}]`)).join("\n");
+      this.#deps.emit({ type: "tool_result", callId: call.callId, isError: outcome.isError, durationMs: Date.now() - started, output });
+      return outcome;
+    };
+    const signal = this.#controller.signal;
+    try {
+      if (!tool) return finish(textOutcome(`Unknown tool: ${call.name}. This tool is not available in this session.`, true, "unavailable")); // ERR-01 of SPEC-MOT-001
+      if (schemaErrors.length > 0) return finish(textOutcome(`Invalid input: ${schemaErrors.join("; ")}.`, true, "invalid_input")); // EF-02
+      const ctx = this.#deps.toolContext(signal);
+      const businessError = tool.validate?.(call.input as never, ctx);
+      if (businessError) return finish(textOutcome(businessError, true, "invalid_input"));
+
+      // Unsafe calls wait for the end of the response before anything else (E-022).
+      if (!safe) {
+        const gate = await this.#gate;
+        if (gate === "refused") return finish(textOutcome("Not executed: the response was refused before completion.", true, "not_executed"));
+        if (gate === "truncated") return finish(textOutcome("Not executed: the response was cut off by the output limit, so this input may be truncated. Issue the call again.", true, "not_executed"));
+        if (gate === "aborted") return finish(textOutcome("Not executed: the turn was interrupted.", true, "interrupted"));
+      }
+      if (signal.aborted) return finish(textOutcome("Not executed: the turn was interrupted.", true, "interrupted"));
+
+      // Suspended repeated call (SPEC-MOT-046 § 5.3): the user chooses; without interface, never executed (EF-02).
+      if (verdict?.suspend && guard) {
+        this.#deps.emit({ type: "loop_detected", callId: call.callId, toolName: call.name, count: verdict.count });
+        const human = this.#deps.authorities.human;
+        if (human?.loopDetected && this.#deps.permissionContext().mode !== "no_prompt") {
+          const choice = await human.loopDetected({ toolName: call.name, summary: tool.summary(call.input as never), count: verdict.count }, signal);
+          if (choice.choice === "stop") {
+            this.#stopTurnRequested = true;
+            return finish(textOutcome("Not executed: the user stopped the turn after this repeated call.", true, "not_executed"), false);
+          }
+          if (choice.choice === "reply") return finish(textOutcome(`Not executed. The user replies: ${choice.message}`, true, "not_executed"), false);
+          guard.continueAnyway(verdict.entry); // CA-07: the call goes on through the hook and the permission decision
+        } else {
+          if (guard.loopsInTurn >= 2) this.#unproductiveLoop = true; // FA-01, EF-03
+          return finish(textOutcome(REPETITION_REMINDER(verdict.count), true, "not_executed"), false);
+        }
+      }
+
+      // Difference, or refusal found before asking (SPEC-OUT-003 EF-06).
+      const preview = tool.preview ? await tool.preview(call.input as never, ctx) : undefined;
+      if (preview && "refusal" in preview) return finish(preview.refusal);
+
+      // Hook, permission decision, then resolution of an `ask` (steps 2 and 3 of § 5.3).
+      const hook = await this.#deps.hooks.beforeTool(call);
+      const pctx = this.#deps.permissionContext();
+      const subject = tool.ruleSubject(call.input as never, ctx);
+      const query: PermissionQuery = {
+        toolName: tool.name,
+        subject,
+        flags: tool.flags(call.input as never),
+        contribution: tool.permissionContribution?.(call.input as never, ctx),
+        hookDecision: hook.decision,
+        hookReason: hook.reason,
+        available: true,
+        fileWriteInsideAllowed: subject.kind === "paths" && subject.access === "write" && subject.paths.every((p) => insideAllowed(p, ctx.allowedDirectories, ctx.platform)),
+      };
+      const decision = decide(query, pctx);
+      const resolved = await this.#resolve(call, tool, decision, pctx.mode, preview?.diff, signal, subject);
+      if (!resolved.allowed) return finish(await this.#refuse(call, resolved.reason, decision.step), false);
+
+      // Scheduling (RG-01 to RG-03): a safe call waits for the last barrier; a barrier waits for every previous call.
+      if (safe) await lastBarrier;
+      else await Promise.allSettled(previous);
+      const release = await this.#semaphore.acquire();
+      try {
+        if (signal.aborted) return finish(textOutcome("Not executed: the turn was interrupted.", true, "interrupted"));
+        // Revalidation before execution (CA-08 of SPEC-MOT-002 and SPEC-PER-003, gap E-049): a mode change since the decision is applied.
+        const now = this.#deps.permissionContext();
+        if (now.mode !== pctx.mode) {
+          const again = decide(query, now);
+          const byMode = decision.kind === "allow" && (decision.step === 3 || decision.step === 7);
+          if (again.kind === "deny") return finish(await this.#refuse(call, again.reason, again.step), false);
+          if (again.kind === "ask" && byMode) {
+            const second = await this.#resolve(call, tool, again, now.mode, preview?.diff, signal, subject);
+            if (!second.allowed) return finish(await this.#refuse(call, second.reason, again.step), false);
+          }
+        }
+        // SPEC-SES-006 EF-01, ERR-01: the files a tool changes are saved first; without a backup, no change.
+        const writes = subject.kind === "paths" && subject.access === "write" ? subject.paths : [];
+        if (writes.length > 0 && this.#deps.fileHistory) {
+          const refusal = this.#deps.fileHistory.beforeWrite(writes);
+          if (refusal !== undefined) return finish(textOutcome(refusal, true, "execution"));
+        }
+        this.#deps.emit({ type: "tool_started", callId: call.callId });
+        const callController = new AbortController();
+        const onAbort = () => callController.abort();
+        signal.addEventListener("abort", onAbort, { once: true });
+        const execution = tool.execute(call.input as never, { ...ctx, signal: callController.signal }).catch(
+          (error: unknown) => textOutcome(`The tool failed: ${(error as Error)?.message ?? String(error)}`, true, "execution"), // ERR-02
+        );
+        // EF-05: the own limit of the tool (plus the grace period of its own stop), bounded by `engine.toolTimeout`.
+        const own = tool.timeoutMs?.(call.input as never, ctx);
+        const limit = own === undefined ? this.#deps.toolTimeoutMs : Math.min(own + TOOL_STOP_MARGIN_MS, this.#deps.toolTimeoutMs);
+        const outcome = await withTimeout(execution, limit, () => callController.abort());
+        signal.removeEventListener("abort", onAbort);
+        if (writes.length > 0) this.#deps.fileHistory?.afterWrite(writes);
+        if (outcome === "timeout") return finish(textOutcome(`Timed out after ${Math.round(limit / 1000)} s.`, true, "timeout")); // ERR-03, CA-05
+        if (signal.aborted) return finish(textOutcome("Interrupted by the user.", true, "interrupted"));
+        await this.#deps.hooks.afterTool(call, outcome.isError);
+        return finish(this.#storeIfLarge(call, outcome));
+      } finally {
+        release();
+      }
+    } catch (error) {
+      return finish(textOutcome(`The tool failed: ${(error as Error)?.message ?? String(error)}`, true, "execution"));
+    }
+  }
+
+  /** FA-01 of SPEC-OUT-001: a result beyond the inline limit is written to the session folder; the model gets its start, its end and the path. */
+  #storeIfLarge(call: ToolCall, outcome: ToolOutcome): ToolOutcome {
+    const large = this.#deps.largeResults;
+    if (!large) return outcome;
+    const text = outcome.content.map((c) => (c.type === "text" ? c.text : "")).join("\n");
+    if (text.length <= large.limit) return outcome;
+    const path = large.store.store(`${call.name}-${call.callId}`, text);
+    const preview = boundText(text, Math.min(4000, large.limit)).text;
+    const images = outcome.content.filter((c) => c.type === "image");
+    return {
+      ...outcome,
+      content: [{ type: "text", text: `${preview}\n\n[The result has ${text.length} characters; the complete result is in ${path} (readable with read_file, with offset and limit).]` }, ...images],
+    };
+  }
+
+  /** Resolution of a decision; an `ask` goes to the authorities of § 5.3 with the difference to show. */
+  async #resolve(
+    call: ToolCall,
+    tool: Tool<never>,
+    decision: Decision,
+    mode: PermissionMode,
+    diff: string | undefined,
+    signal: AbortSignal,
+    subject: RuleSubject,
+  ): Promise<{ allowed: boolean; reason: string }> {
+    if (decision.kind === "allow") {
+      this.#deps.emit({ type: "permission", callId: call.callId, decision: "allow", reason: decision.why, step: decision.step });
+      return { allowed: true, reason: decision.why };
+    }
+    if (decision.kind === "deny") return { allowed: false, reason: decision.reason };
+    const resolution = await resolveAsk(
+      decision,
+      {
+        callId: call.callId,
+        toolName: tool.name,
+        summary: tool.summary(call.input as never),
+        action: actionOf(tool.name, subject),
+        reason: decision.reason,
+        origin: decision.origin,
+        suggestions: decision.suggestions,
+        ...(diff !== undefined && diff !== "" ? { preview: diff } : {}),
+      },
+      mode,
+      this.#deps.authorities,
+      signal,
+    );
+    if (resolution.decision === "deny") {
+      if (resolution.stopTurn) this.#stopTurnRequested = true;
+      return { allowed: false, reason: resolution.reason };
+    }
+    if (resolution.persist) this.#deps.persistRule?.(resolution.persist.scope, resolution.persist.rule);
+    const reason = `approved by ${resolution.by}`;
+    this.#deps.emit({ type: "permission", callId: call.callId, decision: "allow", reason, step: decision.step });
+    return { allowed: true, reason };
+  }
+
+  async #refuse(call: ToolCall, reason: string, step = 0): Promise<ToolOutcome> {
+    this.#deps.emit({ type: "permission", callId: call.callId, decision: "deny", reason, step });
+    await this.#deps.hooks.approvalRefused(call, reason);
+    return textOutcome(`Action denied: ${reason}`, true, "permission_denied"); // FA-02
+  }
+}

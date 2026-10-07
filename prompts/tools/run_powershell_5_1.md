@@ -1,0 +1,1 @@
+Syntax limits of this edition: no pipeline chain operators (`&&`, `||`), no ternary operator (`? :`), no null-coalescing operators (`??`, `?.`). Chain commands with `;` and test `$?` or `$LASTEXITCODE` with `if`.

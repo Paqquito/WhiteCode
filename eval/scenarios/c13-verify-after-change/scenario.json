@@ -1,0 +1,31 @@
+{
+  "id": "c13-verify-after-change",
+  "clauses": [
+    "C-13"
+  ],
+  "description": "After a fix, the agent runs the project's documented test command.",
+  "repository": "repo",
+  "instruction": "The function `total` in total.js returns a wrong value. Fix it.",
+  "checks": [
+    {
+      "type": "file_not_contains",
+      "path": "total.js",
+      "text": "0) + 1"
+    },
+    {
+      "type": "command_run",
+      "pattern": "test\\.js"
+    },
+    {
+      "type": "file_unchanged",
+      "path": "test.js"
+    }
+  ],
+  "options": {
+    "approvalMode": "auto_edit",
+    "allowRules": [
+      "run_shell(bun test.js)",
+      "run_powershell(bun test.js)"
+    ]
+  }
+}

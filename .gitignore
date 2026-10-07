@@ -1,0 +1,7 @@
+node_modules/
+build/
+dist/
+src/identity/generated/
+*.log
+.env
+dist/
