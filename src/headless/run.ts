@@ -62,6 +62,10 @@ import { ToolRegistry, UnknownToolsetEntryError } from "../tools/registry";
 import { detectPosixShell, detectPowerShell, ShellRuntime } from "../tools/shell-runtime";
 import type { ToolContext, ToolEnvironment } from "../tools/types";
 import { ResultStore } from "../session/result-store";
+import { resolveConnectors } from "../connectors/declarations";
+import { ConnectorManager, type ConnectorEvent } from "../connectors/manager";
+import { connectorSources, projectChoice, projectStateKey, type ProjectState } from "../connectors/session";
+import { createDiscoverToolsTool } from "../tools/discover-tools";
 import { closingFields, combineResults, exitCodeFor, renderResult, type ResultFormat } from "./output";
 import { EventStream } from "./stream-output";
 
@@ -574,6 +578,47 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     throw e;
   }
 
+  // SPEC-MCP-001, SPEC-MCP-021, SPEC-PER-019: the effective connectors; their tools reach the registry once connected.
+  const projectState = readUserState(locations.userStateFile).projects?.[projectStateKey(locations.projectRoot, system.platform)] as ProjectState | undefined;
+  const connectorsOption = opt("connectors");
+  const connectorSet = resolveConnectors(
+    connectorSources({
+      configDir: locations.configDir,
+      managedDir: locations.managedDir,
+      projectRoot: locations.projectRoot,
+      projectDirName: identity.get("PROJECT_DIR"),
+      projectTrusted: trust.trusted,
+      projectState,
+      cliValues: Array.isArray(connectorsOption) ? connectorsOption : [],
+      cwd,
+    }),
+    {
+      connectorsOnly: opt("connectors-only") === true,
+      allowList: settings.get<unknown[] | undefined>("mcp.allowList"),
+      denyList: settings.get<unknown[]>("mcp.denyList"),
+      managedServersOnly: settings.get<boolean>("mcp.managedServersOnly"),
+      projectChoice: projectChoice({
+        projectState,
+        enableAll: settings.get<boolean>("mcp.enableProjectServers"),
+        enabled: settings.get<string[]>("mcp.enabledProjectServers"),
+        disabled: settings.get<string[]>("mcp.disabledProjectServers"),
+      }),
+    },
+  );
+  for (const w of connectorSet.warnings) err(`avertissement : ${w}`);
+  for (const x of connectorSet.excluded) {
+    if (x.reason.startsWith("remplacé")) continue; // an ordinary override (§ 5.3 step 2)
+    err(`avertissement : connecteur ${x.name} (portée ${x.scope}) non démarré : ${x.reason}`); // ERR-01 of SPEC-MCP-021
+  }
+  // SPEC-OUT-030: `discover_tools` exists as soon as a connector may publish deferred tools.
+  if (connectorSet.connectors.length > 0)
+    registry.addStatic(
+      createDiscoverToolsTool({
+        deferred: () => registry.deferredTools().map((t) => ({ name: t.name, description: t.description(toolEnv), inputSchema: t.inputSchema })),
+        load: (names) => registry.load(names),
+      }) as never,
+    );
+
   // Limits: the most restrictive defined source wins (SPEC-MOD-005 RG-01, gap E-017); default 50 in automated runs (E-018).
   const strictest = (key: string, option: number | undefined, label: string): number | undefined => {
     const sources = settings.valuesByScope(key).filter((s) => s.origin !== "default");
@@ -852,6 +897,74 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // SPEC-SES-012 EF-03: without persistence, the temporary folder goes at exit, after an error too.
   if (!transcript) holder.cleanups.push(() => rmSync(sessionWork, { recursive: true, force: true }));
   const resultStore = new ResultStore(join(sessionWork, "tool-results"));
+  // SPEC-MCP-022: connections started in parallel, never awaited but with `--wait-for-mcp` (FA-02).
+  const connectorNotes: Reminder[] = [];
+  const connectorNote = (e: ConnectorEvent) => {
+    if (e.kind === "connected") connectorNotes.push({ type: "connectors", text: `The connector ${e.name} is connected.`, priority: 1 });
+    else if (e.kind === "tools_changed")
+      connectorNotes.push({ type: "connectors", text: `The tools of the connector ${e.name} changed.${e.added.length ? ` New: ${e.added.join(", ")}.` : ""}${e.removed.length ? ` Removed: ${e.removed.join(", ")}.` : ""}`, priority: 2 });
+    else if (e.kind === "lost") connectorNotes.push({ type: "connectors", text: `The connector ${e.name} was disconnected: its tools fail until it reconnects.`, priority: 2 });
+    else connectorNotes.push({ type: "connectors", text: `The connector ${e.name} is unavailable (${e.reason}): do not use its tools.`, priority: 2 });
+  };
+  const connectors =
+    connectorSet.connectors.length > 0
+      ? new ConnectorManager({
+          connectors: connectorSet.connectors,
+          projectRoot: locations.projectRoot,
+          platform: system.platform,
+          environment: (declared) => env.childEnvironment({ ...settings.get<Record<string, string>>("environment.variables"), ...declared }),
+          variables: { ...deps.environment, ...imposed, PROJECT_ROOT: locations.projectRoot },
+          connectTimeoutMs: settings.get<number>("mcp.connectTimeout"),
+          toolTimeoutMs: settings.get<number>("mcp.toolTimeout"),
+          maxParallel: settings.get<number>("mcp.maxParallelConnects"),
+          maxReconnects: settings.get<number>("mcp.maxReconnects"),
+          descriptionMax: settings.get<number>("mcp.toolDescriptionMax"),
+          outputInlineLimit: settings.get<number>("mcp.outputInlineLimit"),
+          clientInfo: { name: identity.get("PRODUCT_SLUG"), version: identity.version },
+          estimateTokens,
+          store: (key, text) => resultStore.store(key, text),
+          report: (message) => err(message),
+          changed: connectorNote,
+        })
+      : undefined;
+  if (connectors) {
+    connectors.start();
+    holder.cleanups.push(() => void connectors.close());
+    if (opt("wait-for-mcp") === true) await connectors.waitAll(settings.get<number>("mcp.connectTimeout") + 5_000);
+  }
+  // Connector tools: deferred beyond `mcp.eagerToolsThreshold` (SPEC-MCP-009 EF-05); appended to the request once
+  // published or loaded, so that the definitions already sent keep their place (SPEC-OUT-030 EF-02).
+  const refreshConnectorTools = () => {
+    if (!connectors) return;
+    const tools = connectors.tools();
+    const deferred = new Set(tools.length >= settings.get<number>("mcp.eagerToolsThreshold") ? tools.map((t) => t.name) : []);
+    registry.setDynamic(tools, deferred);
+    registry.load(conversation.tools.map((t) => t.name).filter((n) => deferred.has(n)));
+    conversation.extendTools(registry.list().map((t) => ({ name: t.name, description: t.description(toolEnv), inputSchema: t.inputSchema })));
+  };
+  let announcedDeferred = new Set<string>();
+  let announcedSegment = -1;
+  const connectorReminders = {
+    type: "connectors",
+    produce: (): Reminder[] => {
+      const out = connectorNotes.splice(0);
+      if (!connectors) return out;
+      if (conversation.segment !== announcedSegment) {
+        announcedSegment = conversation.segment;
+        announcedDeferred = new Set();
+      }
+      const fresh = registry.deferredNames().filter((n) => !announcedDeferred.has(n));
+      if (fresh.length > 0) {
+        out.push({
+          type: "deferred_tools",
+          text: `${announcedDeferred.size === 0 ? "Deferred tools" : "More deferred tools"}, known by name only: load them with discover_tools before calling them: ${fresh.join(", ")}.`,
+          priority: 2,
+        });
+        for (const n of fresh) announcedDeferred.add(n);
+      }
+      return out;
+    },
+  };
   const extraVariables = settings.get<Record<string, string>>("environment.variables"); // user and managed scopes only (FA-01 of SPEC-CFG-007)
   const childProcessVariable = `${env.prefix}CHILD_PROCESS`;
   await hooks.fire("session_opened", { source: reopened && !reopenAsCopy ? "reopen" : "launch" });
@@ -1049,6 +1162,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       interruptionProducer(reopened?.history),
       { type: "hook_context", produce: () => hookContext.splice(0) },
       todoReminderProducer(taskList, settings.get<number>("context.reminders.todoInterval")),
+      connectorReminders,
     ],
     settings.get<number>("context.reminders.maxTokens"),
     estimateTokens,
@@ -1095,7 +1209,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   };
 
   const loopDeps: LoopDeps = {
-    beforeRequest: applySettingsChanges,
+    beforeRequest: () => {
+      applySettingsChanges();
+      refreshConnectorTools();
+    },
     fallback,
     onUserMessage: (recordId) => {
       if (recordId !== undefined) fileHistory.checkpoint(recordId);
@@ -1187,6 +1304,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   }
   await hooks.fire("session_closed", { reason: "exit" });
   await hooks.close(); // SPEC-HOK-007 FA-01: hooks run without waiting finish (or are stopped) before the session ends
+  await connectors?.close(); // SPEC-MCP-002 EF-03: no server process outlives the session
   await shellRuntime?.stopAll(); // RG-03 of SPEC-OUT-008: no process outlives the session
   transcript?.close();
   if (transcript?.warning) err(`avertissement : ${transcript.warning}`);

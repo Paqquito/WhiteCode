@@ -180,6 +180,20 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "hooksConfig.http.allowedEnvVars", schema: strList(), default: [], scopes: [U, G], owner: "SPEC-HOK-004" },
   { key: "hooksConfig.maxAsync", schema: int(1, 64), default: 8, scopes: [U, G], owner: "SPEC-HOK-007" },
   { key: "hooksConfig.asyncKillOnExit", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-HOK-007" },
+  // SPEC-MCP-001 to 022, SPEC-PER-019: connectors (lot 3).
+  { key: "mcp.enableProjectServers", schema: bool(), default: false, scopes: [U], owner: "SPEC-PER-019", widening: true },
+  { key: "mcp.enabledProjectServers", schema: strList(), default: [], scopes: [U], owner: "SPEC-PER-019", widening: true },
+  { key: "mcp.disabledProjectServers", schema: strList(), default: [], scopes: [U, L], owner: "SPEC-PER-019", merge: "concat" },
+  { key: "mcp.allowList", schema: Type.Array(Type.Unknown()), scopes: [G], owner: "SPEC-MCP-021" },
+  { key: "mcp.denyList", schema: Type.Array(Type.Unknown()), default: [], scopes: [G], owner: "SPEC-MCP-021" },
+  { key: "mcp.managedServersOnly", schema: bool(), default: false, scopes: [G], owner: "SPEC-MCP-021" },
+  { key: "mcp.connectTimeout", schema: durationSchema(), kind: "duration", default: 30_000, scopes: [U, G], owner: "SPEC-MCP-002" },
+  { key: "mcp.toolTimeout", schema: durationSchema(), kind: "duration", default: 600_000, scopes: [U, G], owner: "SPEC-MCP-009" },
+  { key: "mcp.toolDescriptionMax", schema: int(100, 100_000), default: 2_000, scopes: [U, G], owner: "SPEC-MCP-009" },
+  { key: "mcp.eagerToolsThreshold", schema: int(0, 10_000), default: 15, scopes: [U, G], owner: "SPEC-MCP-009" },
+  { key: "mcp.outputInlineLimit", schema: int(100, 10_000_000), default: 20_000, scopes: [U, G], owner: "SPEC-MCP-020" },
+  { key: "mcp.maxParallelConnects", schema: int(1, 100), default: 10, scopes: [U, G], owner: "SPEC-MCP-022" },
+  { key: "mcp.maxReconnects", schema: int(0, 100), default: 6, scopes: [U, G], owner: "SPEC-MCP-022" },
   { key: "environment.variables", schema: Type.Record(Type.String(), Type.String()), default: {}, scopes: [U, G], owner: "SPEC-CFG-007", widening: true },
 
   // Options forbidden by the managed policy (SPEC-MOD-011 § 11, decision D-13, gap E-029).

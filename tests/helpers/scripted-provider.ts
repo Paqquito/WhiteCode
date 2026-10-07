@@ -1,5 +1,6 @@
 // Simulated provider for engine tests. It replays scripted responses and checks, on every request,
-// that the history of the segment is append-only (decision D-12): request n+1 must extend request n.
+// that the history of the segment is append-only (decision D-12): request n+1 must extend request n; its tool list
+// may only grow by appending.
 
 import { ProviderError, type HistoryMessage, type ModelEvent, type ModelProvider, type ModelRequest, type ProviderErrorKind, type StopReason, type ToolCall } from "../../src/providers/types";
 
@@ -64,7 +65,8 @@ export class ScriptedProvider implements ModelProvider {
 function assertPrefix(previous: ModelRequest, next: ModelRequest): void {
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
   if (!same(previous.system, next.system)) throw new PrefixViolation("system instructions changed within a segment");
-  if (!same(previous.tools, next.tools)) throw new PrefixViolation("tool list changed within a segment");
+  // Tools may only be appended within a segment (connector tools, loaded deferred tools).
+  if (!same(previous.tools, next.tools.slice(0, previous.tools.length))) throw new PrefixViolation("tool list changed within a segment");
   const prev: readonly HistoryMessage[] = previous.history;
   if (next.history.length < prev.length) throw new PrefixViolation("history shrank");
   for (let i = 0; i < prev.length; i++) {

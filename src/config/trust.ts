@@ -18,6 +18,8 @@ export interface UserState {
   readonly trustedProjects?: readonly string[];
   /** SPEC-API-008 step 1: day of the last notice about each deprecated model. */
   readonly modelNotices?: Readonly<Record<string, string>>;
+  /** Choices by project (connectors of the `local` scope, approvals of project connectors), by comparable path. */
+  readonly projects?: Readonly<Record<string, unknown>>;
 }
 
 /** Writes `patch` over the user state file, keeping the other fields (SPEC-CFG-010). */

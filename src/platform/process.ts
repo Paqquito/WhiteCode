@@ -3,6 +3,7 @@
 // Runtime adapter: child processes and process trees. The only module that starts or kills processes for the tools.
 
 import { spawn, spawnSync } from "node:child_process";
+import { extname } from "node:path";
 import { currentPlatform } from "./system";
 
 export interface ChildOptions {
@@ -19,6 +20,8 @@ export interface ChildOptions {
   readonly input?: string;
   /** Receives the standard error separately; without it, both outputs go to `onData`. */
   readonly onErrorData?: (chunk: Buffer) => void;
+  /** The standard input stays open for an exchange of messages (SPEC-MCP-002), written through `Child.input`. */
+  readonly keepInputOpen?: boolean;
 }
 
 /** Time given to the output pipes to close after the process ended: a stray descendant may hold them. */
@@ -30,6 +33,8 @@ export interface Child {
   readonly exited: Promise<number | null>;
   /** Stops the whole process tree: polite request, then forced after `graceMs`. */
   killTree(graceMs: number): Promise<void>;
+  /** Standard input kept open (`keepInputOpen`). */
+  readonly input?: { write(text: string): void; end(): void };
 }
 
 function killWindowsTree(pid: number): void {
@@ -54,7 +59,7 @@ export function startChild(file: string, args: readonly string[], options: Child
   const child = spawn(file, [...args], {
     cwd: options.cwd,
     env: options.env,
-    stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+    stdio: [options.input === undefined && !options.keepInputOpen ? "ignore" : "pipe", "pipe", "pipe"],
     detached: !windows,
     windowsHide: true,
   });
@@ -79,15 +84,27 @@ export function startChild(file: string, args: readonly string[], options: Child
       }, PIPE_DRAIN_MS);
     });
   });
-  if (options.input !== undefined && child.stdin) {
+  if (options.keepInputOpen && child.stdin) child.stdin.on("error", () => {});
+  else if (options.input !== undefined && child.stdin) {
     child.stdin.on("error", () => {}); // a command that does not read its input closes the pipe early
     child.stdin.end(options.input);
   }
   child.stdout?.on("data", (c: Buffer) => options.onData(c));
   child.stderr?.on("data", (c: Buffer) => (options.onErrorData ?? options.onData)(c));
+  const stdin = options.keepInputOpen ? child.stdin : null;
   return {
     pid: child.pid,
     exited,
+    input: stdin
+      ? {
+          write: (text: string) => {
+            if (!stdin.destroyed && stdin.writable) stdin.write(text);
+          },
+          end: () => {
+            if (!stdin.destroyed) stdin.end();
+          },
+        }
+      : undefined,
     async killTree(graceMs: number) {
       const pid = child.pid;
       if (pid === undefined || done) return;
@@ -107,6 +124,18 @@ export function startChild(file: string, args: readonly string[], options: Child
       await Promise.race([exited, new Promise<void>((r) => setTimeout(r, graceMs + 1000))]);
     },
   };
+}
+
+/**
+ * How to start `command` with `args`: on Windows, a script (`.cmd`, `.bat`) found on the search path of `env` goes
+ * through the command interpreter (SPEC-MCP-002 FA-02); elsewhere, as it is.
+ */
+export function launchLine(command: string, args: readonly string[], env: Readonly<Record<string, string>>): { file: string; args: string[] } {
+  if (currentPlatform() !== "windows") return { file: command, args: [...args] };
+  const found = Bun.which(command, { PATH: env["PATH"] ?? env["Path"] ?? "" }) ?? command;
+  if (![".cmd", ".bat"].includes(extname(found).toLowerCase())) return { file: found, args: [...args] };
+  const quote = (a: string) => (/[\s"&|<>^()]/.test(a) ? `"${a.replace(/"/g, '""')}"` : a);
+  return { file: env["ComSpec"] ?? "cmd.exe", args: ["/d", "/s", "/c", `"${[found, ...args].map(quote).join(" ")}"`] };
 }
 
 /** Runs a short command to completion (detection, snapshot); output captured, time bounded. */

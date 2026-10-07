@@ -2,8 +2,8 @@
 //             SPEC-HOK-012 (§ 5.1, § 5.3 steps 1 and 2, FA-01, EF-01 to EF-03, RG-01), SPEC-HOK-004 (§ 5.1 fields of an `http` action)
 // Snapshot of the hooks of a session: declarations of every scope kept apart, filtered by the administrator controls.
 
-import { createHash } from "node:crypto";
 import { parseDuration } from "../config/units";
+import { fingerprint } from "../shared/fingerprint";
 import { suggest } from "../shared/suggest";
 import { HOOK_EVENTS } from "./events";
 
@@ -76,19 +76,8 @@ export function compileMatch(match: string | undefined): ((value: string | undef
   return (value) => value !== undefined && res.some((r) => r.test(value));
 }
 
-/** JSON with sorted keys, so that the fingerprint does not depend on the order of the keys. */
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (typeof value === "object" && value !== null)
-    return `{${Object.keys(value)
-      .sort()
-      .map((k) => `${JSON.stringify(k)}:${canonical((value as Record<string, unknown>)[k])}`)
-      .join(",")}}`;
-  return JSON.stringify(value) ?? "null";
-}
-
 export function fingerprintOf(event: string, declaration: unknown): string {
-  return `sha256:${createHash("sha256").update(canonical({ event, declaration })).digest("hex")}`;
+  return fingerprint({ event, declaration });
 }
 
 /** An `http` action (SPEC-HOK-004 § 5.1): `https`, or `http` to the local host only; checked again before each request. */

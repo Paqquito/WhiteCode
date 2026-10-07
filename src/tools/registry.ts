@@ -1,4 +1,5 @@
-// Implements: SPEC-OUT-001 (§ 5.3 registry construction, EF-02, EF-07, FA-03, RG-03, ERR-01, ERR-06, CA-01, CA-02, CA-04, CA-05)
+// Implements: SPEC-OUT-001 (§ 5.3 registry construction, EF-02, EF-07, FA-03, RG-03, ERR-01, ERR-06, CA-01, CA-02, CA-04, CA-05),
+//             SPEC-OUT-030 (§ 5.1 deferred tools, FA-02, FA-03, EF-01, CA-01, CA-03), SPEC-MCP-009 (EF-02, EF-05)
 
 import { compileRaw, describeErrors } from "../shared/schema";
 import { editFileTool } from "./edit-file";
@@ -43,6 +44,12 @@ export interface RegistryOptions {
 export class ToolRegistry {
   readonly #tools: Map<string, Tool<never>>;
   readonly #validators = new Map<string, ReturnType<typeof compileRaw>>();
+  /** Connector tools, which come and go during the session (SPEC-MCP-009), by qualified name. */
+  readonly #dynamic = new Map<string, Tool<never>>();
+  /** Deferred tools: announced by name; their definition is sent once loaded (SPEC-OUT-030). */
+  readonly #deferred = new Set<string>();
+  readonly #loaded = new Set<string>();
+  #deniedWholeTools: ReadonlySet<string> = new Set();
 
   private constructor(tools: Map<string, Tool<never>>) {
     this.#tools = tools;
@@ -71,16 +78,64 @@ export class ToolRegistry {
       }
     }
     for (const denied of options.deniedWholeTools ?? []) selected.delete(denied);
-    return new ToolRegistry(selected);
+    const registry = new ToolRegistry(selected);
+    registry.#deniedWholeTools = options.deniedWholeTools ?? new Set();
+    return registry;
   }
 
+  /** Adds a tool known from the start (`discover_tools`), unless it is denied as a whole. */
+  addStatic(tool: Tool<never>): void {
+    if (!this.#deniedWholeTools.has(tool.name) && !this.#tools.has(tool.name)) this.#tools.set(tool.name, tool);
+  }
+
+  /**
+   * Replaces the connector tools (SPEC-MCP-009 FA-02). A connector tool never hides a built-in one (EF-02); a tool
+   * denied as a whole, or whose connector is (`cnx_<server>`), is left out. `deferred` names those announced by name only.
+   */
+  setDynamic(tools: readonly Tool<never>[], deferred: ReadonlySet<string>): void {
+    this.#dynamic.clear();
+    this.#deferred.clear();
+    for (const t of tools) {
+      if (this.#tools.has(t.name)) continue;
+      if ([...this.#deniedWholeTools].some((d) => d === t.name || (d.startsWith("cnx_") && t.name.startsWith(`${d}_`)))) continue;
+      this.#dynamic.set(t.name, t);
+      if (deferred.has(t.name)) this.#deferred.add(t.name);
+      this.#validators.delete(t.name);
+    }
+  }
+
+  /** Step 4 of SPEC-OUT-030: loaded tools join the requests and stay for the session (EF-01). */
+  load(names: readonly string[]): void {
+    for (const n of names) if (this.#deferred.has(n)) this.#loaded.add(n);
+  }
+
+  /** Deferred tools, loaded or not. */
+  deferredTools(): Tool<never>[] {
+    return [...this.#deferred].sort().map((n) => this.#dynamic.get(n)!);
+  }
+
+  /** Names announced to the model: the deferred tools not loaded yet (CA-01, FA-03). */
+  deferredNames(): string[] {
+    return [...this.#deferred].filter((n) => !this.#loaded.has(n)).sort();
+  }
+
+  /** A deferred tool not loaded answers with the invitation to load it (FA-02, CA-03). */
   get(name: string): Tool<never> | undefined {
-    return this.#tools.get(name);
+    const fixed = this.#tools.get(name);
+    if (fixed) return fixed;
+    const tool = this.#dynamic.get(name);
+    if (!tool || !this.#deferred.has(name) || this.#loaded.has(name)) return tool;
+    return {
+      ...tool,
+      inputSchema: { type: "object" },
+      validate: () => `The tool ${name} is deferred and not loaded: load it first with discover_tools (query "select:${name}"), then call it again.`,
+    };
   }
 
-  /** Tools presented to the model, in a deterministic order (decision D-12). */
+  /** Tools presented to the model, in a deterministic order (decision D-12): deferred tools only once loaded. */
   list(): Tool<never>[] {
-    return [...this.#tools.values()].sort((a, b) => (a.name < b.name ? -1 : 1));
+    const dynamic = [...this.#dynamic.values()].filter((t) => !this.#deferred.has(t.name) || this.#loaded.has(t.name));
+    return [...this.#tools.values(), ...dynamic].sort((a, b) => (a.name < b.name ? -1 : 1));
   }
 
   /** Schema validation before any execution (EF-02): the list of deviations, or an empty list. */

@@ -55,6 +55,17 @@ export class Conversation {
     this.#messages.push({ role: "system_note", text });
   }
 
+  /**
+   * Tools that appear during the segment (connector connected, deferred tool loaded): appended after the others, so
+   * that the definitions already sent keep their place (SPEC-OUT-030 EF-02, SPEC-MCP-022 § 5.1). Returns the names added.
+   */
+  extendTools(tools: readonly ToolDefinition[]): string[] {
+    const known = new Set(this.#tools.map((t) => t.name));
+    const added = tools.filter((t) => !known.has(t.name));
+    if (added.length > 0) this.#tools = [...this.#tools, ...added];
+    return added.map((t) => t.name);
+  }
+
   /** Opens a new segment after a full compaction: nothing of the previous segment is replayed (architecture § 7.2). */
   startSegment(system: readonly SystemBlock[], tools: readonly ToolDefinition[], opening: ReadonlyArray<ContentPart>): void {
     this.#system = system;
