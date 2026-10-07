@@ -6,12 +6,18 @@ import type { ToolCall } from "../providers/types";
 export interface BeforeToolResult {
   readonly decision?: "allow" | "ask" | "deny";
   readonly reason?: string;
+  /** Parameters replaced by a hook (SPEC-HOK-010 § 5.1), validated again by the executor (EF-03). */
+  readonly modifiedInput?: Record<string, unknown>;
+  /** Several hooks changed the input: the call is blocked (SPEC-HOK-010 ERR-01). */
+  readonly conflict?: boolean;
+  /** A hook asked to stop the turn after this event (SPEC-HOK-010 § 5.1). */
+  readonly stopTurn?: boolean;
 }
 
 export interface HookBus {
   promptSubmitted(prompt: string): Promise<{ readonly block?: string }>;
   beforeTool(call: ToolCall): Promise<BeforeToolResult>;
-  afterTool(call: ToolCall, isError: boolean): Promise<{ readonly additionalContext?: string }>;
+  afterTool(call: ToolCall, isError: boolean, output?: string): Promise<{ readonly additionalContext?: string; readonly stopTurn?: boolean }>;
   approvalRefused(call: ToolCall, reason: string): Promise<void>;
   turnCompleted(finalText: string): Promise<{ readonly continueWith?: string }>;
   turnFailed(reason: string): Promise<void>;

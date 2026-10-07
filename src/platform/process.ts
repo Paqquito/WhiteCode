@@ -1,4 +1,5 @@
-// Supports: SPEC-OUT-008 (EF-04 standard input closed, EF-06 whole process group stopped, ENF-03 no leak), SPEC-MOT-002 (RG-05 grace period)
+// Supports: SPEC-OUT-008 (EF-04 standard input closed, EF-06 whole process group stopped, ENF-03 no leak), SPEC-MOT-002 (RG-05 grace period),
+//           SPEC-HOK-003 (payload on the standard input, standard error apart)
 // Runtime adapter: child processes and process trees. The only module that starts or kills processes for the tools.
 
 import { spawn, spawnSync } from "node:child_process";
@@ -14,6 +15,10 @@ export interface ChildOptions {
    * so its processes are not children of the shell in the Windows tree). Called before the tree is stopped.
    */
   readonly stopDescendants?: () => void;
+  /** Text written to the standard input, which is then closed (SPEC-HOK-003 EF-01); without it the input stays closed. */
+  readonly input?: string;
+  /** Receives the standard error separately; without it, both outputs go to `onData`. */
+  readonly onErrorData?: (chunk: Buffer) => void;
 }
 
 /** Time given to the output pipes to close after the process ended: a stray descendant may hold them. */
@@ -49,7 +54,7 @@ export function startChild(file: string, args: readonly string[], options: Child
   const child = spawn(file, [...args], {
     cwd: options.cwd,
     env: options.env,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     detached: !windows,
     windowsHide: true,
   });
@@ -74,8 +79,12 @@ export function startChild(file: string, args: readonly string[], options: Child
       }, PIPE_DRAIN_MS);
     });
   });
+  if (options.input !== undefined && child.stdin) {
+    child.stdin.on("error", () => {}); // a command that does not read its input closes the pipe early
+    child.stdin.end(options.input);
+  }
   child.stdout?.on("data", (c: Buffer) => options.onData(c));
-  child.stderr?.on("data", (c: Buffer) => options.onData(c));
+  child.stderr?.on("data", (c: Buffer) => (options.onErrorData ?? options.onData)(c));
   return {
     pid: child.pid,
     exited,

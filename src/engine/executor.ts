@@ -1,6 +1,6 @@
 // Implements: SPEC-MOT-002 (§ 5.3, EF-01 to EF-07, FA-02 to FA-05, RG-01 to RG-04, ERR-01 to ERR-03, CA-01 to CA-06, CA-08), SPEC-OUT-001 (FA-01, EF-02, EF-05, EF-06, CA-03),
 //             SPEC-MOT-046 (§ 5.1 detection before the hook and the permission, § 5.3 points 2 to 5, FA-01 to FA-03, EF-01 to EF-04)
-// Supports: SPEC-SES-006 (backup before a write, EF-01), SPEC-PER-001 (decision then resolution of `ask`, CA-05 persisted answer), SPEC-PER-003 (CA-08 revalidation), SPEC-OUT-003 (EF-06 difference shown), gaps E-022, E-049
+// Supports: SPEC-HOK-010 (EF-03 input changed by a hook validated again, ERR-01, ERR-02), SPEC-SES-006 (backup before a write, EF-01), SPEC-PER-001 (decision then resolution of `ask`, CA-05 persisted answer), SPEC-PER-003 (CA-08 revalidation), SPEC-OUT-003 (EF-06 difference shown), gaps E-022, E-049
 
 import type { PermissionMode } from "../config/settings-schema";
 import type { HookBus } from "../extension-points/hooks";
@@ -202,12 +202,25 @@ export class ResponseExecution {
         }
       }
 
+      // Hook first (step 2 of § 5.3): a changed input is the one shown, decided and executed (SPEC-HOK-010 EF-03, CA-03).
+      const hook = await this.#deps.hooks.beforeTool(call);
+      if (hook.stopTurn) this.#stopTurnRequested = true;
+      if (hook.conflict) return finish(textOutcome(`Blocked: ${hook.reason ?? "several hooks change this call in incompatible ways."}`, true, "permission_denied"), false); // SPEC-HOK-010 ERR-01
+      if (hook.modifiedInput) {
+        const changed = { ...(call.input as Record<string, unknown>), ...hook.modifiedInput };
+        const errors = this.#deps.registry.validateInput(tool, changed);
+        const business = errors.length === 0 ? tool.validate?.(changed as never, ctx) : undefined;
+        if (errors.length > 0 || business) {
+          return finish(textOutcome(`Blocked: the parameters changed by a hook are invalid: ${[...errors, ...(business ? [business] : [])].join("; ")}.`, true, "invalid_input"), false); // SPEC-HOK-010 ERR-02
+        }
+        call = { ...call, input: changed };
+      }
+
       // Difference, or refusal found before asking (SPEC-OUT-003 EF-06).
       const preview = tool.preview ? await tool.preview(call.input as never, ctx) : undefined;
       if (preview && "refusal" in preview) return finish(preview.refusal);
 
-      // Hook, permission decision, then resolution of an `ask` (steps 2 and 3 of § 5.3).
-      const hook = await this.#deps.hooks.beforeTool(call);
+      // Permission decision, then resolution of an `ask` (step 3 of § 5.3).
       const pctx = this.#deps.permissionContext();
       const subject = tool.ruleSubject(call.input as never, ctx);
       const query: PermissionQuery = {
@@ -262,7 +275,8 @@ export class ResponseExecution {
         if (writes.length > 0) this.#deps.fileHistory?.afterWrite(writes);
         if (outcome === "timeout") return finish(textOutcome(`Timed out after ${Math.round(limit / 1000)} s.`, true, "timeout")); // ERR-03, CA-05
         if (signal.aborted) return finish(textOutcome("Interrupted by the user.", true, "interrupted"));
-        await this.#deps.hooks.afterTool(call, outcome.isError);
+        const after = await this.#deps.hooks.afterTool(call, outcome.isError, outcome.content.map((c) => (c.type === "text" ? c.text : `[${c.mediaType}]`)).join("\n"));
+        if (after.stopTurn) this.#stopTurnRequested = true;
         return finish(this.#storeIfLarge(call, outcome));
       } finally {
         release();

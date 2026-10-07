@@ -11,6 +11,8 @@ export interface ReloadResult {
   readonly settings: Settings;
   /** Keys whose effective value changed (step 3). */
   readonly changed: readonly string[];
+  /** Scopes whose file changed. */
+  readonly scopes: readonly string[];
 }
 
 const stamp = (path: string): string => {
@@ -53,6 +55,7 @@ export class SettingsReloader {
   /** Steps 1 to 3: reloads the changed files and recomputes the effective settings; undefined when nothing changed. */
   check(): ReloadResult | undefined {
     let touched = false;
+    const scopes: string[] = [];
     for (let i = 0; i < this.#files.length; i++) {
       const f = this.#files[i]!;
       const now = stamp(f.name);
@@ -67,12 +70,13 @@ export class SettingsReloader {
       if (text === f.text) continue;
       this.#files[i] = { ...f, text };
       touched = true;
+      scopes.push(f.scope);
     }
     if (!touched) return undefined;
     const next = Settings.load({ ...this.#base, sources: [...this.#files, ...this.#fixed] });
     const changed = SETTINGS.map((d) => d.key).filter((k) => JSON.stringify(next.get(k)) !== JSON.stringify(this.#current.get(k)));
     this.#current = next;
-    return { settings: next, changed };
+    return { settings: next, changed, scopes };
   }
 }
 

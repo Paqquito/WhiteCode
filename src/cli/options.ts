@@ -77,7 +77,7 @@ export const OPTIONS: readonly OptionDef[] = [
   { name: "allow-rule", value: "required", type: "rules", repeatable: true, group: "Outils, permissions et crochets", description: "Règles d'autorisation pour la session.", danger: true, delivered: true, owner: "SPEC-PER-002" },
   { name: "deny-rule", value: "required", type: "rules", repeatable: true, group: "Outils, permissions et crochets", description: "Règles de refus pour la session.", delivered: true, owner: "SPEC-PER-002" },
   { name: "toolset", value: "required", type: "list", group: "Outils, permissions et crochets", description: "Restreint les outils exposés au modèle (\"\" : aucun ; default : tous).", defaultText: "tous", delivered: true, owner: "SPEC-OUT-001" },
-  { name: "no-hooks", value: "none", group: "Outils, permissions et crochets", description: "Désactive les crochets facultatifs.", delivered: false, owner: "SPEC-HOK-012" },
+  { name: "no-hooks", value: "none", group: "Outils, permissions et crochets", description: "Désactive les crochets facultatifs.", delivered: true, owner: "SPEC-HOK-012" },
   { name: "permission-delegate", value: "required", type: "string", group: "Outils, permissions et crochets", description: "Outil qui décide des permissions en exécution automatisée.", delivered: false, owner: "SPEC-PER-028" },
   { name: "allow-project-trust", value: "none", group: "Outils, permissions et crochets", description: "Accorde la confiance au projet pour cette seule exécution (jamais mémorisée).", danger: true, delivered: true, owner: "SPEC-PER-016" },
 
