@@ -160,7 +160,8 @@ for (const [engine, rg] of engines) {
       const count = await search(ws, { pattern: "foo", mode: "count", ignore_case: true }, { readDenied: (p) => p === secret });
       expect(paths(count)).toEqual([`${f}:4`]);
       const lines = await search(ws, { pattern: "^foox", mode: "lines" });
-      expect(paths(lines)[0]!.length).toBeLessThan(500);
+      // The text after `path:line:` is cut (the path itself, long on some systems, is not).
+      expect(paths(lines)[0]!.length - `${f}:3:`.length).toBeLessThan(500);
       expect(paths(lines)[0]).toContain("[… 1000 characters]");
     });
   });
