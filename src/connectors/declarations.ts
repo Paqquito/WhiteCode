@@ -6,7 +6,7 @@
 import { parse, type ParseError } from "jsonc-parser";
 import { fingerprint } from "../shared/fingerprint";
 
-export type ConnectorScope = "managed" | "cli" | "local" | "project" | "user";
+export type ConnectorScope = "managed" | "cli" | "local" | "project" | "user" | "extension";
 
 export interface ConnectorDeclaration {
   readonly name: string;
@@ -31,6 +31,8 @@ export interface ConnectorSource {
   readonly source: string;
   /** Raw text of a file, or an already parsed object (state entry). */
   readonly content: string | Record<string, unknown> | undefined;
+  /** Name of the extension: its connectors are named `<extension>-<name>` (SPEC-EXT-011 § 5.1). */
+  readonly prefix?: string;
 }
 
 export interface Excluded {
@@ -61,7 +63,7 @@ export interface ResolveOptions {
 export const TRANSPORTS = new Set(["stdio", "http", "sse", "ws"]);
 const NAME = /^[a-z0-9][a-z0-9-]{1,47}$/;
 /** Priority of the scopes on a name conflict (§ 5.3 step 2); `managed` is added on top and never hidden. */
-const PRIORITY: readonly ConnectorScope[] = ["cli", "local", "project", "user"];
+const PRIORITY: readonly ConnectorScope[] = ["cli", "local", "project", "user", "extension"];
 
 /** A name that satisfies EF-04, proposed for an invalid one (ERR-03). */
 export function normalizedName(name: string): string {
@@ -94,7 +96,8 @@ function readSource(src: ConnectorSource, warnings: string[]): ConnectorDeclarat
     return [];
   }
   const out: ConnectorDeclaration[] = [];
-  for (const [name, raw] of Object.entries((servers ?? {}) as Record<string, unknown>)) {
+  for (const [short, raw] of Object.entries((servers ?? {}) as Record<string, unknown>)) {
+    const name = src.prefix ? `${src.prefix}-${short}` : short;
     if (!NAME.test(name)) {
       warnings.push(`Nom de connecteur invalide : ${name} (${src.source}) ; nom proposé : ${normalizedName(name)}.`); // ERR-03
       continue;

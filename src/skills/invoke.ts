@@ -23,7 +23,10 @@ const usesPositional = (text: string) => /\$[1-9](?![0-9])/.test(text);
 export function loadSkill(set: SkillSet, name: string, args: string, caller: Caller, vars: { readonly session: string }): Loaded {
   // Messages in English for the model, in French for the user.
   const user = caller === "user";
-  const skill = set.skills.get(name);
+  // A short name of an extension command (SPEC-EXT-011 FA-01); an ambiguous one lists the qualified names.
+  const ambiguous = user ? set.ambiguous.get(name) : undefined;
+  if (ambiguous) return { ok: false, kind: "unknown", message: `Nom ambigu : /${name} est fourni par plusieurs extensions ; précisez ${ambiguous.map((n) => `/${n}`).join(" ou ")}.` };
+  const skill = set.skills.get((user ? set.aliases.get(name) : undefined) ?? name);
   if (!skill) {
     const near = suggest(name, [...set.skills.values()].filter((s) => s.invocation === "both" || s.invocation === caller).map((s) => s.name), 3);
     if (user) return { ok: false, kind: "unknown", message: `Commande inconnue : /${name}.${near.length > 0 ? ` Noms proches : ${near.map((n) => `/${n}`).join(", ")}.` : ""}` }; // FA-01 of SPEC-CMD-001

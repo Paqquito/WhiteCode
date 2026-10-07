@@ -1,5 +1,5 @@
 {
-  "increment": "lot 4, incrément 1",
+  "increment": "lot 4, incrément 2",
   "claims": {
     "SPEC-API-001": [
       "CA-01",
@@ -98,6 +98,25 @@
       "CA-05",
       "CA-06",
       "CA-07"
+    ],
+    "SPEC-EXT-001": [
+      "CA-01",
+      "CA-02",
+      "CA-03"
+    ],
+    "SPEC-EXT-011": [
+      "CA-01",
+      "CA-02"
+    ],
+    "SPEC-EXT-012": [
+      "CA-01",
+      "CA-02"
+    ],
+    "SPEC-EXT-014": [
+      "CA-01"
+    ],
+    "SPEC-EXT-015": [
+      "CA-02"
     ],
     "SPEC-EXT-019": [
       "CA-01",

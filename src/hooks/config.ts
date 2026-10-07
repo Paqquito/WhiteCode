@@ -7,7 +7,7 @@ import { fingerprint } from "../shared/fingerprint";
 import { suggest } from "../shared/suggest";
 import { HOOK_EVENTS } from "./events";
 
-export type HookScope = "managed" | "cli" | "local" | "project" | "user";
+export type HookScope = "managed" | "cli" | "local" | "project" | "user" | "extension";
 
 export interface CommandAction {
   readonly type: "command";
@@ -65,7 +65,7 @@ export interface SnapshotControls {
 }
 
 const TYPES_LATER = new Set(["prompt", "agent"]);
-const SCOPE_ORDER: readonly HookScope[] = ["managed", "cli", "local", "project", "user"];
+const SCOPE_ORDER: readonly HookScope[] = ["managed", "cli", "local", "project", "user", "extension"];
 
 /** `match`: exact names, alternatives `a|b`, joker `*` (SPEC-HOK-002 § 5.1); undefined when invalid (EF-05). */
 export function compileMatch(match: string | undefined): ((value: string | undefined) => boolean) | undefined {
@@ -104,12 +104,15 @@ function httpAction(a: Record<string, unknown>, label: string, warnings: string[
 }
 
 /** Steps 1 and 2: declarations of each scope, validated, then filtered by the controls of SPEC-HOK-012. */
-export function buildSnapshot(byScope: ReadonlyArray<{ readonly origin: string; readonly value: unknown; readonly file?: string }>, controls: SnapshotControls): HookSnapshot {
+export function buildSnapshot(
+  byScope: ReadonlyArray<{ readonly origin: string; readonly value: unknown; readonly file?: string; /** Shown instead of the scope in labels (an extension). */ readonly labelScope?: string }>,
+  controls: SnapshotControls,
+): HookSnapshot {
   const declarations: HookDeclaration[] = [];
   const ignored: Array<{ label: string; reason: string }> = [];
   const warnings: string[] = [];
   const sources = [...byScope].filter((s) => SCOPE_ORDER.includes(s.origin as HookScope)).sort((a, b) => SCOPE_ORDER.indexOf(a.origin as HookScope) - SCOPE_ORDER.indexOf(b.origin as HookScope));
-  for (const { origin, value, file } of sources) {
+  for (const { origin, value, file, labelScope } of sources) {
     const scope = origin as HookScope;
     if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
     const seen = new Set<string>();
@@ -123,7 +126,7 @@ export function buildSnapshot(byScope: ReadonlyArray<{ readonly origin: string; 
       list.forEach((raw, i) => {
         const d = (raw ?? {}) as Record<string, unknown>;
         const id = typeof d["id"] === "string" ? d["id"] : undefined;
-        const label = `${scope}/${event}/${id ?? `#${i + 1}`}`;
+        const label = `${labelScope ?? scope}/${event}/${id ?? `#${i + 1}`}`;
         let mandatory = d["mandatory"] === true;
         if (mandatory && scope !== "managed") {
           warnings.push(`Crochet ${label} : « mandatory » n'est admis qu'en portée gérée ; il est ignoré.`);

@@ -17,6 +17,7 @@ import { comparablePath, type SystemInfo } from "../platform/system";
 import { effectiveCapabilities, isDeliveredProvider } from "../providers/adapters";
 import { capabilitiesOf, isResolveFailure, type ModelCatalog, type ModelEntry } from "../providers/catalog";
 import { suggest } from "../shared/suggest";
+import { renderValidation, validateExtension } from "../extensions/validate";
 
 export interface AdminDependencies {
   readonly streams: StandardStreams;
@@ -99,6 +100,21 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
     }
     case "config validate":
       return configValidate(deps, parsed.args[0], parsed.options.get("scope"), write, err);
+    case "extension validate": {
+      // SPEC-EXT-012: 0 without error, 1 with errors, 2 when the path does not exist (ERR-01).
+      const path = parsed.args[0];
+      if (!path) {
+        err("Argument manquant : <chemin>.");
+        return ExitCode.UsageOrConfiguration;
+      }
+      const report = validateExtension(resolvePath(deps.cwd, path));
+      if (!report) {
+        err("Chemin introuvable.");
+        return ExitCode.UsageOrConfiguration;
+      }
+      write(report, () => renderValidation(report));
+      return report.valid ? ExitCode.Success : ExitCode.ExecutionError;
+    }
     default:
       err(`Opération non disponible dans cette version : ${family.name} ${operation.name}.`);
       return ExitCode.UsageOrConfiguration;

@@ -77,7 +77,7 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
       op("disable", "Désactive une extension installée.", { args: "<nom>" }),
       op("update", "Met à jour une ou toutes les extensions.", { args: "[<nom>]" }),
       op("rollback", "Revient à la version précédente d'une extension.", { args: "<nom>" }),
-      op("validate", "Vérifie la conformité d'une extension en cours de développement.", { args: "<chemin>" }),
+      op("validate", "Vérifie la conformité d'une extension en cours de développement.", { args: "<chemin>", delivered: true, options: ["json"] }),
     ],
   },
   {

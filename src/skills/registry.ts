@@ -1,4 +1,5 @@
-// Implements: SPEC-EXT-019 (§ 5.1 header, § 5.2 locations and priority, § 5.4 steps 1, 2 and 4, FA-01, FA-02, EF-01, EF-03 to EF-05, ERR-01, ERR-02, CA-02 to CA-04)
+// Implements: SPEC-EXT-019 (§ 5.1 header, § 5.2 locations and priority, § 5.4 steps 1, 2 and 4, FA-01, FA-02, EF-01, EF-03 to EF-05, ERR-01, ERR-02, CA-02 to CA-04),
+//             SPEC-EXT-011 (§ 5.1 names of the skills and commands of an extension, FA-01, EF-01, EF-02)
 // The skills of a session: folders holding a `definition.md` (a YAML header, then Markdown instructions), and the
 // simple commands (`commands/*.md`, invoked by the user only). Only the headers are read before an invocation.
 
@@ -6,7 +7,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { parseYaml } from "../platform/yaml";
 
-export type SkillScope = "managed" | "project" | "user";
+export type SkillScope = "managed" | "project" | "user" | "extension";
 export type Invocation = "user" | "model" | "both";
 
 export interface Skill {
@@ -25,24 +26,32 @@ export interface Skill {
   readonly file: string;
   /** A simple command (FA-02) rather than a skill folder. */
   readonly command: boolean;
+  /** Extension providing it: its name is then `<extension>:<name>` (SPEC-EXT-011 EF-01). */
+  readonly extension?: string;
 }
 
 export interface SkillLocation {
   readonly scope: SkillScope;
   /** Folder of skill folders. */
-  readonly skillsDir: string;
+  readonly skillsDir?: string;
   /** Folder of simple commands, when the scope has one (FA-02). */
   readonly commandsDir?: string;
+  /** Name of the extension that provides the location (scope `extension`). */
+  readonly namespace?: string;
 }
 
 export interface SkillSet {
   /** Effective skills by name, after priority (EF-03). */
   readonly skills: ReadonlyMap<string, Skill>;
+  /** Short names of extension commands, when available (SPEC-EXT-011 FA-01): short name → qualified name. */
+  readonly aliases: ReadonlyMap<string, string>;
+  /** Short names claimed by several extensions: available to none, their qualified names listed. */
+  readonly ambiguous: ReadonlyMap<string, readonly string[]>;
   readonly warnings: readonly string[];
 }
 
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const PRIORITY: readonly SkillScope[] = ["managed", "project", "user"];
+const PRIORITY: readonly SkillScope[] = ["managed", "project", "user", "extension"];
 export const DEFINITION_FILE = "definition.md";
 
 /** Header and body of a Markdown file with a `---` YAML header; the whole text is the body without header. */
@@ -108,7 +117,8 @@ function readSkill(file: string, folderName: string, scope: SkillScope, command:
   };
 }
 
-function listDir(dir: string): string[] {
+function listDir(dir: string | undefined): string[] {
+  if (dir === undefined) return [];
   try {
     return readdirSync(dir).sort();
   } catch {
@@ -120,7 +130,7 @@ function listDir(dir: string): string[] {
 function readLocation(loc: SkillLocation, warnings: string[]): Skill[] {
   const out: Skill[] = [];
   for (const entry of listDir(loc.skillsDir)) {
-    const file = join(loc.skillsDir, entry, DEFINITION_FILE);
+    const file = join(loc.skillsDir!, entry, DEFINITION_FILE);
     if (!existsSync(file)) continue;
     const s = readSkill(file, entry, loc.scope, false, warnings);
     if (s) out.push(s);
@@ -131,7 +141,8 @@ function readLocation(loc: SkillLocation, warnings: string[]): Skill[] {
       const s = readSkill(join(loc.commandsDir, entry), basename(entry, ".md"), loc.scope, true, warnings);
       if (s && !out.some((x) => x.name === s.name)) out.push(s);
     }
-  return out;
+  // SPEC-EXT-011 EF-01: the namespace of the extension.
+  return loc.namespace ? out.map((s) => ({ ...s, name: `${loc.namespace}:${s.name}`, extension: loc.namespace })) : out;
 }
 
 /** § 5.2: managed, then project, then user; the first of a name wins (EF-03, CA-04). */
@@ -145,7 +156,22 @@ export function loadSkills(locations: readonly SkillLocation[]): SkillSet {
         if (!current) skills.set(s.name, s);
         else if (current.scope !== s.scope) warnings.push(`La compétence ${s.name} de portée ${s.scope} est masquée par celle de portée ${current.scope}.`);
       }
-  return { skills: new Map([...skills].sort(([a], [b]) => (a < b ? -1 : 1))), warnings };
+  // SPEC-EXT-011 FA-01, SPEC-CMD-001 § 5.3: the short name of an extension command, unless a skill or command of the
+  // product, project or user holds it, or another extension claims it too; never dependent on the loading order.
+  const claims = new Map<string, string[]>();
+  for (const s of skills.values()) {
+    if (!s.extension || !s.command) continue;
+    const short = s.name.slice(s.extension.length + 1);
+    claims.set(short, [...(claims.get(short) ?? []), s.name].sort());
+  }
+  const aliases = new Map<string, string>();
+  const ambiguous = new Map<string, readonly string[]>();
+  for (const [short, names] of [...claims].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    if (skills.has(short)) continue;
+    if (names.length === 1) aliases.set(short, names[0]!);
+    else ambiguous.set(short, names);
+  }
+  return { skills: new Map([...skills].sort(([a], [b]) => (a < b ? -1 : 1))), aliases, ambiguous, warnings };
 }
 
 /** Signature of the locations (folders, definitions and their times), to detect a change during the session (EF-04). */
@@ -160,7 +186,7 @@ export function skillsSignature(locations: readonly SkillLocation[]): string {
     }
   };
   for (const loc of locations) {
-    for (const entry of listDir(loc.skillsDir)) parts.push(`${loc.skillsDir}/${entry}:${stamp(join(loc.skillsDir, entry, DEFINITION_FILE))}`);
+    for (const entry of listDir(loc.skillsDir)) parts.push(`${loc.skillsDir}/${entry}:${stamp(join(loc.skillsDir!, entry, DEFINITION_FILE))}`);
     if (loc.commandsDir) for (const entry of listDir(loc.commandsDir)) parts.push(`${loc.commandsDir}/${entry}:${stamp(join(loc.commandsDir, entry))}`);
   }
   return parts.join("|");

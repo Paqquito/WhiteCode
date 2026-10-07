@@ -66,6 +66,7 @@ import { resolveConnectors } from "../connectors/declarations";
 import { ConnectorManager, type ConnectorEvent } from "../connectors/manager";
 import { connectorSources, projectChoice, projectStateKey, type ProjectState } from "../connectors/session";
 import { createDiscoverToolsTool } from "../tools/discover-tools";
+import { loadExtensions } from "../extensions/load";
 import { recognize } from "../commands/recognize";
 import { framed, loadSkill } from "../skills/invoke";
 import { loadSkills, modelSkills, skillsSection, skillsSignature, type Skill, type SkillLocation } from "../skills/registry";
@@ -582,6 +583,18 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     throw e;
   }
 
+  // SPEC-EXT-014, SPEC-EXT-011: the extensions of `--extension-dir`, for this session only, without any persistent trace.
+  const extensionDirs = opt("extension-dir");
+  const sessionExtensions = (Array.isArray(extensionDirs) ? extensionDirs : []).map((d) => absolute(d, cwd));
+  if (sessionExtensions.length > 0 && settings.get<boolean>("extensions.managedOnly"))
+    throw new RunError("Option --extension-dir refusée : seules les extensions gérées sont admises (extensions.managedOnly).", ExitCode.UsageOrConfiguration); // FA-01
+  for (const d of sessionExtensions) if (!existsSync(d)) throw new RunError(`Dossier d'extension introuvable : ${d}.`, ExitCode.UsageOrConfiguration); // ERR-01
+  const extensions = loadExtensions(
+    sessionExtensions.map((root) => ({ root, origin: "session" as const })),
+    { options: settings.get<Record<string, unknown>>("extensions.options"), dataDir: (name) => join(locations.configDir, "extension-data", name) },
+  );
+  for (const line of extensions.report) err(line);
+
   // SPEC-MCP-001, SPEC-MCP-021, SPEC-PER-019: the effective connectors; their tools reach the registry once connected.
   const projectState = readUserState(locations.userStateFile).projects?.[projectStateKey(locations.projectRoot, system.platform)] as ProjectState | undefined;
   const connectorsOption = opt("connectors");
@@ -595,7 +608,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       projectState,
       cliValues: Array.isArray(connectorsOption) ? connectorsOption : [],
       cwd,
-    }),
+    }).concat(extensions.connectorSources),
     {
       connectorsOnly: opt("connectors-only") === true,
       allowList: settings.get<unknown[] | undefined>("mcp.allowList"),
@@ -630,6 +643,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       ? [{ scope: "project" as const, skillsDir: join(locations.projectRoot, identity.get("PROJECT_DIR"), "skills"), commandsDir: join(locations.projectRoot, identity.get("PROJECT_DIR"), "commands") }]
       : []),
     { scope: "user", skillsDir: join(locations.configDir, "skills"), commandsDir: join(locations.configDir, "commands") },
+    ...extensions.skillLocations,
   ];
   let skillSet = loadSkills(skillLocations);
   let skillsStamp = skillsSignature(skillLocations);
@@ -744,7 +758,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     const byScope = s.valuesByScope("hooks").map((v) =>
       v.origin === "project" ? { origin: v.origin, value: JSON.parse(initialProjectHooks), file: initialProjectHooksFile } : { ...v, file: s.sourcesOf(v.origin, "hooks").join(" + ") || v.origin },
     );
-    const snapshot = buildSnapshot(byScope, {
+    const snapshot = buildSnapshot([...byScope, ...extensions.hookSources], {
       disabled: disabled ? { value: disabled.value === true, origin: disabled.origin } : undefined,
       managedOnly: s.get<boolean>("hooksConfig.managedOnly"),
       noHooks: opt("no-hooks") === true,
