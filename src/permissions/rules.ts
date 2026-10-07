@@ -28,6 +28,8 @@ export const KNOWN_TOOL_NAMES: ReadonlySet<string> = new Set([
 const PATH_TOOLS = new Set(["read_file", "write_file", "edit_file", "update_notebook_cell", "find_files", "search_content"]);
 const COMMAND_TOOLS = new Set(["run_shell", "run_powershell"]);
 const URL_TOOLS = new Set(["fetch_url"]);
+/** Tools whose rules designate an element by name, `*` standing for any run of characters (`use_skill(review-*)`). */
+const NAME_TOOLS = new Set(["use_skill"]);
 
 /** `domain:<host>` with an optional subdomain wildcard: `*.example.com` covers every subdomain, not the bare domain (§ 5.2). */
 export function domainMatches(pattern: string, url: string): boolean {
@@ -160,6 +162,10 @@ export function ruleMatches(rule: Rule, toolName: string, subject: RuleSubject, 
     return [...split.parts, ...split.nested].some((p) => commandMatches(pattern, p));
   }
   if (URL_TOOLS.has(rule.tool) && subject.kind === "url") return domainMatches(rule.pattern, subject.url);
+  if (NAME_TOOLS.has(rule.tool) && subject.kind === "name") {
+    const pattern = rule.pattern;
+    return new RegExp(`^${pattern.split("*").map((p) => p.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`).test(subject.name);
+  }
   return false;
 }
 
@@ -171,6 +177,7 @@ export function suggestRule(toolName: string, subject: RuleSubject, platform: Pl
     const abs = platform === "windows" ? dir : dir.replace(/^\//, "");
     return `${toolName}(//${abs}/**)`;
   }
+  if (subject.kind === "name") return `${toolName}(${subject.name})`;
   if (subject.kind === "command") {
     const words = subject.command.trim().split(/\s+/).slice(0, 2);
     return `${toolName}(${words.join(" ")} *)`;

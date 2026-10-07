@@ -66,6 +66,10 @@ import { resolveConnectors } from "../connectors/declarations";
 import { ConnectorManager, type ConnectorEvent } from "../connectors/manager";
 import { connectorSources, projectChoice, projectStateKey, type ProjectState } from "../connectors/session";
 import { createDiscoverToolsTool } from "../tools/discover-tools";
+import { recognize } from "../commands/recognize";
+import { framed, loadSkill } from "../skills/invoke";
+import { loadSkills, modelSkills, skillsSection, skillsSignature, type Skill, type SkillLocation } from "../skills/registry";
+import { createUseSkillTool } from "../tools/use-skill";
 import { closingFields, combineResults, exitCodeFor, renderResult, type ResultFormat } from "./output";
 import { EventStream } from "./stream-output";
 
@@ -619,6 +623,29 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       }) as never,
     );
 
+  // SPEC-EXT-019: skills of the managed, project (trusted project only, FA-01) and user locations; headers only.
+  const skillLocations: SkillLocation[] = [
+    { scope: "managed", skillsDir: join(locations.managedDir, "skills") },
+    ...(trust.trusted
+      ? [{ scope: "project" as const, skillsDir: join(locations.projectRoot, identity.get("PROJECT_DIR"), "skills"), commandsDir: join(locations.projectRoot, identity.get("PROJECT_DIR"), "commands") }]
+      : []),
+    { scope: "user", skillsDir: join(locations.configDir, "skills"), commandsDir: join(locations.configDir, "commands") },
+  ];
+  let skillSet = loadSkills(skillLocations);
+  let skillsStamp = skillsSignature(skillLocations);
+  for (const w of skillSet.warnings) err(`avertissement : ${w}`);
+  // SPEC-EXT-020 EF-02: the `tools` of an active skill are allowed until the end of the turn, never beyond a deny rule.
+  const skillAllows: Rule[] = [];
+  const activateSkill = (skill: Skill) => {
+    for (const raw of skill.tools) {
+      const rule = parseRule(raw, "allow", "session", cwd);
+      if (isRule(rule)) skillAllows.push(rule);
+      else err(`avertissement : compétence ${skill.name} : ${rule.message}`);
+    }
+  };
+  const useSkillTool = createUseSkillTool({ skills: () => skillSet, session: () => sessionId, activate: activateSkill }) as never;
+  if (modelSkills(skillSet).length > 0) registry.addStatic(useSkillTool);
+
   // Limits: the most restrictive defined source wins (SPEC-MOD-005 RG-01, gap E-017); default 50 in automated runs (E-018).
   const strictest = (key: string, option: number | undefined, label: string): number | undefined => {
     const sources = settings.valuesByScope(key).filter((s) => s.origin !== "default");
@@ -820,6 +847,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       arch: system.arch,
       osRelease: system.release,
       shellTool: shellToolLine(registry, toolEnv),
+      skills: skillsSection(modelSkills(skillSet), settings.get<number>("skills.maxDescriptionsTokens"), estimateTokens),
       date: now(),
       promptFamily: settings.get<string>("context.promptFamily"),
       budgetTokens: settings.get<number>("context.systemInstructionsBudget"),
@@ -935,19 +963,45 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // Connector tools: deferred beyond `mcp.eagerToolsThreshold` (SPEC-MCP-009 EF-05); appended to the request once
   // published or loaded, so that the definitions already sent keep their place (SPEC-OUT-030 EF-02).
   const refreshConnectorTools = () => {
-    if (!connectors) return;
-    const tools = connectors.tools();
-    const deferred = new Set(tools.length >= settings.get<number>("mcp.eagerToolsThreshold") ? tools.map((t) => t.name) : []);
-    registry.setDynamic(tools, deferred);
-    registry.load(conversation.tools.map((t) => t.name).filter((n) => deferred.has(n)));
+    if (connectors) {
+      const tools = connectors.tools();
+      const deferred = new Set(tools.length >= settings.get<number>("mcp.eagerToolsThreshold") ? tools.map((t) => t.name) : []);
+      registry.setDynamic(tools, deferred);
+      registry.load(conversation.tools.map((t) => t.name).filter((n) => deferred.has(n)));
+    }
     conversation.extendTools(registry.list().map((t) => ({ name: t.name, description: t.description(toolEnv), inputSchema: t.inputSchema })));
+  };
+  // SPEC-EXT-019 EF-04, CA-02: a skill changed during the session is read again and the model is told.
+  const skillNotes: Reminder[] = [];
+  const refreshSkills = () => {
+    const stamp = skillsSignature(skillLocations);
+    if (stamp === skillsStamp) return;
+    skillsStamp = stamp;
+    const before = skillSet;
+    skillSet = loadSkills(skillLocations);
+    for (const w of skillSet.warnings) err(`avertissement : ${w}`);
+    const now = modelSkills(skillSet);
+    const was = new Map(modelSkills(before).map((s) => [s.name, s.description]));
+    const changed = now.filter((s) => was.get(s.name) !== s.description);
+    const removed = [...was.keys()].filter((n) => !now.some((s) => s.name === n));
+    if (changed.length + removed.length === 0) return;
+    if (now.length > 0) registry.addStatic(useSkillTool);
+    skillNotes.push({
+      type: "skills",
+      text: [
+        "The available skills changed.",
+        ...changed.map((s) => `- ${s.name}${was.has(s.name) ? " (updated)" : " (new)"}: ${s.description}`),
+        ...removed.map((n) => `- ${n}: no longer available.`),
+      ].join("\n"),
+      priority: 2,
+    });
   };
   let announcedDeferred = new Set<string>();
   let announcedSegment = -1;
   const connectorReminders = {
     type: "connectors",
     produce: (): Reminder[] => {
-      const out = connectorNotes.splice(0);
+      const out = [...skillNotes.splice(0), ...connectorNotes.splice(0)];
       if (!connectors) return out;
       if (conversation.segment !== announcedSegment) {
         announcedSegment = conversation.segment;
@@ -1211,6 +1265,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const loopDeps: LoopDeps = {
     beforeRequest: () => {
       applySettingsChanges();
+      refreshSkills();
       refreshConnectorTools();
     },
     fallback,
@@ -1256,7 +1311,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       permissionContext: () => ({
         mode: modeState.mode,
         rules,
-        sessionAllows,
+        sessionAllows: [...sessionAllows, ...skillAllows],
         managedRulesOnly: liveSettings.get<boolean>("permissions.managedRulesOnly"),
         cwd,
         home: system.home,
@@ -1291,11 +1346,31 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       else err(`avertissement : message d'entrée illisible, ignoré (ligne ${item.line}) : ${item.reason}`);
       continue;
     }
-    const result = await runTurn(loopDeps, item.content, controller.signal);
+    // SPEC-CMD-001 § 5.1, SPEC-EXT-020: a request `/<name> [arguments]` invokes a skill or a simple command; an
+    // unknown one is not sent to the model (FA-01 of SPEC-CMD-001).
+    let content: string | readonly ContentPart[] = item.content;
+    const first = typeof content === "string" ? content : content.find((p) => p.type === "text")?.text;
+    const entry = first !== undefined ? recognize(first) : undefined;
+    if (entry?.kind === "command") {
+      const loaded = loadSkill(skillSet, entry.name, entry.args, "user", { session: sessionId });
+      if (!loaded.ok) {
+        const message = loaded.message;
+        if (stream) stream.emit("error", { code: "invalid_command", message });
+        else err(message);
+        continue;
+      }
+      activateSkill(loaded.skill);
+      const text = framed(loaded.skill, loaded.content, `/${entry.name}${entry.args ? ` ${entry.args}` : ""}`);
+      content = typeof content === "string" ? text : content.map((p) => (p.type === "text" && p.text === first ? { type: "text" as const, text } : p));
+    } else if (entry?.kind === "text" && entry.text !== first) {
+      content = typeof content === "string" ? entry.text : content.map((p) => (p.type === "text" && p.text === first ? { type: "text" as const, text: entry.text } : p));
+    }
+    const result = await runTurn(loopDeps, content, controller.signal);
+    skillAllows.length = 0; // EF-02 of SPEC-EXT-020: the grants of a skill end with its turn
     results.push(result);
     // SPEC-SES-008 FA-01, EF-03: in a non-interactive run, the title is the beginning of the first message.
     if (transcript && results.length === 1 && !(reopened && sessionTitle(reopened.records) !== undefined)) {
-      const title = titleFrom(item.content);
+      const title = titleFrom(content);
       if (title) transcript.append("system", { event: "title", title, source: "first_message" });
     }
     if (stream) stream.emit("turn_completed", { turn: results.length, result: result.finalText, haltReason: result.stopCause });

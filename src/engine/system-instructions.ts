@@ -1,4 +1,4 @@
-// Implements: SPEC-MOT-003 (§ 5.3, FA-01, § 5.6 sections 1 to 4, 9, 10, 12 and 13, EF-01 to EF-05, EF-08, ERR-02 to ERR-04, RG-01, RG-03, CA-01 to CA-07),
+// Implements: SPEC-MOT-003 (§ 5.3, FA-01, § 5.6 sections 1 to 4, 8 to 10, 12 and 13, EF-01 to EF-05, EF-08, ERR-02 to ERR-04, RG-01, RG-03, CA-01 to CA-07),
 //             SPEC-MOT-004 (EF-03, EF-04, RG-03), SPEC-MOT-007 (EF-02)
 // Supports: decision D-12 (instructions frozen per segment), SPEC-MOT-045 (variants)
 
@@ -24,6 +24,8 @@ export interface InstructionsContext {
   readonly budgetTokens: number;
   /** Git state captured once at session start (section 10, increment 4); undefined outside a repository. */
   readonly gitState?: string;
+  /** Section 8: the skills the model may invoke, already rendered (SPEC-EXT-019 EF-01). */
+  readonly skills?: string;
   /** Section 12: the project instructions files, already rendered (SPEC-MOT-005). */
   readonly projectInstructions?: string;
   /** SPEC-MOT-004: replacement of the default sections and text added at the end. */
@@ -75,6 +77,8 @@ export function defaultSectionProviders(contract: () => ContractText = CURRENT_C
     { id: 2, name: "rules", stable: true, required: true, reducible: false, produce: (ctx) => contractSections(ctx, contract()).rules },
     { id: 3, name: "method", stable: true, required: false, reducible: false, produce: (ctx) => contractSections(ctx, contract()).method },
     { id: 4, name: "tools", stable: true, required: true, reducible: false, produce: (ctx) => contractSections(ctx, contract()).tools },
+    // Section 8 (SPEC-EXT-019 § 5.4 step 3): names and descriptions only; reducible by shortening the descriptions.
+    { id: 8, name: "skills", stable: false, required: false, reducible: true, produce: (ctx) => ctx.skills },
     {
       id: 9,
       name: "environment",

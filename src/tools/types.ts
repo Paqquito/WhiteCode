@@ -19,6 +19,8 @@ export type RuleSubject =
   | { readonly kind: "paths"; readonly access: "read" | "write"; readonly paths: readonly string[] }
   | { readonly kind: "command"; readonly command: string }
   | { readonly kind: "url"; readonly url: string }
+  /** A named element, such as a skill (`use_skill(<name>)`). */
+  | { readonly kind: "name"; readonly name: string }
   | { readonly kind: "none" };
 
 export interface ToolSettings {

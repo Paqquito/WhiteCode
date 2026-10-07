@@ -78,6 +78,8 @@ function actionOf(toolName: string, subject: RuleSubject): string {
       return `${toolName}(${subject.paths.join(", ")})`;
     case "url":
       return `${toolName}(${subject.url})`;
+    case "name":
+      return `${toolName}(${subject.name})`;
     case "none":
       return toolName;
   }

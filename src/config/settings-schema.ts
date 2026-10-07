@@ -180,6 +180,8 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "hooksConfig.http.allowedEnvVars", schema: strList(), default: [], scopes: [U, G], owner: "SPEC-HOK-004" },
   { key: "hooksConfig.maxAsync", schema: int(1, 64), default: 8, scopes: [U, G], owner: "SPEC-HOK-007" },
   { key: "hooksConfig.asyncKillOnExit", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-HOK-007" },
+  // SPEC-EXT-019: skills (lot 4).
+  { key: "skills.maxDescriptionsTokens", schema: int(100, 100_000), default: 4_000, scopes: [U, G], owner: "SPEC-EXT-019" },
   // SPEC-MCP-001 to 022, SPEC-PER-019: connectors (lot 3).
   { key: "mcp.enableProjectServers", schema: bool(), default: false, scopes: [U], owner: "SPEC-PER-019", widening: true },
   { key: "mcp.enabledProjectServers", schema: strList(), default: [], scopes: [U], owner: "SPEC-PER-019", widening: true },
