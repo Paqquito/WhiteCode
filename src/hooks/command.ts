@@ -26,6 +26,8 @@ export interface CommandHookOptions {
   /** `hooksConfig.outputMaxSize`: beyond, the output is cut (cas limites). */
   readonly outputMaxSize: number;
   readonly platform: PlatformName;
+  /** Stops the command (asynchronous hooks at the end of the session, SPEC-HOK-007 FA-01). */
+  readonly signal?: AbortSignal;
 }
 
 /** Arguments that make `shell` run `command` (ENF-01: POSIX shell and PowerShell). */
@@ -51,7 +53,10 @@ export async function runCommandHook(action: CommandAction, payload: string, o: 
     timedOut = true;
     void child.killTree(1_000); // FA-01: the whole process group
   }, o.timeoutMs);
+  const stop = () => void child.killTree(1_000);
+  o.signal?.addEventListener("abort", stop, { once: true });
   const exitCode = await child.exited;
   clearTimeout(timer);
+  o.signal?.removeEventListener("abort", stop);
   return { exitCode, timedOut, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8"), durationMs: Date.now() - started };
 }

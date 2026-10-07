@@ -78,7 +78,7 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "permissions.disableAutoApproveMode", schema: bool(), default: false, scopes: [G], owner: "SPEC-PER-003" },
   { key: "permissions.trustedDirectories", schema: strList(), default: [], scopes: [G], owner: "SPEC-PER-016", merge: "concat" },
   { key: "permissions.extraDirectories", schema: strList(), default: [], scopes: [U, G], owner: "SPEC-PER-011", merge: "concat", widening: true },
-  { key: "permissions.decisionHooks", schema: Type.Array(Type.Unknown()), default: [], scopes: [U, G], owner: "SPEC-PER-001", merge: "concat" },
+  { key: "permissions.decisionHooks", schema: Type.Array(Type.Unknown()), default: [], scopes: [U, G], owner: "SPEC-PER-001", merge: "concat", hot: true },
 
   // Engine
   { key: "engine.maxOutputContinuations", schema: int(0), default: 3, scopes: [U, P, G], owner: "SPEC-MOT-001" },
@@ -175,6 +175,11 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "hooksConfig.commandTimeout", schema: durationSchema(), kind: "duration", default: 60_000, scopes: [U, G], owner: "SPEC-HOK-003" },
   { key: "hooksConfig.outputMaxSize", schema: durationSchema(), kind: "size", default: 65_536, scopes: [U, G], owner: "SPEC-HOK-003" },
   { key: "hooksConfig.payloadMaxSize", schema: durationSchema(), kind: "size", default: 262_144, scopes: [U, G], owner: "SPEC-HOK-001" },
+  { key: "hooksConfig.http.timeout", schema: durationSchema(), kind: "duration", default: 10_000, scopes: [U, G], owner: "SPEC-HOK-004" },
+  { key: "hooksConfig.http.allowedUrls", schema: strList(), scopes: [U, G], owner: "SPEC-HOK-004" },
+  { key: "hooksConfig.http.allowedEnvVars", schema: strList(), default: [], scopes: [U, G], owner: "SPEC-HOK-004" },
+  { key: "hooksConfig.maxAsync", schema: int(1, 64), default: 8, scopes: [U, G], owner: "SPEC-HOK-007" },
+  { key: "hooksConfig.asyncKillOnExit", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-HOK-007" },
   { key: "environment.variables", schema: Type.Record(Type.String(), Type.String()), default: {}, scopes: [U, G], owner: "SPEC-CFG-007", widening: true },
 
   // Options forbidden by the managed policy (SPEC-MOD-011 § 11, decision D-13, gap E-029).

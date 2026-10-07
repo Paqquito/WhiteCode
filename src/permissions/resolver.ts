@@ -15,6 +15,8 @@ export interface ApprovalRequest {
   readonly callId: string;
   readonly toolName: string;
   readonly summary: string;
+  /** Parameters of the call, for the `approval_needed` hooks (SPEC-HOK-001 § 5.2). */
+  readonly input?: Readonly<Record<string, unknown>>;
   /** The call in rule syntax, such as `run_shell(bun test.js)`: names the exact action in a refusal (D-9). */
   readonly action?: string;
   readonly reason: string;

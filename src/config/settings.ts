@@ -107,6 +107,8 @@ export class Settings {
   readonly #values = new Map<string, unknown>();
   readonly #origins = new Map<string, Origin>();
   readonly #perScope = new Map<Origin, Map<string, unknown>>();
+  /** Sources (file paths or options) that defined each key, by scope. */
+  readonly #sources = new Map<Origin, Map<string, string[]>>();
   readonly issues: ConfigIssue[] = [];
 
   static load(options: LoadOptions): Settings {
@@ -132,6 +134,11 @@ export class Settings {
       if (map?.has(key)) out.push({ origin, value: map.get(key) });
     }
     return out;
+  }
+
+  /** Files (or options) of `origin` that define `key`: the location of a declaration (SPEC-PER-001 § 5.3 point c). */
+  sourcesOf(origin: Origin, key: string): readonly string[] {
+    return this.#sources.get(origin)?.get(key) ?? [];
   }
 
   isManaged(key: string): boolean {
@@ -201,7 +208,11 @@ export class Settings {
     const layer = this.#layer(source.scope);
     for (const [key, raw] of flat) {
       const value = this.#accept(source.scope, key, raw);
-      if (value !== undefined) layer.set(key, mergeInto(SETTING_BY_KEY.get(key)!, layer.get(key), value));
+      if (value === undefined) continue;
+      layer.set(key, mergeInto(SETTING_BY_KEY.get(key)!, layer.get(key), value));
+      let names = this.#sources.get(source.scope);
+      if (!names) this.#sources.set(source.scope, (names = new Map()));
+      names.set(key, [...(names.get(key) ?? []), source.name]);
     }
   }
 

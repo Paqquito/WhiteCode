@@ -1,39 +1,12 @@
 // Hooks: events and payloads (SPEC-HOK-001), configuration (SPEC-HOK-002), command hooks (SPEC-HOK-003), decisions
 // (SPEC-HOK-010) and administrator controls (SPEC-HOK-012). Hook commands are small Bun scripts, alike on every system.
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { PUBLIC_SECRET_VARIABLES } from "../src/config/environment";
 import { buildSnapshot, type SnapshotControls } from "../src/hooks/config";
-import { currentPlatform } from "../src/platform/system";
-import { detectPosixShell } from "../src/tools/shell-runtime";
-import { cli, loadIdentity, workspace, type Workspace } from "./helpers/env";
+import { cli, workspace, type Workspace } from "./helpers/env";
+import { answer, hook, platform, POSIX, prefix, productEnv, PROJECT_DIR, record } from "./helpers/hooks";
 import { ScriptedProvider } from "./helpers/scripted-provider";
-
-const platform = currentPlatform();
-const prefix = loadIdentity().get("ENV_PREFIX");
-const hostEnv: Record<string, string> = {};
-for (const [k, v] of Object.entries(process.env)) if (typeof v === "string") hostEnv[k] = v;
-const POSIX = detectPosixShell(undefined, hostEnv, platform);
-const BUN = process.execPath.replace(/\\/g, "/");
-const PROJECT_DIR = ".pilote-dev";
-
-function productEnv(ws: Workspace): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(hostEnv)) if (!k.startsWith(prefix) && !PUBLIC_SECRET_VARIABLES.includes(k)) out[k] = v;
-  return { ...out, HOME: ws.home, USERPROFILE: ws.home };
-}
-
-/** A hook command running `body` (TypeScript, with `payload` read from the standard input) through Bun. */
-function hook(ws: Workspace, name: string, body: string): string {
-  const path = ws.write(`scripts/${name}.ts`, `const payload = JSON.parse(await Bun.stdin.text());\n${body}\n`).replace(/\\/g, "/");
-  return POSIX ? `"${BUN}" "${path}"` : `& "${BUN}" "${path}"`;
-}
-const record = (ws: Workspace, name: string) => {
-  const out = join(ws.root, `${name}.jsonl`).replace(/\\/g, "/");
-  return { command: hook(ws, name, `const fs = await import("node:fs"); fs.appendFileSync(${JSON.stringify(out)}, JSON.stringify(payload) + "\\n");`), read: () => (existsSync(out) ? readFileSync(out, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []) };
-};
-const answer = (ws: Workspace, name: string, response: unknown) => hook(ws, name, `console.log(${JSON.stringify(JSON.stringify(response))});`);
 const results = (provider: ScriptedProvider, i: number) =>
   provider.requests[i]!.history.flatMap((m) => (m.role === "user" ? m.parts.filter((p) => p.type === "tool_result") : [])) as unknown as Array<{ isError: boolean; content: Array<{ text: string }> }>;
 const run = (ws: Workspace, provider: ScriptedProvider, userConfig: Record<string, unknown>, args: string[] = []) =>
@@ -134,9 +107,9 @@ describe("SPEC-HOK-002 configuration of the hooks", () => {
   });
 
   test("TECH — SPEC-HOK-002/ERR-01, ERR-02, EF-05 — unknown event with a suggestion, action types not delivered, invalid filter", () => {
-    const s = buildSnapshot([{ origin: "user", value: { befor_tool: one("x"), after_tool: [{ match: "a b", actions: [{ type: "command", command: "x" }] }, { actions: [{ type: "http", url: "https://x" }] }] } }], controls());
+    const s = buildSnapshot([{ origin: "user", value: { befor_tool: one("x"), after_tool: [{ match: "a b", actions: [{ type: "command", command: "x" }] }, { actions: [{ type: "prompt", prompt: "x" }] }] } }], controls());
     expect(s.warnings.join("\n")).toContain("Événement de crochet inconnu : befor_tool (portée user). Vouliez-vous dire : before_tool ?");
-    expect(s.warnings.join("\n")).toContain("le type « http » n'est pas disponible dans cette version");
+    expect(s.warnings.join("\n")).toContain("le type « prompt » n'est pas disponible dans cette version");
     expect(s.ignored.map((i) => i.reason)).toEqual(["filtre invalide : a b", "aucune action utilisable"]);
   });
 });

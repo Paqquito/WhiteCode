@@ -1,7 +1,8 @@
 // Implements: SPEC-HOK-002 (§ 5.1 format, § 5.2 sources and merging, § 5.4 steps 1 to 3, EF-01, EF-02, EF-04, EF-05 for optional declarations, ERR-01, ERR-02, CA-04, CA-05, CA-07),
-//             SPEC-HOK-012 (§ 5.1, § 5.3 steps 1 and 2, FA-01, EF-01 to EF-03, RG-01)
+//             SPEC-HOK-012 (§ 5.1, § 5.3 steps 1 and 2, FA-01, EF-01 to EF-03, RG-01), SPEC-HOK-004 (§ 5.1 fields of an `http` action)
 // Snapshot of the hooks of a session: declarations of every scope kept apart, filtered by the administrator controls.
 
+import { createHash } from "node:crypto";
 import { parseDuration } from "../config/units";
 import { suggest } from "../shared/suggest";
 import { HOOK_EVENTS } from "./events";
@@ -15,7 +16,14 @@ export interface CommandAction {
   readonly shell?: string;
 }
 
-export type HookAction = CommandAction;
+export interface HttpAction {
+  readonly type: "http";
+  readonly url: string;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly timeoutMs?: number;
+}
+
+export type HookAction = CommandAction | HttpAction;
 
 export interface HookDeclaration {
   readonly event: string;
@@ -28,6 +36,10 @@ export interface HookDeclaration {
   readonly mandatory: boolean;
   readonly async?: boolean;
   readonly scope: HookScope;
+  /** Settings file (or option) that declares the hook. */
+  readonly file: string;
+  /** Digest of the declaration as written: any change of it gives another fingerprint (SPEC-PER-001 § 5.3 point c). */
+  readonly fingerprint: string;
   /** Display name: `<scope>/<event>/<id or position>` (EF-03). */
   readonly label: string;
 }
@@ -37,6 +49,8 @@ export interface HookSnapshot {
   /** Declarations left aside and why (SPEC-HOK-012 EF-03). */
   readonly ignored: readonly { readonly label: string; readonly reason: string }[];
   readonly warnings: readonly string[];
+  /** `approval_needed` hooks habilitated to answer a request (SPEC-PER-001 § 5.3 point c). */
+  readonly habilitated?: ReadonlySet<HookDeclaration>;
 }
 
 export interface SnapshotControls {
@@ -50,7 +64,7 @@ export interface SnapshotControls {
   readonly maxTimeoutMs: number;
 }
 
-const TYPES_LATER = new Set(["http", "prompt", "agent"]);
+const TYPES_LATER = new Set(["prompt", "agent"]);
 const SCOPE_ORDER: readonly HookScope[] = ["managed", "cli", "local", "project", "user"];
 
 /** `match`: exact names, alternatives `a|b`, joker `*` (SPEC-HOK-002 § 5.1); undefined when invalid (EF-05). */
@@ -62,13 +76,51 @@ export function compileMatch(match: string | undefined): ((value: string | undef
   return (value) => value !== undefined && res.some((r) => r.test(value));
 }
 
+/** JSON with sorted keys, so that the fingerprint does not depend on the order of the keys. */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (typeof value === "object" && value !== null)
+    return `{${Object.keys(value)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonical((value as Record<string, unknown>)[k])}`)
+      .join(",")}}`;
+  return JSON.stringify(value) ?? "null";
+}
+
+export function fingerprintOf(event: string, declaration: unknown): string {
+  return `sha256:${createHash("sha256").update(canonical({ event, declaration })).digest("hex")}`;
+}
+
+/** An `http` action (SPEC-HOK-004 § 5.1): `https`, or `http` to the local host only; checked again before each request. */
+function httpAction(a: Record<string, unknown>, label: string, warnings: string[], maxTimeoutMs: number): HttpAction | undefined {
+  let url: URL;
+  try {
+    url = new URL(String(a["url"]));
+  } catch {
+    warnings.push(`Crochet ${label} : URL invalide ; action ignorée.`);
+    return undefined;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    warnings.push(`Crochet ${label} : schéma ${url.protocol} non admis (https, ou http vers l'hôte local) ; action ignorée.`);
+    return undefined;
+  }
+  const headers: Record<string, string> = {};
+  const raw = a["headers"];
+  if (raw !== undefined && (typeof raw !== "object" || raw === null || Array.isArray(raw) || Object.values(raw).some((v) => typeof v !== "string"))) warnings.push(`Crochet ${label} : en-têtes invalides (texte attendu) ; ignorés.`);
+  else if (raw) Object.assign(headers, raw);
+  const timeout = a["timeout"];
+  const timeoutMs = timeout === undefined ? undefined : parseDuration(timeout);
+  if (timeout !== undefined && timeoutMs === undefined) warnings.push(`Crochet ${label} : délai invalide ; délai par défaut appliqué.`);
+  return { type: "http", url: url.href, headers: Object.keys(headers).length > 0 ? headers : undefined, timeoutMs: timeoutMs === undefined ? undefined : Math.min(timeoutMs, maxTimeoutMs) };
+}
+
 /** Steps 1 and 2: declarations of each scope, validated, then filtered by the controls of SPEC-HOK-012. */
-export function buildSnapshot(byScope: ReadonlyArray<{ readonly origin: string; readonly value: unknown }>, controls: SnapshotControls): HookSnapshot {
+export function buildSnapshot(byScope: ReadonlyArray<{ readonly origin: string; readonly value: unknown; readonly file?: string }>, controls: SnapshotControls): HookSnapshot {
   const declarations: HookDeclaration[] = [];
   const ignored: Array<{ label: string; reason: string }> = [];
   const warnings: string[] = [];
   const sources = [...byScope].filter((s) => SCOPE_ORDER.includes(s.origin as HookScope)).sort((a, b) => SCOPE_ORDER.indexOf(a.origin as HookScope) - SCOPE_ORDER.indexOf(b.origin as HookScope));
-  for (const { origin, value } of sources) {
+  for (const { origin, value, file } of sources) {
     const scope = origin as HookScope;
     if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
     const seen = new Set<string>();
@@ -101,6 +153,11 @@ export function buildSnapshot(byScope: ReadonlyArray<{ readonly origin: string; 
         const actions: HookAction[] = [];
         for (const a of Array.isArray(d["actions"]) ? (d["actions"] as Array<Record<string, unknown>>) : []) {
           const type = String(a?.["type"]);
+          if (type === "http") {
+            const h = httpAction(a, label, warnings, controls.maxTimeoutMs);
+            if (h) actions.push(h);
+            continue;
+          }
           if (type !== "command") {
             warnings.push(TYPES_LATER.has(type) ? `Crochet ${label} : le type « ${type} » n'est pas disponible dans cette version ; action ignorée.` : `Type de crochet inconnu : ${type} (${label}).`); // ERR-02
             continue;
@@ -122,7 +179,7 @@ export function buildSnapshot(byScope: ReadonlyArray<{ readonly origin: string; 
         const key = JSON.stringify([event, match ?? "", actions]);
         if (seen.has(key)) return;
         seen.add(key);
-        declarations.push({ event, match, matches, actions, id, mandatory, async: d["async"] === true ? true : undefined, scope, label });
+        declarations.push({ event, match, matches, actions, id, mandatory, async: d["async"] === true ? true : undefined, scope, file: file ?? scope, fingerprint: fingerprintOf(event, raw), label });
       });
     }
   }

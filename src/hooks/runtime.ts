@@ -1,14 +1,18 @@
 // Implements: SPEC-HOK-001 (§ 5.1 common fields, § 5.4 steps 1 to 4, EF-01, EF-02, EF-04, RG-02, CA-01 to CA-03, CA-05), SPEC-HOK-002 (§ 5.4 step 3, CA-01),
-//             SPEC-HOK-003 (§ 5.1 variables, § 5.3 steps 4 and 5, FA-02, EF-02, EF-04, CA-01 to CA-04), SPEC-HOK-010 (§ 5.4 steps 1 and 6, EF-05, CA-01, CA-04, CA-05)
+//             SPEC-HOK-003 (§ 5.1 variables, § 5.3 steps 4 and 5, FA-02, EF-02, EF-04, CA-01 to CA-04), SPEC-HOK-010 (§ 5.4 steps 1 and 6, EF-05, CA-01, CA-04 to CA-07),
+//             SPEC-HOK-004 (§ 5.3 step 4, EF-05, ERR-01, ERR-02, CA-01 to CA-04), SPEC-HOK-007 (§ 5.3, FA-01, EF-01 to EF-03, ERR-01, RG-01, CA-01, CA-02),
+//             SPEC-PER-001 (§ 5.3 point c habilitated hook, CA-12, CA-19)
 // Supports: SPEC-MOT-001 (EF-08 hooks of the loop), SPEC-MOT-005 (`instructions_read`), SPEC-CFG-005 (`settings_modified`)
 // The hooks of a session: payloads, selection, execution in parallel, aggregation and the effects of the decisions.
 
 import type { HookBus, BeforeToolResult } from "../extension-points/hooks";
+import type { ApprovalHook, ApprovalRequest } from "../permissions/resolver";
 import type { ToolCall } from "../providers/types";
-import { aggregate, parseResponse, type ActionOutcome, type Aggregated } from "./aggregate";
+import { aggregate, parseResponse, type ActionOutcome, type Aggregated, type HookResponse } from "./aggregate";
 import { runCommandHook, type ShellChoice } from "./command";
-import type { HookDeclaration, HookSnapshot } from "./config";
-import { HOOK_EVENTS, PAYLOAD_SCHEMA_VERSION } from "./events";
+import type { HookDeclaration, HookSnapshot, HttpAction } from "./config";
+import { HOOK_EVENTS, PAYLOAD_SCHEMA_VERSION, type HookEventInfo } from "./events";
+import { createHttpAgents, runHttpHook, type Resolver } from "./http";
 import type { PlatformName } from "../platform/system";
 
 export interface HookRuntimeOptions {
@@ -25,17 +29,35 @@ export interface HookRuntimeOptions {
   readonly commandTimeoutMs: number;
   readonly outputMaxSize: number;
   readonly payloadMaxSize: number;
+  /** `hooksConfig.http.*` (SPEC-HOK-004 § 6); `resolve` replaces the system resolver in the tests. */
+  readonly http: { readonly timeoutMs: number; readonly allowedUrls?: readonly string[]; readonly allowedEnvVars: readonly string[]; readonly resolve?: Resolver };
+  /** `hooksConfig.maxAsync` and `hooksConfig.asyncKillOnExit` (SPEC-HOK-007 § 6). */
+  readonly maxAsync: number;
+  readonly asyncKillOnExit: boolean;
   /** Messages for the user: blocks, user messages, failures (SPEC-HOK-010 EF-05, SPEC-HOK-003 EF-02). */
   readonly report: (message: string) => void;
-  /** Context for the model, through a system reminder (SPEC-HOK-010 § 5.1). */
-  readonly addContext: (text: string, label: string) => void;
+  /** Context for the model, through a system reminder (SPEC-HOK-010 § 5.1); `origin` names the event, and the hook when it comes late. */
+  readonly addContext: (text: string, origin: string) => void;
   readonly clock?: () => Date;
+}
+
+interface Started {
+  readonly d: HookDeclaration;
+  readonly outcome: Promise<ActionOutcome>;
 }
 
 export class HookRuntime implements HookBus {
   readonly #o: HookRuntimeOptions;
   #snapshot: HookSnapshot;
   readonly #pending = new Set<Promise<unknown>>();
+  /** Asynchronous hooks: how many run, those waiting for a slot (ERR-01), and how to stop them (FA-01). */
+  #running = 0;
+  readonly #queue: Array<() => void> = [];
+  readonly #controllers = new Set<AbortController>();
+  #closed = false;
+  readonly #agents = createHttpAgents();
+  /** Non-habilitated `approval_needed` hooks already reported. */
+  readonly #reportedUnhabilitated = new Set<string>();
   /** Session variables returned by `session_opened` hooks (SPEC-HOK-010 § 5.1, SPEC-SES-018). */
   readonly sessionEnv: Record<string, string> = {};
 
@@ -81,9 +103,10 @@ export class HookRuntime implements HookBus {
     }
   }
 
-  async #runAction(d: HookDeclaration, index: number, payload: string, event: string, fields: Record<string, unknown>): Promise<ActionOutcome> {
+  async #runAction(d: HookDeclaration, index: number, payload: string, event: string, fields: Record<string, unknown>, signal?: AbortSignal): Promise<ActionOutcome> {
     const action = d.actions[index]!;
     const label = d.actions.length > 1 ? `${d.label}[${index + 1}]` : d.label;
+    if (action.type === "http") return this.#runHttp(d, label, action, payload, signal);
     const wanted = action.shell?.toLowerCase();
     const shell = wanted === "powershell" || wanted === "pwsh" ? (this.#o.shells.powershell ?? this.#o.shells.posix) : wanted !== undefined ? (this.#o.shells.posix ?? this.#o.shells.powershell) : (this.#o.shells.posix ?? this.#o.shells.powershell);
     if (!shell) return { label, mandatory: d.mandatory, failure: "aucun shell disponible pour exécuter la commande" };
@@ -99,7 +122,8 @@ export class HookRuntime implements HookBus {
       ...(file ? { [`${p}HOOK_FILE`]: file } : {}),
     });
     const timeoutMs = action.timeoutMs ?? this.#o.commandTimeoutMs;
-    const run = await runCommandHook(action, payload, { cwd: this.#o.cwd, env, shell, timeoutMs, outputMaxSize: this.#o.outputMaxSize, platform: this.#o.platform });
+    const run = await runCommandHook(action, payload, { cwd: this.#o.cwd, env, shell, timeoutMs, outputMaxSize: this.#o.outputMaxSize, platform: this.#o.platform, signal });
+    if (signal?.aborted) return { label, mandatory: d.mandatory, failure: "arrêté à la fin de la session (hooksConfig.asyncKillOnExit)" };
     if (run.timedOut) return { label, mandatory: d.mandatory, failure: `arrêté après ${Math.round(timeoutMs / 1000)} s` }; // ERR-02
     if (run.exitCode === 127) return { label, mandatory: d.mandatory, failure: "commande introuvable" }; // ERR-01
     if (run.exitCode !== 0) return { label, mandatory: d.mandatory, failure: `code de sortie ${run.exitCode}${run.stderr.trim() ? ` : ${run.stderr.trim().slice(0, 300)}` : ""}` }; // EF-02: never blocking
@@ -108,24 +132,103 @@ export class HookRuntime implements HookBus {
     return { label, mandatory: d.mandatory, response: parsed.response, text: parsed.response ? undefined : run.stdout.trim() || undefined };
   }
 
+  /** SPEC-HOK-004 step 4: a JSON response on 2xx, success without a body, otherwise a non-blocking failure (EF-05). */
+  async #runHttp(d: HookDeclaration, label: string, action: HttpAction, payload: string, signal?: AbortSignal): Promise<ActionOutcome> {
+    const h = this.#o.http;
+    const timeoutMs = action.timeoutMs ?? h.timeoutMs;
+    const run = await runHttpHook(action, payload, {
+      timeoutMs,
+      allowedUrls: h.allowedUrls,
+      allowedEnvVars: h.allowedEnvVars,
+      env: this.#o.environment({ ...this.sessionEnv }),
+      outputMaxSize: this.#o.outputMaxSize,
+      signal,
+      resolve: h.resolve,
+      agents: this.#agents,
+    });
+    for (const w of run.warnings) this.#o.report(`avertissement : crochet ${label} : ${w}`); // ERR-03
+    const failure = (f: string): ActionOutcome => ({ label, mandatory: d.mandatory, failure: f });
+    if (run.refused !== undefined) return failure(`Crochet HTTP refusé : adresse non autorisée (${run.refused}).`); // FA-01, ERR-01
+    if (run.timedOut) return failure(`Crochet HTTP sans réponse après ${Math.round(timeoutMs / 1000)} s.`); // ERR-02
+    if (run.error !== undefined) return failure(`échec réseau : ${run.error}`);
+    if (run.status === undefined || run.status < 200 || run.status > 299) return failure(`statut HTTP ${run.status ?? "inconnu"}`);
+    const body = run.body.trim();
+    if (body === "") return { label, mandatory: d.mandatory };
+    const parsed = body.startsWith("{") ? parseResponse(body) : { nonConforming: "corps non JSON" };
+    if (parsed.nonConforming !== undefined || !parsed.response) return failure(`réponse non conforme (${parsed.nonConforming ?? "corps non JSON"})`);
+    return { label, mandatory: d.mandatory, response: parsed.response };
+  }
+
   /** Steps 2 to 4 of SPEC-HOK-001 § 5.4 and the user-facing effects; undefined when no hook matched (FA-01). */
   async fire(event: string, fields: Record<string, unknown>): Promise<Aggregated | undefined> {
+    const started = this.#start(event, fields, this.#select(event, fields));
+    if (started.length === 0) return undefined;
+    return this.#apply(event, HOOK_EVENTS[event]!, await Promise.all(started.map((s) => s.outcome)));
+  }
+
+  /** Launches the selected hooks; those not awaited run in the background (SPEC-HOK-007). Returns the awaited ones, which run in parallel (RG-02). */
+  #start(event: string, fields: Record<string, unknown>, selected: readonly HookDeclaration[]): Started[] {
+    if (selected.length === 0) return [];
     const info = HOOK_EVENTS[event]!;
-    const selected = this.#select(event, fields);
-    if (selected.length === 0) return undefined;
     const payload = this.#payload(event, fields);
-    const runs = selected.flatMap((d) => d.actions.map((_, i) => ({ d, run: () => this.#runAction(d, i, payload, event, fields) })));
-    const waited = runs.filter((r) => info.synchronous && !r.d.async);
-    // Asynchronous hooks are not awaited (SPEC-HOK-007); the session waits for them before it ends.
-    for (const r of runs.filter((x) => !waited.includes(x))) {
-      const p = r.run().then((o) => {
-        if (o.failure !== undefined) this.#o.report(`avertissement : crochet ${o.label} (${event}) : ${o.failure}`);
+    const waited: Started[] = [];
+    for (const d of selected)
+      d.actions.forEach((_, i) => {
+        if (!info.synchronous || d.async) this.#background(d, i, payload, event, fields, info);
+        else waited.push({ d, outcome: this.#runAction(d, i, payload, event, fields) });
       });
+    return waited;
+  }
+
+  /** A hook that is not awaited (EF-01); an asynchronous one waits for a slot (EF-03, ERR-01) and can be stopped at the end (FA-01). */
+  #background(d: HookDeclaration, index: number, payload: string, event: string, fields: Record<string, unknown>, info: HookEventInfo): void {
+    const late = d.async === true;
+    const launch = () => {
+      const controller = new AbortController();
+      if (late) {
+        this.#running++;
+        this.#controllers.add(controller);
+      }
+      const p: Promise<void> = this.#runAction(d, index, payload, event, fields, late ? controller.signal : undefined)
+        .then((o) => this.#deliver(o, event, info, late))
+        .finally(() => {
+          this.#pending.delete(p);
+          if (!late) return;
+          this.#controllers.delete(controller);
+          this.#running--;
+          this.#queue.shift()?.();
+        });
       this.#pending.add(p);
-      void p.finally(() => this.#pending.delete(p));
+    };
+    if (late && this.#running >= this.#o.maxAsync) this.#queue.push(launch);
+    else launch();
+  }
+
+  /** Result of a hook that was not awaited: failures and messages reported, context kept for the next safe point (§ 5.3 step 2). */
+  #deliver(o: ActionOutcome, event: string, info: HookEventInfo, late: boolean): void {
+    if (o.failure !== undefined) {
+      this.#o.report(`avertissement : crochet ${o.label} (${event}) : ${o.failure}`);
+      return;
     }
-    if (waited.length === 0) return undefined;
-    const outcomes = await Promise.all(waited.map((r) => r.run())); // RG-02 of SPEC-HOK-010: in parallel
+    let response: HookResponse | undefined = o.response;
+    if (response) {
+      // EF-02: the decision of a hook that is not awaited comes too late; its decisional fields are ignored.
+      const { decision, reason: _reason, modifiedInput, stopTurn, haltReason: _halt, sessionEnv, ...rest } = response;
+      const ignored = Object.entries({ decision, modifiedInput, stopTurn, sessionEnv })
+        .filter(([, v]) => v !== undefined)
+        .map(([k]) => k);
+      if (ignored.length > 0) this.#o.report(`avertissement : crochet ${o.label} (${event}) : ${ignored.join(", ")} ignoré${ignored.length > 1 ? "s" : ""} : un crochet ${late ? "asynchrone" : "de cet événement"} ne décide pas.`);
+      response = rest;
+    }
+    const r = aggregate({ ...info, decisions: [] }, [{ ...o, response }]);
+    for (const n of r.notices) this.#o.report(`avertissement : ${n}`);
+    for (const m of r.userMessages) this.#o.report(`crochet ${m}`);
+    // FA-01: once the session is over, no context is delivered; RG-01: a late context names its hook and event.
+    if (!this.#closed) for (const c of r.context) this.#o.addContext(c, late ? `${event}, asynchronous hook ${o.label}` : event);
+  }
+
+  /** Steps 5 and 6 of SPEC-HOK-010 § 5.4: aggregation, then the effects visible to the user. */
+  #apply(event: string, info: HookEventInfo, outcomes: readonly ActionOutcome[]): Aggregated {
     const result = aggregate(info, outcomes);
     for (const n of result.notices) this.#o.report(`avertissement : ${n}`);
     for (const m of result.userMessages) this.#o.report(`crochet ${m}`);
@@ -136,10 +239,53 @@ export class HookRuntime implements HookBus {
     return result;
   }
 
-  /** Waits for the hooks still running without being awaited (end of session). */
+  /** Waits for the hooks still running without being awaited. */
   async settle(): Promise<void> {
-    await Promise.allSettled([...this.#pending]);
+    while (this.#pending.size > 0) await Promise.allSettled([...this.#pending]);
   }
+
+  /**
+   * End of the session (SPEC-HOK-007 FA-01): no more context is delivered; asynchronous hooks go on until their time
+   * limit, or are stopped with `hooksConfig.asyncKillOnExit`; the other hooks always finish.
+   */
+  async close(): Promise<void> {
+    this.#closed = true;
+    if (this.#o.asyncKillOnExit) {
+      this.#queue.length = 0;
+      for (const c of this.#controllers) c.abort();
+    }
+    await this.settle();
+    this.#agents.http.destroy();
+    this.#agents.https.destroy();
+  }
+
+  /**
+   * SPEC-PER-001 § 5.3 point c: the `approval_needed` hooks run; only the habilitated ones decide (RG-06), and a failed
+   * mandatory control refuses. Undefined when no habilitated hook decided.
+   */
+  readonly approvalHook: ApprovalHook = {
+    decide: async (request: ApprovalRequest) => {
+      const event = "approval_needed";
+      const fields = { toolId: request.toolName, toolArguments: request.input ?? {}, suggestions: request.suggestions, reason: request.reason, origin: request.origin };
+      const started = this.#start(event, fields, this.#select(event, fields));
+      if (started.length === 0) return undefined;
+      const habilitated = this.#snapshot.habilitated ?? new Set<HookDeclaration>();
+      const outcomes = await Promise.all(
+        started.map(async ({ d, outcome }): Promise<ActionOutcome> => {
+          const o = await outcome;
+          if (habilitated.has(d) || o.failure !== undefined || o.response?.decision === undefined) return o;
+          if (!this.#reportedUnhabilitated.has(d.label)) {
+            this.#reportedUnhabilitated.add(d.label);
+            this.#o.report(`avertissement : crochet ${d.label} : non habilité à répondre aux demandes (permissions.decisionHooks) ; sa décision est ignorée.`);
+          }
+          const { decision: _decision, reason: _reason, ...rest } = o.response;
+          return { ...o, response: rest };
+        }),
+      );
+      const r = this.#apply(event, HOOK_EVENTS[event]!, outcomes);
+      return r.decision === "allow" || r.decision === "deny" ? r.decision : undefined;
+    },
+  };
 
   // HookBus: the moments of the engine.
 
@@ -191,4 +337,3 @@ export class HookRuntime implements HookBus {
     await this.fire("session_opened", { source: "condense" });
   }
 }
-

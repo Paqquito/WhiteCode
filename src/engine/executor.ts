@@ -322,6 +322,7 @@ export class ResponseExecution {
         callId: call.callId,
         toolName: tool.name,
         summary: tool.summary(call.input as never),
+        input: call.input as Record<string, unknown>,
         action: actionOf(tool.name, subject),
         reason: decision.reason,
         origin: decision.origin,
