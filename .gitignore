@@ -6,3 +6,4 @@ src/identity/generated/
 .env
 # Lock file of the coding assistant, never versioned.
 .claude/scheduled_tasks.lock
+.claude/
