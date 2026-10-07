@@ -22,6 +22,8 @@ import { InputAssist, type AssistOptions } from "./assist";
 import type { UsageStats } from "./completion";
 import type { InputHistory } from "./history";
 import { MarkdownRenderer, type MarkdownOptions } from "../ui/markdown";
+import { isShellLine } from "./shell-mode";
+import { containsSecret } from "../shared/secrets";
 import { diffNode, type DiffOptions } from "../ui/diff-view";
 import { activityView, interruptionView, modelView, noticeView, toolCallView, toolResultView, userView, type ViewContext } from "./views";
 
@@ -49,7 +51,11 @@ export interface InputState {
   readonly stash: readonly string[];
 }
 
-export type Entry = { readonly kind: "message"; readonly text: string } | { readonly kind: "exit" };
+/**
+ * An entry of the user. `literal`: the line starts with pasted text that stays text, never a command nor a shell line
+ * (SPEC-IHM-010 EF-09); `pasted`: the texts pasted in it, which never make an active reference (EF-10).
+ */
+export type Entry = { readonly kind: "message"; readonly text: string; readonly literal?: boolean; readonly pasted?: readonly string[] } | { readonly kind: "exit" };
 
 interface Choice {
   readonly label: string;
@@ -99,6 +105,12 @@ export interface AppOptions {
   /** Sources of the completion (SPEC-IHM-009); absent when it is disabled. */
   readonly completion?: AssistOptions["completion"];
   readonly usage?: Map<string, UsageStats>;
+  /** Shell mode (SPEC-IHM-012): enabled, and the name of the interpreter shown by the indicator. */
+  readonly shell?: { readonly enabled: boolean; readonly label: string };
+  /** Pastes (SPEC-IHM-010 § 5.2, § 11). */
+  readonly paste?: { readonly collapseThreshold: number; readonly maxChars: number; readonly detectHeuristic: boolean };
+  /** Files that a `@` reference of the input will attach at sending (EF-10: shown before sending). */
+  readonly attachments?: (text: string, pasted: readonly string[]) => readonly string[];
   /** Rich text of the answers (SPEC-IHM-003, SPEC-IHM-004) and differences of the changes (SPEC-IHM-005). */
   readonly render?: { readonly markdown: MarkdownOptions; readonly diff: DiffOptions };
   readonly clock?: () => number;
@@ -127,6 +139,15 @@ export class InteractiveApp {
   #stream = "";
   /** Renderer of the response being produced: its finished blocks are not parsed again (ENF-02 of SPEC-IHM-003). */
   #streamRenderer: MarkdownRenderer | undefined;
+  /** Pasted contents folded in the input, by their compact reference (SPEC-IHM-010 § 5.2). */
+  readonly #pastes = new Map<string, string>();
+  #pasteCount = 0;
+  /** Texts pasted in the current input (EF-10). */
+  #pasted: string[] = [];
+  /** The input starts with a pasted `/` or `!`: it stays text (EF-09); `uncertain`: detected by the heuristic only. */
+  #literalLead: "certain" | "uncertain" | undefined;
+  /** Output of the shell command running (SPEC-IHM-012 EF-04). */
+  #shellOutput: string | undefined;
   /** The text of the current response was committed before its end (by a call of a tool). */
   #responseCommitted = false;
   #exitArmed: { combo: string; until: number } | undefined;
@@ -153,6 +174,7 @@ export class InteractiveApp {
       usage: o.usage,
       notice: (m) => this.notice("warning", m),
       now: () => this.#now,
+      inactive: () => this.shellLine,
     });
   }
 
@@ -164,6 +186,37 @@ export class InteractiveApp {
   setKeymap(keymap: Keymap): void {
     this.#keymap = keymap;
     this.#redraw();
+  }
+
+  /** The input is a line of the shell mode (SPEC-IHM-012 § 5.1). */
+  get shellLine(): boolean {
+    return this.#o.shell?.enabled === true && this.#literalLead === undefined && isShellLine(this.#editor.text);
+  }
+
+  /** SPEC-IHM-012 § 5.2: a shell command starts; its line is shown, its output follows as it comes (EF-04). */
+  shellStarted(command: string): void {
+    this.commit(box([text([{ text: "! ", style: { bold: true, fg: { ansi: 5 } } }, { text: command, style: { bold: true } }])]));
+    this.#shellOutput = "";
+    this.#activity = "Commande en cours…";
+    this.#redraw();
+  }
+
+  shellOutput(chunk: string): void {
+    if (this.#shellOutput === undefined) return;
+    this.#shellOutput += chunk;
+    this.#redraw();
+  }
+
+  /** Step 4: the output kept, bounded (FA-05), then the exit code, highlighted when not zero; the context mention (EF-05). */
+  shellEnded(o: { readonly output: string; readonly exitCode: number | null; readonly interrupted: boolean; readonly maxBytes: number; readonly addedToContext: boolean }): void {
+    this.#shellOutput = undefined;
+    let shown = o.output.replace(/\s+$/, "");
+    const bytes = Buffer.byteLength(shown, "utf8");
+    if (bytes > o.maxBytes) shown = `${Buffer.from(shown, "utf8").subarray(0, o.maxBytes).toString("utf8")}\n… sortie tronquée à l'affichage (${bytes} octets au total)`;
+    if (shown) this.commit(box([text(shown, { overflow: "clip" })], { padding: { left: 2 } }));
+    const t = tone(o.exitCode === 0 && !o.interrupted ? "success" : "error", this.#view.unicode);
+    const status = o.interrupted ? "commande interrompue" : `code de retour ${o.exitCode ?? "inconnu"}`;
+    this.commit(box([text([{ text: `  ${t.symbol} ${status}`, style: o.exitCode === 0 && !o.interrupted ? { dim: true } : t.style }, ...(o.addedToContext ? [{ text: " · ajoutée au contexte de la conversation", style: { dim: true } }] : [])])]));
   }
 
   get viewContext(): ViewContext {
@@ -253,8 +306,16 @@ export class InteractiveApp {
     switch (e.type) {
       case "user_message": {
         if (e.synthetic) break;
-        const content = e.content.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
+        const texts = e.content.flatMap((p) => (p.type === "text" ? [p.text] : []));
+        const attached = texts.filter((t) => t.startsWith("<attached-file "));
+        const content = texts.filter((t) => !t.startsWith("<attached-file ")).join("\n");
         if (content) this.commit(userView(content, this.#view));
+        // SPEC-IHM-010 § 10: an attachment is shown by a compact line, its content went to the model.
+        for (const a of attached) {
+          const path = /path="([^"]*)"/.exec(a)?.[1] ?? "?";
+          const lines = a.split("\n").length - 2;
+          this.notice("system", `Pièce jointe : ${path} (${lines} ligne${lines > 1 ? "s" : ""})`);
+        }
         break;
       }
       case "text_delta":
@@ -524,18 +585,23 @@ export class InteractiveApp {
   // ---- Keys ---------------------------------------------------------------------------------------------------------
 
   #input(data: string): void {
+    // SPEC-IHM-010 § 5.1, FA-06: without the framing of the terminal, several characters arriving at once are a paste.
+    if (this.#o.paste?.detectHeuristic !== false && !data.includes("\u001b") && [...data].length > 1 && /[^\r\n]/.test(data)) {
+      this.#event({ kind: "paste", text: data }, true);
+      return;
+    }
     const events = this.#keys.feed(data);
     // A lone escape is a key of its own (terminals send whole sequences in one chunk).
     if (data === "\u001b") events.push(...this.#keys.flush());
     for (const e of events) this.#event(e);
   }
 
-  #event(e: InputEvent): void {
+  #event(e: InputEvent, uncertain = false): void {
     if (e.kind === "paste") {
       // SPEC-IHM-010 EF-01: a paste never sends anything, whatever it contains.
       const active = this.#approvals[0]?.explaining;
       if (active) active.insert(e.text.replace(/\r\n?/g, "\n"));
-      else if (!this.#approvals[0] && !this.#confirm) this.#insert(e.text.replace(/\r\n?/g, "\n"));
+      else if (!this.#approvals[0] && !this.#confirm) this.#paste(e.text.replace(/\r\n?/g, "\n"), uncertain);
       this.#redraw();
       return;
     }
@@ -590,6 +656,10 @@ export class InteractiveApp {
     const before = this.#editor.text;
     const caret = this.#editor.caret;
     this.#inputAction(e, action);
+    if (this.#editor.text.trim() === "") {
+      this.#literalLead = undefined;
+      this.#pasted = [];
+    }
     // The completion follows the text and the caret; an edit ends the browsing of the history.
     if (action !== "input.up" && action !== "input.down" && action !== "input.submit") {
       if (this.#editor.text !== before) this.#assist.edited();
@@ -612,6 +682,45 @@ export class InteractiveApp {
       return;
     }
     this.#armedExit("ctrl+c");
+  }
+
+  /** § 5.2: a short paste is inserted as it is; a long one is folded under a compact reference, kept whole for sending. */
+  #paste(text: string, uncertain: boolean): void {
+    const o = this.#o.paste ?? { collapseThreshold: 2_000, maxChars: 500_000, detectHeuristic: true };
+    if (text.length > o.maxChars) {
+      this.notice("warning", `Contenu trop volumineux (${text.length} caractères) : joignez-le sous forme de fichier.`); // ERR-01, FA-01
+      return;
+    }
+    const startsInput = this.#editor.text.trim() === "";
+    let inserted = text;
+    if (text.length > o.collapseThreshold) {
+      const lines = text.split("\n").length;
+      inserted = `[Texte collé n°${++this.#pasteCount} : ${lines} ligne${lines > 1 ? "s" : ""}, ${text.length} caractères]`;
+      this.#pastes.set(inserted, text);
+    }
+    if (!this.#editor.insert(inserted)) {
+      this.notice("warning", "Saisie trop longue.");
+      return;
+    }
+    this.#pasted.push(text);
+    // EF-09: a pasted `/` or `!` at the start stays text.
+    if (startsInput && /^\s*[/!]/.test(text)) this.#literalLead = uncertain ? "uncertain" : "certain";
+    if (containsSecret(text)) this.notice("warning", "Le texte collé semble contenir une valeur sensible : vérifiez-le avant l'envoi."); // § 12
+    this.#assist.edited();
+    this.#saveState();
+  }
+
+  /** The input with its folded pastes restored (CA-03). */
+  #expanded(text: string): string {
+    let out = text;
+    for (const [ref, content] of this.#pastes) out = out.split(ref).join(content);
+    return out;
+  }
+
+  /** EF-07: the folded pastes unfolded in the input, to be checked before sending. */
+  #unfoldPastes(): void {
+    const expanded = this.#expanded(this.#editor.text);
+    if (expanded !== this.#editor.text) this.#editor.set(expanded);
   }
 
   #insert(text: string): void {
@@ -669,6 +778,13 @@ export class InteractiveApp {
       case "history.search":
         this.#assist.startSearch();
         return;
+      case "paste.interpret":
+        // EF-09 of SPEC-IHM-010: the explicit action that lets a pasted line be a command or a shell line.
+        this.#literalLead = undefined;
+        return;
+      case "paste.unfold":
+        this.#unfoldPastes();
+        break;
       case "input.deleteBack":
         ed.backspace();
         break;
@@ -718,10 +834,24 @@ export class InteractiveApp {
 
   /** Validation (§ 5.5): sends when idle, queues during a turn (FA-01, SPEC-IHM-011 § 5.1); an empty input sends nothing. */
   #submit(): void {
-    const content = this.#editor.text;
-    if (content.trim() === "") return; // EF-06, CA-06
-    this.#assist.submitted(content); // § 5.1 of SPEC-IHM-008: messages and commands are recorded
-    if (EXIT_COMMAND.test(content)) {
+    const typed = this.#editor.text;
+    if (typed.trim() === "") return; // EF-06, CA-06
+    const content = this.#expanded(typed);
+    const literal = this.#literalLead;
+    if (literal === "uncertain") {
+      // CA-09 of SPEC-IHM-010: the origin is uncertain; executing as a command needs a confirmation.
+      void this.confirm(`Cette ligne semble collée : « ${content.split("\n")[0]!.slice(0, 60)} ». L'exécuter comme commande ?`, "exécuter", "envoyer comme texte").then((yes) => {
+        this.#literalLead = yes ? undefined : "certain";
+        this.#submit();
+      });
+      return;
+    }
+    this.#assist.submitted(typed); // § 5.1 of SPEC-IHM-008: messages and commands are recorded
+    const pasted = this.#pasted;
+    this.#pasted = [];
+    this.#literalLead = undefined;
+    this.#pastes.clear();
+    if (EXIT_COMMAND.test(content) && !literal) {
       this.#editor.set("");
       this.#saveState();
       void this.requestExit({ byCommand: true });
@@ -743,7 +873,7 @@ export class InteractiveApp {
     this.#saveState();
     const w = this.#waiting;
     this.#waiting = undefined;
-    w({ kind: "message", text: content });
+    w({ kind: "message", text: content, ...(literal ? { literal: true } : {}), ...(pasted.length > 0 ? { pasted } : {}) });
   }
 
   #stashDraft(): void {
@@ -791,6 +921,11 @@ export class InteractiveApp {
     // The list of completion and the search band, right above the input area.
     if (!approval && !this.#confirm) panels.push(...this.#assist.panels());
     const stream: Node[] = [];
+    if (this.#shellOutput !== undefined) {
+      // SPEC-IHM-012 EF-04: the output as it comes, its last lines shown while it runs.
+      const tail = this.#shellOutput.split("\n").slice(-30).join("\n");
+      stream.push(box([text([{ text: tail, style: { dim: true } }], { overflow: "clip" })], { padding: { left: 2 } }));
+    }
     if (this.#stream) {
       // § 5.2 of SPEC-IHM-003: the content being produced is rendered by its probable intention.
       if (this.#o.render && !this.#streamRenderer) this.#streamRenderer = new MarkdownRenderer(this.#o.render.markdown, this.#view.unicode);
@@ -824,17 +959,25 @@ export class InteractiveApp {
       cursor = cursor ? { row: cursor.row - start, col: cursor.col } : undefined;
     }
     while (lines.length < this.#o.settings.inputMinHeight) lines.push([]);
-    const prompt = spansToLines([{ text: this.#view.unicode === "full" ? "› " : "> ", style: { bold: true } }])[0]!;
+    // SPEC-IHM-012 § 5.1, EF-03, CA-01: the shell mode is visible before any validation, by its prompt and its frame.
+    const shell = this.shellLine;
+    const prompt = spansToLines([{ text: shell ? "! " : this.#view.unicode === "full" ? "› " : "> ", style: shell ? { bold: true, fg: { ansi: 5 } } : { bold: true } }])[0]!;
     const indent: Cell[] = spansToLines([{ text: "  " }])[0]!;
     const rows = lines.map((l, i) => [...(i === 0 ? prompt : indent), ...l]);
     const extra: string[] = [];
+    if (shell) extra.push(`Mode shell : la ligne est exécutée par ${this.#o.shell!.label} ; elle n'est pas envoyée au modèle.`);
+    if (this.#literalLead === "certain") extra.push("Texte collé : il sera envoyé comme texte (Ctrl+O : l'interpréter comme commande).");
+    if (this.#pastes.size > 0) extra.push("Alt+P : déplier les textes collés pour les vérifier.");
+    // EF-10 of SPEC-IHM-010: the attachments are visible before sending.
+    const files = this.#o.attachments?.(this.#expanded(ed.text), this.#pasted) ?? [];
+    if (files.length > 0) extra.push(`Pièces jointes à l'envoi : ${files.join(", ")}`);
     if (hidden > 0) extra.push(`${hidden} ligne${hidden > 1 ? "s" : ""} hors de la vue`);
     if (ed.text.length > this.#o.settings.inputWarnChars) extra.push(`${ed.text.length} caractères : risque de saturer le contexte`); // FA-02
     // FA-06, RG-02 of SPEC-IHM-007: a doubled trigger character is shown as it will be sent.
-    const sent = this.#transformed(ed.text);
+    const sent = shell || this.#literalLead ? undefined : this.#transformed(ed.text);
     if (sent !== undefined) extra.push(`Envoyé tel quel : ${sent.split("\n")[0]}`);
     const node = box([{ kind: "lines", lines: rows, cursor: cursor ? { row: cursor.row, col: cursor.col + 2 } : undefined }, ...extra.map((x) => text([{ text: x, style: { dim: true } }], { overflow: "clip" }))], {
-      border: { style: { dim: true } },
+      border: { style: shell ? { fg: { ansi: 5 } } : { dim: true } },
       padding: { left: 1, right: 1 },
     });
     return node;

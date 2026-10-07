@@ -253,6 +253,16 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "ui.diff.maxDisplayedLines", schema: int(10, 1_000_000), default: 500, scopes: [U], owner: "SPEC-IHM-005" },
   { key: "ui.diff.intralineHighlight", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-005" },
   { key: "ui.diff.showInvisibleChanges", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-005" },
+  // SPEC-IHM-010: pastes and attachments; SPEC-IHM-012: shell mode (lot 5; values in English, gap E-098).
+  { key: "ui.paste.collapseThreshold", schema: int(10, 10_000_000), default: 2_000, scopes: [U], owner: "SPEC-IHM-010" },
+  { key: "ui.paste.maxChars", schema: int(100, 100_000_000), default: 500_000, scopes: [U], owner: "SPEC-IHM-010" },
+  { key: "ui.paste.detectHeuristic", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-010" },
+  { key: "ui.attachments.maxCount", schema: int(1, 1_000), default: 20, scopes: [U], owner: "SPEC-IHM-010" },
+  { key: "ui.attachments.maxTotalBytes", schema: int(1_024, 1_000_000_000), default: 20_971_520, scopes: [U], owner: "SPEC-IHM-010" },
+  { key: "ui.shellMode.enabled", schema: bool(), default: true, scopes: [U, P, G], owner: "SPEC-IHM-012", restrictiveValues: [false] },
+  { key: "ui.shellMode.addToContext", schema: enumOf(["always", "ask", "never"]), default: "always", scopes: [U], owner: "SPEC-IHM-012" },
+  { key: "ui.shellMode.timeoutMs", schema: int(1_000, 86_400_000), default: 120_000, scopes: [U], owner: "SPEC-IHM-012" },
+  { key: "ui.shellMode.maxOutputBytes", schema: int(1_024, 100_000_000), default: 65_536, scopes: [U], owner: "SPEC-IHM-012" },
   // SPEC-IHM-014: key bindings; SPEC-CMD-001: commands (lot 5).
   { key: "ui.keybindings.bindings", schema: Type.Record(Type.String(), Type.Union([Type.String(), Type.Array(Type.String())])), default: {}, scopes: [U], owner: "SPEC-IHM-014" },
   { key: "ui.keybindings.showFooterHints", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-014" },

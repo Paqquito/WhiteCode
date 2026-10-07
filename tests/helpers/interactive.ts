@@ -44,7 +44,12 @@ export interface InteractiveRun {
   screen(): string[];
   /** Scrollback and visible rows. */
   all(): string[];
+  /** Keys as typed: plain text arrives one character at a time; escape sequences as they are. */
   type(data: string): void;
+  /** A paste framed by the terminal. */
+  paste(text: string): void;
+  /** Raw input in one chunk (a paste without framing, for the heuristic). */
+  raw(data: string): void;
   /** Waits until `predicate` holds for the whole text (scrollback and screen). */
   waitFor(predicate: (text: string) => boolean, what?: string, timeoutMs?: number): Promise<void>;
   /** Waits until the product is ready for an entry (the placeholder of an idle input area). */
@@ -53,6 +58,7 @@ export interface InteractiveRun {
 }
 
 export const IDLE_PLACEHOLDER = "Votre message";
+const ESC = String.fromCharCode(27);
 
 export function interactive(
   argv: string[],
@@ -84,7 +90,12 @@ export function interactive(
     done,
     screen: () => term.vt.screen(),
     all: () => term.vt.all(),
-    type: (data) => term.type(data),
+    type: (data) => {
+      if (data.includes(ESC)) term.type(data);
+      else for (const ch of data) term.type(ch);
+    },
+    paste: (t) => term.type(`${ESC}[200~${t}${ESC}[201~`),
+    raw: (data) => term.type(data),
     finished: () => finished,
     async waitFor(predicate, what = "condition", timeoutMs = 8_000) {
       const end = Date.now() + timeoutMs;

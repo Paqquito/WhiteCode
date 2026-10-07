@@ -82,6 +82,8 @@ import { replayHistory } from "../interactive/replay";
 import { runInteractiveLoop } from "../interactive/session";
 import { literalTriggers } from "../interactive/triggers";
 import { detectCapabilities } from "../ui/capabilities";
+import { isShellLine, runShellLine, shellCommand, shellObservation, shellOf } from "../interactive/shell-mode";
+import { attach, attachable } from "../interactive/attachments";
 import { box, text, type Node } from "../ui/layout";
 import { CommandCatalog, promptUsage, type InternalCommand } from "../commands/catalog";
 import { INTERNAL_COMMANDS } from "../commands/internal";
@@ -1240,6 +1242,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     startedAt: runStarted,
   });
   const progress = settings.get<boolean>("engine.nonInteractive.progressToStderr");
+  // SPEC-IHM-012 § 5.3: the commands of the shell mode, added to the context of the next request as observations.
+  const shellObservations: Reminder[] = [];
   // The interactive application shows the events itself (SPEC-MOD-001 § 5.2 step 5).
   let app: InteractiveApp | undefined;
   const emit = (event: EngineEvent) => {
@@ -1339,6 +1343,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       interruptionProducer(reopened?.history),
       { type: "hook_context", produce: () => hookContext.splice(0) },
       todoReminderProducer(taskList, settings.get<number>("context.reminders.todoInterval")),
+      { type: "shell_observation", produce: () => shellObservations.splice(0) },
       connectorReminders,
     ],
     settings.get<number>("context.reminders.maxTokens"),
@@ -1385,6 +1390,15 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     void hooks.fire("settings_modified", { keys: reload.changed, scope: reload.scopes.join(",") }); // SPEC-CFG-005 step 6
   };
 
+  // SPEC-IHM-010 § 5.4: the files referenced by `@`, read at sending within the allowed folders.
+  const attachmentOptions = () => ({
+    cwd,
+    allowedDirectories,
+    platform: system.platform,
+    readDenied,
+    maxCount: settings.get<number>("ui.attachments.maxCount"),
+    maxTotalBytes: settings.get<number>("ui.attachments.maxTotalBytes"),
+  });
   // SPEC-IHM-014 § 5.4: the key bindings of the session, the invalid ones reported without stopping the others (EF-04).
   let keymap = new Keymap();
   // SPEC-MOD-001: the interactive application, also the human authority of the permission decisions (SPEC-IHM-027).
@@ -1478,6 +1492,13 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       completion,
       usage: completionUsage,
       render: renderOptions(settings),
+      shell: { enabled: settings.get<boolean>("ui.shellMode.enabled"), label: shellOf({ platform: system.platform, hasPosix: posixShell !== undefined, hasPowerShell: powerShell !== undefined })?.label ?? "le shell" },
+      paste: {
+        collapseThreshold: settings.get<number>("ui.paste.collapseThreshold"),
+        maxChars: settings.get<number>("ui.paste.maxChars"),
+        detectHeuristic: settings.get<boolean>("ui.paste.detectHeuristic"),
+      },
+      attachments: (t, pasted) => attachable(t, attachmentOptions(), pasted),
     });
   }
 
@@ -1564,10 +1585,12 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // unknown name is never sent to the model (FA-01, EF-03), or a message; then a turn.
   const results: TurnResult[] = [];
   type RequestOutcome = { result?: TurnResult; refused?: string; shown?: Node; exit?: true };
-  const processRequest = async (original: string | readonly ContentPart[], signal: AbortSignal): Promise<RequestOutcome> => {
+  const processRequest = async (original: string | readonly ContentPart[], signal: AbortSignal, literal = false): Promise<RequestOutcome> => {
     let content = original;
     const first = typeof content === "string" ? content : content.find((p) => p.type === "text")?.text;
-    const entry = first !== undefined ? recognize(first) : undefined;
+    // EF-08, ERR-05, CA-07 of SPEC-IHM-012: the shell mode is not available in an automated run.
+    if (!app && first !== undefined && isShellLine(first)) return { refused: "Le mode shell n'est pas disponible dans ce mode." };
+    const entry = first !== undefined && !literal ? recognize(first) : undefined;
     const replaceFirst = (text: string) => (content = typeof content === "string" ? text : content.map((p) => (p.type === "text" && p.text === first ? { type: "text" as const, text } : p)));
     if (entry?.kind === "command") {
       const resolved = commandCatalog().resolve(entry.name);
@@ -1675,10 +1698,45 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       app: interactiveApp,
       initialPrompt: parsed.prompt,
       queueAutoSend: settings.get<boolean>("ui.queue.autoSend"),
-      process: async (text, signal) => {
-        // FA-06 of SPEC-IHM-007: doubled trigger characters give their literal character.
-        const sent = literalTriggers(text).text;
-        const outcome = await processRequest(sent, signal);
+      process: async (text, signal, meta) => {
+        // SPEC-IHM-012: a shell line goes to the interpreter, never to the model (EF-01).
+        if (!meta.literal && isShellLine(text) && settings.get<boolean>("ui.shellMode.enabled") && shellRuntime) {
+          const command = shellCommand(text);
+          if (command === "") return { kind: "shown" };
+          interactiveApp.shellStarted(command);
+          const outcome = await runShellLine(command, signal, (chunk) => interactiveApp.shellOutput(chunk), {
+            runtime: shellRuntime,
+            platform: system.platform,
+            hasPosix: posixShell !== undefined,
+            hasPowerShell: powerShell !== undefined,
+            toolContext: (s) => loopDeps.executor.toolContext(s),
+            permissionContext: () => loopDeps.executor.permissionContext(),
+            authorities: loopDeps.executor.authorities,
+            persistRule,
+            timeoutMs: settings.get<number>("ui.shellMode.timeoutMs"),
+          });
+          if ("refused" in outcome) {
+            interactiveApp.shellEnded({ output: "", exitCode: null, interrupted: false, maxBytes: 0, addedToContext: false });
+            interactiveApp.notice("error", outcome.refused);
+            return { kind: "shown" };
+          }
+          const r = outcome.result;
+          // § 5.3, EF-05: added to the context as an observation, according to `ui.shellMode.addToContext`.
+          const policy = settings.get<string>("ui.shellMode.addToContext");
+          const maxBytes = settings.get<number>("ui.shellMode.maxOutputBytes");
+          const add = policy === "always" || (policy === "ask" && (await interactiveApp.confirm("Ajouter la commande et sa sortie au contexte de la conversation ?", "ajouter", "ne pas ajouter")));
+          if (add) shellObservations.push({ type: "shell_observation", text: shellObservation(command, r, maxBytes), priority: 2 });
+          interactiveApp.shellEnded({ output: r.output, exitCode: r.exitCode, interrupted: r.interrupted, maxBytes, addedToContext: add });
+          return { kind: "shown" };
+        }
+        // FA-06 of SPEC-IHM-007: doubled trigger characters give their literal character (never in a pasted line).
+        const sent = meta.literal ? text : literalTriggers(text).text;
+        // SPEC-IHM-010 § 5.4, EF-04: the referenced files are read now; a pasted text attaches nothing (EF-10).
+        // The references are those of the typed text: a doubled `@@` is a literal mark, never a reference (CA-12 of SPEC-IHM-007).
+        const attached = attach(text, attachmentOptions(), meta.pasted ?? []);
+        for (const n of attached.notices) interactiveApp.notice("warning", n);
+        const content: string | ContentPart[] = attached.parts.length > 0 ? [{ type: "text", text: sent }, ...attached.parts.map((p) => ({ type: "text" as const, text: p }))] : sent;
+        const outcome = await processRequest(content, signal, meta.literal === true);
         if (outcome.exit) return { kind: "exit" };
         if (outcome.refused !== undefined) {
           interactiveApp.notice("error", outcome.refused);

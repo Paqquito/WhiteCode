@@ -25,6 +25,8 @@ export interface AssistOptions {
   readonly usage?: Map<string, UsageStats>;
   readonly notice: (message: string) => void;
   readonly now?: () => number;
+  /** No completion: a shell line belongs to its interpreter (EF-09 of SPEC-IHM-012). */
+  readonly inactive?: () => boolean;
 }
 
 interface ListState {
@@ -170,6 +172,10 @@ export class InputAssist {
   refreshList(): void {
     const c = this.#o.completion;
     if (!c) return;
+    if (this.#o.inactive?.()) {
+      this.#list = undefined;
+      return;
+    }
     const key = `${this.#ed.text}\u0000${this.#ed.caret}`;
     if (this.#dismissed !== undefined && this.#dismissed !== key) this.#dismissed = undefined;
     if (this.#dismissed !== undefined) return;
@@ -197,7 +203,8 @@ export class InputAssist {
       this.#list = undefined;
       return;
     }
-    const previous = this.#list?.items[this.#list.selected]?.value;
+    // The selection is kept while the term does not change (a move of the caret); a new term starts at the best match.
+    const previous = this.#list && this.#list.trigger.term === trigger.term ? this.#list.items[this.#list.selected]?.value : undefined;
     const selected = Math.max(0, items.findIndex((i) => i.value === previous));
     this.#list = { trigger, items, selected, partial };
   }

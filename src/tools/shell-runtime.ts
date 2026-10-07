@@ -193,7 +193,7 @@ export class ShellRuntime {
   }
 
   /** Runs `command` in the POSIX shell (§ 5.3). */
-  async runPosix(command: string, timeoutMs: number, signal: AbortSignal): Promise<ShellResult> {
+  async runPosix(command: string, timeoutMs: number, signal: AbortSignal, onOutput?: (chunk: string) => void): Promise<ShellResult> {
     const shell = this.options.posix!;
     const p = (x: string) => posixPath(x, this.options.platform);
     const snapshot = this.snapshot();
@@ -218,14 +218,14 @@ export class ShellRuntime {
         }
       : undefined;
     try {
-      return await this.#run(shell.path, ["-c", lines.filter((l) => l !== "").join("\n")], cwdFile, timeoutMs, signal, stopDescendants);
+      return await this.#run(shell.path, ["-c", lines.filter((l) => l !== "").join("\n")], cwdFile, timeoutMs, signal, stopDescendants, onOutput);
     } finally {
       if (groupFile) rmSync(groupFile, { force: true });
     }
   }
 
   /** Runs `command` in PowerShell (§ 5.3 of SPEC-OUT-009): no profile unless configured, UTF-8 output, syntax errors reported. */
-  async runPowerShell(command: string, timeoutMs: number, signal: AbortSignal): Promise<ShellResult> {
+  async runPowerShell(command: string, timeoutMs: number, signal: AbortSignal, onOutput?: (chunk: string) => void): Promise<ShellResult> {
     const ps = this.options.powershell!;
     const cwdFile = join(this.options.workDir, `cwd-${process.pid}-${++this.#counter}`);
     mkdirSync(this.options.workDir, { recursive: true });
@@ -248,7 +248,7 @@ export class ShellRuntime {
       "exit $__code",
     ].join("\n");
     const args = ["-NoLogo", "-NonInteractive", ...(this.options.settings.powershellLoadProfile ? [] : ["-NoProfile"]), "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")];
-    const result = await this.#run(ps.path, args, cwdFile, timeoutMs, signal);
+    const result = await this.#run(ps.path, args, cwdFile, timeoutMs, signal, undefined, onOutput);
     // ERR-02: a script blocked by the execution policy of the machine is stated explicitly.
     if (/PSSecurityException|UnauthorizedAccess|running scripts is disabled/i.test(result.output)) {
       return { ...result, output: `${result.output}\n[Script execution is blocked by the execution policy of this machine.]` };
@@ -256,10 +256,16 @@ export class ShellRuntime {
     return result;
   }
 
-  async #run(file: string, args: string[], cwdFile: string, timeoutMs: number, signal: AbortSignal, stopDescendants?: () => void): Promise<ShellResult> {
+  async #run(file: string, args: string[], cwdFile: string, timeoutMs: number, signal: AbortSignal, stopDescendants?: () => void, onOutput?: (chunk: string) => void): Promise<ShellResult> {
     const started = Date.now();
     const chunks: Buffer[] = [];
-    const child = startChild(file, args, { cwd: existsSync(this.#cwd) ? this.#cwd : this.options.projectCwd, env: this.options.childEnv, onData: (c) => chunks.push(c), stopDescendants });
+    // The output as it comes, for the shell mode of the interface (SPEC-IHM-012 EF-04).
+    const decoder = new TextDecoder();
+    const onData = (c: Buffer) => {
+      chunks.push(c);
+      if (onOutput) onOutput(decoder.decode(c, { stream: true }));
+    };
+    const child = startChild(file, args, { cwd: existsSync(this.#cwd) ? this.#cwd : this.options.projectCwd, env: this.options.childEnv, onData, stopDescendants });
     this.#running.add(child);
     let timedOut = false;
     let interrupted = false;

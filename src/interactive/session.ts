@@ -13,11 +13,17 @@ export type EntryOutcome =
   | { readonly kind: "shown" }
   | { readonly kind: "exit" };
 
+/** What the input area knows of an entry (SPEC-IHM-010 EF-09, EF-10). */
+export interface EntryMeta {
+  readonly literal?: boolean;
+  readonly pasted?: readonly string[];
+}
+
 export interface InteractiveLoopOptions {
   readonly app: InteractiveApp;
   readonly initialPrompt?: string;
   /** Handles one entry: a built-in command, a skill or command, or a message to the model. */
-  readonly process: (text: string, signal: AbortSignal) => Promise<EntryOutcome>;
+  readonly process: (text: string, signal: AbortSignal, meta: EntryMeta) => Promise<EntryOutcome>;
   readonly queueAutoSend: boolean;
 }
 
@@ -29,6 +35,7 @@ export async function runInteractiveLoop(o: InteractiveLoopOptions): Promise<{ t
   let turns = 0;
   for (;;) {
     let text: string | undefined;
+    let meta: EntryMeta = {};
     if (pending !== undefined) {
       text = pending;
       pending = undefined;
@@ -39,12 +46,13 @@ export async function runInteractiveLoop(o: InteractiveLoopOptions): Promise<{ t
       const entry = await app.nextEntry();
       if (entry.kind === "exit") break;
       text = entry.text;
+      meta = { literal: entry.literal, pasted: entry.pasted };
     }
     const controller = new AbortController();
     app.beginTurn(controller);
     let outcome: EntryOutcome;
     try {
-      outcome = await o.process(text, controller.signal);
+      outcome = await o.process(text, controller.signal, meta);
     } catch (error) {
       // ERR-03: the turn fails, the session survives.
       app.endTurn({ stopCause: "error", message: (error as Error)?.message ?? String(error) });
