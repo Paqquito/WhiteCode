@@ -26,14 +26,23 @@ export function replayHistory(app: InteractiveApp, chain: readonly TranscriptRec
       const text = textOf(d["content"]);
       if (text) {
         app.commit(userView(condense(text, full), view));
+        app.record("user", "", text);
         shown++;
       }
     } else if (r.type === "assistant") {
       const text = typeof d["text"] === "string" ? d["text"].trim() : "";
-      if (text) app.commit(modelView(condense(text, full), view));
-      if (full) for (const c of (d["toolCalls"] as Array<{ name: string; input: unknown }> | undefined) ?? []) app.commit(toolCallView(c.name, describe(c.name, c.input), view));
-    } else if (r.type === "tool_result" && full) {
-      app.commit(toolResultView(textOf(d["content"]), d["isError"] === true, view));
+      if (text) {
+        app.commit(modelView(condense(text, full), view));
+        app.record("model", "", text);
+      }
+      for (const c of (d["toolCalls"] as Array<{ name: string; input: unknown }> | undefined) ?? []) {
+        if (full) app.commit(toolCallView(c.name, describe(c.name, c.input), view));
+        app.record("tool", `${c.name}  ${describe(c.name, c.input)}`, JSON.stringify(c.input ?? {}, null, 2));
+      }
+    } else if (r.type === "tool_result") {
+      // The view holds the whole transcript, the flow only what the replay mode shows.
+      if (full) app.commit(toolResultView(textOf(d["content"]), d["isError"] === true, view));
+      app.record("result", d["isError"] === true ? "(erreur)" : "", textOf(d["content"]));
     } else if (r.type === "system" && d["event"] === "turn_end" && d["stopCause"] === "interrupted") {
       app.commit(interruptionView(view));
     }

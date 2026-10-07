@@ -22,6 +22,8 @@ export const ACTIONS: readonly ActionDef[] = [
   { id: "app.exit", context: "app", label: "Quitter (deux fois, saisie vide)", defaults: ["ctrl+d"], essential: true },
   { id: "app.cancel", context: "app", label: "Interrompre le tour en cours", defaults: ["escape"], essential: true },
   { id: "mode.cycle", context: "app", label: "Changer de mode de permission", defaults: ["shift+tab"] },
+  { id: "input.toggleModal", context: "app", label: "Activer ou désactiver l'édition modale (contenu conservé)", defaults: ["alt+m"] },
+  { id: "view.transcript", context: "app", label: "Ouvrir la vue plein écran de la transcription", defaults: ["alt+t"] },
   { id: "input.submit", context: "input", label: "Envoyer le message (en file pendant un tour)", defaults: ["enter"] },
   { id: "input.newline", context: "input", label: "Insérer un saut de ligne", defaults: ["shift+enter", "alt+enter", "ctrl+j"] },
   { id: "input.left", context: "input", label: "Caractère précédent", defaults: ["left", "ctrl+b"] },

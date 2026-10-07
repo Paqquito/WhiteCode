@@ -24,6 +24,9 @@ export class VTerm {
   sgr = "";
   readonly modes = new Set<string>();
   cursorVisible = true;
+  /** Shape of the cursor (parameter of the last DECSCUSR sequence; 0 = the default). */
+  cursorShape = 0;
+  #saved: { grid: VCell[][]; row: number; col: number } | undefined;
   /** Cells printed per screen row since the last `resetCounters()`. */
   written: number[];
   /** Every chunk received. */
@@ -119,11 +122,26 @@ export class VTerm {
     if (seq[1] !== "[") return; // OSC and other sequences: ignored
     const final = seq[seq.length - 1]!;
     const body = seq.slice(2, -1);
+    if (final === "q" && body.endsWith(" ")) {
+      this.cursorShape = Number(body.trim()) || 0;
+      return;
+    }
     if (body.startsWith("?")) {
       for (const m of body.slice(1).split(";")) {
         if (final === "h") this.modes.add(m);
         if (final === "l") this.modes.delete(m);
         if (m === "25") this.cursorVisible = final === "h";
+        // Alternate screen: the main one is saved, then restored exactly.
+        if (m === "1049" && final === "h" && !this.#saved) {
+          this.#saved = { grid: this.grid.map((r) => r.map((c) => ({ ...c }))), row: this.row, col: this.col };
+          this.grid = Array.from({ length: this.rows }, () => Array.from({ length: this.columns }, blankCell));
+        }
+        if (m === "1049" && final === "l" && this.#saved) {
+          this.grid = this.#saved.grid;
+          this.row = this.#saved.row;
+          this.col = this.#saved.col;
+          this.#saved = undefined;
+        }
       }
       return;
     }

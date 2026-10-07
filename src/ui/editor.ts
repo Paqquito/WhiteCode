@@ -57,6 +57,29 @@ export class Editor {
     this.#goal = undefined;
   }
 
+  /** Moves the caret to `offset`, brought back to the nearest grapheme boundary before it (RG-03). */
+  setCaret(offset: number): void {
+    const target = Math.max(0, Math.min(offset, this.#text.length));
+    let at = 0;
+    for (const g of graphemes(this.#text)) {
+      if (at + g.length > target) break;
+      at += g.length;
+    }
+    this.#move(at);
+  }
+
+  /** Replaces `[start, end)` by `text` as one group of edits (a command of the modal mode, SPEC-IHM-013 FA-05). */
+  replace(start: number, end: number, text: string, caret = start + text.length): boolean {
+    const next = this.#text.slice(0, start) + text + this.#text.slice(end);
+    if (next.length > this.maxChars) return false;
+    this.#record("other");
+    this.#text = next;
+    this.#caret = Math.max(0, Math.min(caret, next.length));
+    this.#goal = undefined;
+    this.#lastKind = undefined;
+    return true;
+  }
+
   /** Empties the content; recoverable by undo (§ 5.5). */
   clear(): void {
     if (this.#text === "") return;

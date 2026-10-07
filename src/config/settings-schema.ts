@@ -263,6 +263,14 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "ui.shellMode.addToContext", schema: enumOf(["always", "ask", "never"]), default: "always", scopes: [U], owner: "SPEC-IHM-012" },
   { key: "ui.shellMode.timeoutMs", schema: int(1_000, 86_400_000), default: 120_000, scopes: [U], owner: "SPEC-IHM-012" },
   { key: "ui.shellMode.maxOutputBytes", schema: int(1_024, 100_000_000), default: 65_536, scopes: [U], owner: "SPEC-IHM-012" },
+  // SPEC-IHM-006: full-screen view of the transcript (lot 5; values in English, gap E-099).
+  { key: "ui.transcript.defaultDetail", schema: enumOf(["summary", "normal", "full"]), default: "normal", scopes: [U], owner: "SPEC-IHM-006" },
+  { key: "ui.transcript.collapseThreshold", schema: int(1, 100_000), default: 20, scopes: [U], owner: "SPEC-IHM-006" },
+  { key: "ui.transcript.showThinking", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-006" },
+  // SPEC-IHM-013: modal editing (lot 5; values in English, gap E-099).
+  { key: "ui.input.editMode", schema: enumOf(["standard", "modal"]), default: "standard", scopes: [U], owner: "SPEC-IHM-013" },
+  { key: "ui.input.modalStartMode", schema: enumOf(["insert", "normal"]), default: "insert", scopes: [U], owner: "SPEC-IHM-013" },
+  { key: "ui.input.modalCountLimit", schema: int(1, 100_000), default: 999, scopes: [U], owner: "SPEC-IHM-013" },
   // SPEC-IHM-014: key bindings; SPEC-CMD-001: commands (lot 5).
   { key: "ui.keybindings.bindings", schema: Type.Record(Type.String(), Type.Union([Type.String(), Type.Array(Type.String())])), default: {}, scopes: [U], owner: "SPEC-IHM-014" },
   { key: "ui.keybindings.showFooterHints", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-014" },

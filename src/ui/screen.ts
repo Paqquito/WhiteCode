@@ -76,6 +76,10 @@ export class Screen {
   #stopped = false;
   #broken = false;
   #columns: number;
+  /** A full-screen view holds the terminal: nothing is written; finished lines wait (SPEC-IHM-006 EF-05). */
+  #suspended = false;
+  #deferred: Line[] = [];
+  #resizedWhileSuspended = false;
 
   constructor(o: {
     terminal: TerminalOutput;
@@ -130,9 +134,30 @@ export class Screen {
     this.#write(out, true);
   }
 
+  /** The terminal is lent to a full-screen view (alternate buffer): no writing until `resume`. */
+  suspend(): void {
+    this.#suspended = true;
+    if (this.#timer !== undefined) this.#scheduler.clearTimeout(this.#timer);
+    this.#timer = undefined;
+  }
+
+  /** The view is closed and the screen found again: the waiting lines are written, the live area drawn. */
+  resume(): void {
+    if (!this.#suspended) return;
+    this.#suspended = false;
+    if (this.#resizedWhileSuspended) {
+      this.#resizedWhileSuspended = false;
+      this.resized();
+    }
+    const waiting = this.#deferred;
+    this.#deferred = [];
+    if (waiting.length > 0) this.commit(waiting);
+    else this.flush();
+  }
+
   /** Marks the live area to be recomputed; frames are grouped under the maximal rate (EF-06, FA-04). */
   invalidate(): void {
-    if (this.#stopped || this.#broken) return;
+    if (this.#stopped || this.#broken || this.#suspended) return;
     if (this.#timer !== undefined) {
       this.stats.coalesced++;
       return;
@@ -146,7 +171,7 @@ export class Screen {
 
   /** Renders the live area now. */
   flush(): void {
-    if (this.#stopped || this.#broken) return;
+    if (this.#stopped || this.#broken || this.#suspended) return;
     if (this.#timer !== undefined) this.#scheduler.clearTimeout(this.#timer);
     this.#timer = undefined;
     this.#last = this.#scheduler.now();
@@ -161,6 +186,10 @@ export class Screen {
    */
   commit(lines: readonly Line[]): void {
     if (this.#stopped || this.#broken || lines.length === 0) return;
+    if (this.#suspended) {
+      this.#deferred.push(...lines);
+      return;
+    }
     const { columns } = this.#size();
     let out = this.#begin() + this.#moveTo(0, 0) + `${ESC}J`;
     let cells = 0;
@@ -184,6 +213,10 @@ export class Screen {
    */
   resized(): void {
     if (this.#stopped || this.#broken) return;
+    if (this.#suspended) {
+      this.#resizedWhileSuspended = true;
+      return;
+    }
     const { columns } = this.#size();
     let above = this.#row;
     if (this.#caps.reflowOnResize && columns < this.#columns) {

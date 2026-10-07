@@ -23,6 +23,9 @@ import type { UsageStats } from "./completion";
 import type { InputHistory } from "./history";
 import { MarkdownRenderer, type MarkdownOptions } from "../ui/markdown";
 import { isShellLine } from "./shell-mode";
+import { ModalEngine } from "../ui/modal";
+import { maskSecrets } from "../shared/secrets";
+import { newViewState, TranscriptView, type ItemKind, type TranscriptItem, type ViewSettings } from "./transcript-view";
 import { containsSecret } from "../shared/secrets";
 import { diffNode, type DiffOptions } from "../ui/diff-view";
 import { activityView, interruptionView, modelView, noticeView, toolCallView, toolResultView, userView, type ViewContext } from "./views";
@@ -105,6 +108,10 @@ export interface AppOptions {
   /** Sources of the completion (SPEC-IHM-009); absent when it is disabled. */
   readonly completion?: AssistOptions["completion"];
   readonly usage?: Map<string, UsageStats>;
+  /** The full-screen view of the transcript (SPEC-IHM-006). */
+  readonly transcript?: ViewSettings & { readonly title: string };
+  /** Modal editing (SPEC-IHM-013): `ui.input.editMode`, the starting mode and the bound of the counts. */
+  readonly modal?: { readonly enabled: boolean; readonly startMode: "insert" | "normal"; readonly countLimit: number };
   /** Shell mode (SPEC-IHM-012): enabled, and the name of the interpreter shown by the indicator. */
   readonly shell?: { readonly enabled: boolean; readonly label: string };
   /** Pastes (SPEC-IHM-010 § 5.2, § 11). */
@@ -124,12 +131,22 @@ export class InteractiveApp {
   #keymap: Keymap;
   readonly #editor: Editor;
   readonly #assist: InputAssist;
+  #modal: ModalEngine | undefined;
+  /** Items of the transcript, for the full-screen view (SPEC-IHM-006 § 5.2), in time order (RG-02). */
+  readonly #items: TranscriptItem[] = [];
+  #turnNumber = 0;
+  #thinking = "";
+  #transcriptView: TranscriptView | undefined;
+  readonly #viewState = newViewState();
+  /** Last shape of the cursor written, so that it is written only on a change (CA-01 of SPEC-IHM-013). */
+  #cursorShape = "";
   readonly #queue: string[];
   readonly #stash: string[];
   readonly #approvals: PendingApproval[] = [];
   #confirm: Confirm | undefined;
   #session: TerminalSession | undefined;
   #unsubscribeInput: (() => void) | undefined;
+  #unsubscribeResize: (() => void) | undefined;
   #waiting: ((e: Entry) => void) | undefined;
   #turn: AbortController | undefined;
   #turnStarted = 0;
@@ -148,6 +165,7 @@ export class InteractiveApp {
   #literalLead: "certain" | "uncertain" | undefined;
   /** Output of the shell command running (SPEC-IHM-012 EF-04). */
   #shellOutput: string | undefined;
+  #shellCommand = "";
   /** The text of the current response was committed before its end (by a call of a tool). */
   #responseCommitted = false;
   #exitArmed: { combo: string; until: number } | undefined;
@@ -174,8 +192,9 @@ export class InteractiveApp {
       usage: o.usage,
       notice: (m) => this.notice("warning", m),
       now: () => this.#now,
-      inactive: () => this.shellLine,
+      inactive: () => this.shellLine || (this.#modal !== undefined && this.#modal.mode !== "insert"),
     });
+    if (o.modal?.enabled) this.#modal = new ModalEngine(this.#editor, { countLimit: o.modal.countLimit, startMode: o.modal.startMode });
   }
 
   get #now(): number {
@@ -188,6 +207,65 @@ export class InteractiveApp {
     this.#redraw();
   }
 
+  /**
+   * EF-03, CA-06 of SPEC-IHM-013: the modal editing switched on or off during the input, the content kept; the standard
+   * editing applies at once when it is off (EF-07: it is never on by default).
+   */
+  setModal(enabled: boolean): void {
+    const o = this.#o.modal ?? { enabled: false, startMode: "insert" as const, countLimit: 999 };
+    this.#modal = enabled ? new ModalEngine(this.#editor, { countLimit: o.countLimit, startMode: "insert" }) : undefined;
+    this.#updateCursorShape();
+    this.#redraw();
+  }
+
+  get modalMode(): string | undefined {
+    return this.#modal?.mode;
+  }
+
+  /** The shape of the cursor follows the mode: a bar to insert, a block for the commands (CA-01). */
+  #updateCursorShape(): void {
+    const shape = !this.#modal ? "" : this.#modal.mode === "insert" ? "\u001b[6 q" : "\u001b[2 q";
+    if (shape === this.#cursorShape) return;
+    this.#o.terminal.write(shape || "\u001b[0 q");
+    this.#cursorShape = shape;
+  }
+
+  /** An item of the transcript; its sensitive values are masked as in the flow (EF-06 of SPEC-IHM-006). */
+  record(kind: ItemKind, title: string, body: string): void {
+    if (kind === "user") this.#turnNumber++;
+    this.#items.push({ id: this.#items.length + 1, kind, title: maskSecrets(title), body: maskSecrets(body), at: this.#now, turn: this.#turnNumber });
+    this.#transcriptView?.refresh(); // FA-01: the items of the session in progress come at the bottom
+  }
+
+  get transcriptItems(): readonly TranscriptItem[] {
+    return this.#items;
+  }
+
+  get transcriptOpen(): boolean {
+    return this.#transcriptView !== undefined;
+  }
+
+  /** § 5.1: the view opens over the session, which goes on behind it (EF-05, CA-04). */
+  openTranscript(): void {
+    if (this.#transcriptView || !this.#session) return;
+    const settings = this.#o.transcript ?? { defaultDetail: "normal", collapseThreshold: 20, showThinking: true, title: "Transcription" };
+    this.#session.screen.suspend();
+    this.#transcriptView = new TranscriptView({
+      terminal: this.#o.terminal,
+      capabilities: this.#o.capabilities,
+      items: () => this.#items,
+      settings,
+      state: this.#viewState,
+      title: settings.title,
+      markdown: this.#view.markdown,
+      onClose: () => {
+        this.#transcriptView = undefined;
+        this.#session?.screen.resume();
+      },
+    });
+    this.#transcriptView.open();
+  }
+
   /** The input is a line of the shell mode (SPEC-IHM-012 § 5.1). */
   get shellLine(): boolean {
     return this.#o.shell?.enabled === true && this.#literalLead === undefined && isShellLine(this.#editor.text);
@@ -197,6 +275,7 @@ export class InteractiveApp {
   shellStarted(command: string): void {
     this.commit(box([text([{ text: "! ", style: { bold: true, fg: { ansi: 5 } } }, { text: command, style: { bold: true } }])]));
     this.#shellOutput = "";
+    this.#shellCommand = command;
     this.#activity = "Commande en cours…";
     this.#redraw();
   }
@@ -210,6 +289,7 @@ export class InteractiveApp {
   /** Step 4: the output kept, bounded (FA-05), then the exit code, highlighted when not zero; the context mention (EF-05). */
   shellEnded(o: { readonly output: string; readonly exitCode: number | null; readonly interrupted: boolean; readonly maxBytes: number; readonly addedToContext: boolean }): void {
     this.#shellOutput = undefined;
+    this.record("shell", this.#shellCommand, o.output);
     let shown = o.output.replace(/\s+$/, "");
     const bytes = Buffer.byteLength(shown, "utf8");
     if (bytes > o.maxBytes) shown = `${Buffer.from(shown, "utf8").subarray(0, o.maxBytes).toString("utf8")}\n… sortie tronquée à l'affichage (${bytes} octets au total)`;
@@ -244,14 +324,23 @@ export class InteractiveApp {
       scheduler: this.#o.scheduler,
     });
     this.#unsubscribeInput = this.#o.terminal.onInput((data) => this.#input(data));
+    this.#unsubscribeResize = this.#o.terminal.onResize(() => this.#transcriptView?.resized());
+    this.#updateCursorShape();
     this.#session.screen.flush();
   }
 
   /** Restores the terminal; idempotent. */
   stop(): void {
+    if (this.#cursorShape) {
+      this.#o.terminal.write("\u001b[0 q"); // the shape of the cursor found at start
+      this.#cursorShape = "";
+    }
     this.#stopAnimation();
     this.#unsubscribeInput?.();
     this.#unsubscribeInput = undefined;
+    this.#unsubscribeResize?.();
+    this.#unsubscribeResize = undefined;
+    if (this.#transcriptView) this.#transcriptView.close();
     this.#session?.close();
     for (const a of this.#approvals.splice(0)) a.resolve({ answer: "no_stop" });
     this.#confirm?.resolve(false);
@@ -295,7 +384,10 @@ export class InteractiveApp {
     this.#stopAnimation();
     this.#flushStream();
     this.#turn = undefined;
-    if (outcome.stopCause === "interrupted") this.commit(interruptionView(this.#view));
+    if (outcome.stopCause === "interrupted") {
+      this.commit(interruptionView(this.#view));
+      this.record("marker", "Interrompu par l'utilisateur", "");
+    }
     else if (outcome.stopCause === "error") this.notice("error", `Le tour a échoué : ${outcome.message ?? "erreur inconnue"}.`); // ERR-03
     else if (outcome.stopCause !== "completed" && outcome.message) this.notice("warning", outcome.message);
     this.#redraw();
@@ -310,6 +402,7 @@ export class InteractiveApp {
         const attached = texts.filter((t) => t.startsWith("<attached-file "));
         const content = texts.filter((t) => !t.startsWith("<attached-file ")).join("\n");
         if (content) this.commit(userView(content, this.#view));
+        this.record("user", "", [content, ...attached.map((a) => `[pièce jointe ${/path="([^"]*)"/.exec(a)?.[1] ?? "?"}]`)].filter(Boolean).join("\n"));
         // SPEC-IHM-010 § 10: an attachment is shown by a compact line, its content went to the model.
         for (const a of attached) {
           const path = /path="([^"]*)"/.exec(a)?.[1] ?? "?";
@@ -324,6 +417,7 @@ export class InteractiveApp {
         this.#redraw();
         break;
       case "thinking_delta":
+        this.#thinking += e.text;
         this.#activity = "Réflexion…";
         this.#redraw();
         break;
@@ -334,20 +428,29 @@ export class InteractiveApp {
         break;
       case "assistant_message":
         this.#flushStream(e.text);
+        if (this.#thinking.trim()) this.record("thinking", "", this.#thinking.trim());
+        this.#thinking = "";
+        if (e.text.trim()) this.record("model", "", e.text.trim());
         break;
       case "tool_call":
         this.#flushStream();
         this.#callNames.set(e.callId, e.name);
         this.#activity = `${e.name}…`;
         this.commit(toolCallView(e.name, this.#o.describeCall(e.name, e.input), this.#view));
+        this.record("tool", `${e.name}  ${this.#o.describeCall(e.name, e.input)}`, JSON.stringify(e.input ?? {}, null, 2));
         break;
       case "tool_result":
-        this.commit(toolResultView(e.output, e.isError, this.#view));
+        // EF-06 of SPEC-IHM-006: a sensitive value is masked in the flow as in the view.
+        this.commit(toolResultView(maskSecrets(e.output), e.isError, this.#view));
+        this.record("result", `${this.#callNames.get(e.callId) ?? "outil"}${e.isError ? " (erreur)" : ""}`, e.output);
         this.#activity = "Réflexion…";
         break;
       case "retry":
         this.#activity = `Service indisponible, nouvel essai dans ${Math.max(1, Math.round(e.delayMs / 1000))} s…`;
         this.#redraw();
+        break;
+      case "permission":
+        this.record("permission", e.decision === "allow" ? "autorisée" : "refusée", e.reason);
         break;
       case "compacted":
         this.notice("info", `Contexte compacté : ${e.tokensBefore} → ${e.tokensAfter} jetons.`);
@@ -393,6 +496,7 @@ export class InteractiveApp {
 
   notice(t: Tone, message: string): void {
     this.commit(noticeView(t, message, this.#view));
+    this.record("notice", "", message);
   }
 
   /** Lines of the product written before the interface (start-up warnings), or by the session. */
@@ -585,6 +689,16 @@ export class InteractiveApp {
   // ---- Keys ---------------------------------------------------------------------------------------------------------
 
   #input(data: string): void {
+    if (this.#transcriptView) {
+      // RG-01 of SPEC-IHM-006: the view is read-only; Ctrl+C closes it without interrupting the session.
+      const events = this.#keys.feed(data);
+      if (data === "\u001b") events.push(...this.#keys.flush());
+      for (const e of events) {
+        if (e.kind === "key" && e.ctrl && e.name === "c") this.#transcriptView?.close();
+        else this.#transcriptView?.key(e);
+      }
+      return;
+    }
     // SPEC-IHM-010 § 5.1, FA-06: without the framing of the terminal, several characters arriving at once are a paste.
     if (this.#o.paste?.detectHeuristic !== false && !data.includes("\u001b") && [...data].length > 1 && /[^\r\n]/.test(data)) {
       this.#event({ kind: "paste", text: data }, true);
@@ -610,7 +724,8 @@ export class InteractiveApp {
     const contexts: KeyContext[] = approval || this.#confirm ? ["dialog", "app"] : searching ? ["search", "app"] : [...this.#assist.contexts(), "input", "app"];
     const action = this.#keymap.action(e, contexts);
     // Essential application actions keep priority over any edition (SPEC-IHM-013 § 5.5).
-    if (action === "app.interrupt" || (action === "app.cancel" && this.running && !approval && !this.#confirm)) {
+    const modalEscape = this.#modal !== undefined && (this.#modal.mode !== "normal" || this.#modal.pending !== "");
+    if (action === "app.interrupt" || (action === "app.cancel" && this.running && !approval && !this.#confirm && !modalEscape)) {
       if (approval || this.#confirm) {
         if (approval) approval.resolve({ answer: "no_stop" });
         else this.#confirm!.resolve(false);
@@ -646,6 +761,22 @@ export class InteractiveApp {
       this.#inputAction(e, "input.submit");
       this.#redraw();
       return;
+    }
+    // SPEC-IHM-013: the keys of the modal editing, after the global actions (EF-02) and the dialogs.
+    if (this.#modal && !action?.startsWith("list.") && action !== "input.toggleModal" && action !== "view.transcript" && action !== "mode.cycle" && action !== "app.exit") {
+      const before = this.#editor.text;
+      const r = this.#modal.key(e);
+      if (r === "submit") {
+        this.#inputAction(e, "input.submit"); // FA-01
+        this.#modal.reset(); // RG-03
+      }
+      if (r !== "pass") {
+        if (this.#editor.text !== before) this.#assist.edited();
+        this.#updateCursorShape();
+        this.#saveState();
+        this.#redraw();
+        return;
+      }
     }
     if (action?.startsWith("list.")) {
       this.#assist.listKey(action);
@@ -777,6 +908,12 @@ export class InteractiveApp {
         return;
       case "history.search":
         this.#assist.startSearch();
+        return;
+      case "view.transcript":
+        this.openTranscript();
+        return;
+      case "input.toggleModal":
+        this.setModal(this.#modal === undefined); // EF-03, CA-06 of SPEC-IHM-013
         return;
       case "paste.interpret":
         // EF-09 of SPEC-IHM-010: the explicit action that lets a pasted line be a command or a shell line.
@@ -965,6 +1102,7 @@ export class InteractiveApp {
     const indent: Cell[] = spansToLines([{ text: "  " }])[0]!;
     const rows = lines.map((l, i) => [...(i === 0 ? prompt : indent), ...l]);
     const extra: string[] = [];
+    if (this.#modal) extra.push(this.#modal.label()); // EF-01: always visible, as a text
     if (shell) extra.push(`Mode shell : la ligne est exécutée par ${this.#o.shell!.label} ; elle n'est pas envoyée au modèle.`);
     if (this.#literalLead === "certain") extra.push("Texte collé : il sera envoyé comme texte (Ctrl+O : l'interpréter comme commande).");
     if (this.#pastes.size > 0) extra.push("Alt+P : déplier les textes collés pour les vérifier.");

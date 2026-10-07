@@ -1493,6 +1493,17 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       usage: completionUsage,
       render: renderOptions(settings),
       shell: { enabled: settings.get<boolean>("ui.shellMode.enabled"), label: shellOf({ platform: system.platform, hasPosix: posixShell !== undefined, hasPowerShell: powerShell !== undefined })?.label ?? "le shell" },
+      transcript: {
+        defaultDetail: settings.get<string>("ui.transcript.defaultDetail"),
+        collapseThreshold: settings.get<number>("ui.transcript.collapseThreshold"),
+        showThinking: settings.get<boolean>("ui.transcript.showThinking"),
+        title: `Transcription · ${sessionId.slice(0, 8)}`,
+      },
+      modal: {
+        enabled: settings.get<string>("ui.input.editMode") === "modal",
+        startMode: settings.get<"insert" | "normal">("ui.input.modalStartMode"),
+        countLimit: settings.get<number>("ui.input.modalCountLimit"),
+      },
       paste: {
         collapseThreshold: settings.get<number>("ui.paste.collapseThreshold"),
         maxChars: settings.get<number>("ui.paste.maxChars"),
@@ -1584,7 +1595,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // One request: an internal command, a skill or a simple command, a prompt of a connector (SPEC-CMD-001 § 5.7), whose
   // unknown name is never sent to the model (FA-01, EF-03), or a message; then a turn.
   const results: TurnResult[] = [];
-  type RequestOutcome = { result?: TurnResult; refused?: string; shown?: Node; exit?: true };
+  type RequestOutcome = { result?: TurnResult; refused?: string; shown?: Node; exit?: true; silent?: true };
   const processRequest = async (original: string | readonly ContentPart[], signal: AbortSignal, literal = false): Promise<RequestOutcome> => {
     let content = original;
     const first = typeof content === "string" ? content : content.find((p) => p.type === "text")?.text;
@@ -1656,6 +1667,16 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         return { exit: true };
       case "help":
         return { shown: helpView(commandCatalog().entries(), keymap) };
+      case "transcript":
+        app?.openTranscript();
+        return { silent: true };
+      case "edit-mode": {
+        // SPEC-IHM-013 EF-03, CA-06: switched during the input, the content kept, for this session.
+        const wanted = args.trim();
+        if (wanted !== "standard" && wanted !== "modal") return { refused: "Usage : /edit-mode standard|modal." };
+        app?.setModal(wanted === "modal");
+        return { shown: text(wanted === "modal" ? "Édition modale activée." : "Édition standard rétablie.") };
+      }
       case "history":
         // EF-06, CA-07 of SPEC-IHM-008: the history of the inputs erased.
         if (args.trim() !== "clear") return { refused: "Usage : /history clear." };
@@ -1738,6 +1759,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         const content: string | ContentPart[] = attached.parts.length > 0 ? [{ type: "text", text: sent }, ...attached.parts.map((p) => ({ type: "text" as const, text: p }))] : sent;
         const outcome = await processRequest(content, signal, meta.literal === true);
         if (outcome.exit) return { kind: "exit" };
+        if (outcome.silent) return { kind: "shown" };
         if (outcome.refused !== undefined) {
           interactiveApp.notice("error", outcome.refused);
           return { kind: "shown" };
