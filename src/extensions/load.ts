@@ -12,8 +12,10 @@ import { describeExtension, readJsonFile, substituteVariables, type Extension } 
 
 export interface ActiveExtension {
   readonly root: string;
-  /** Where it comes from: `session` for `--extension-dir` (SPEC-EXT-014 § 5.1). */
-  readonly origin: "session";
+  /** Where it comes from: `session` for `--extension-dir` (SPEC-EXT-014 § 5.1), `installed` for a copy of a catalogue. */
+  readonly origin: "session" | "installed";
+  /** Identifier shown: `<name>@session`, or `<name>@<catalogue>` for an installed one. */
+  readonly id?: string;
 }
 
 export interface ExtensionContributions {
@@ -21,7 +23,9 @@ export interface ExtensionContributions {
   readonly skillLocations: readonly SkillLocation[];
   readonly hookSources: ReadonlyArray<{ readonly origin: "extension"; readonly value: unknown; readonly file: string; readonly labelScope: string }>;
   readonly connectorSources: readonly ConnectorSource[];
-  /** Load report: one line per extension, then the problems by component (step 4, EF-03). */
+  /** Load report: one line per extension (step 4)… */
+  readonly summaries: ReadonlyArray<{ readonly origin: ActiveExtension["origin"]; readonly text: string }>;
+  /** …and the problems, by component (EF-03). */
   readonly report: readonly string[];
 }
 
@@ -78,16 +82,19 @@ function countEntries(dirs: readonly string[], skills: boolean): number {
 /** Steps 1 to 4 for the active extensions; FA-03: two of the same name are both left out. */
 export function loadExtensions(active: readonly ActiveExtension[], inputs: LoadInputs): ExtensionContributions {
   const report: string[] = [];
-  const summaries: string[] = [];
+  const summaries: Array<{ origin: ActiveExtension["origin"]; text: string }> = [];
   const described = active.map((a) => ({ a, ext: describeExtension(a.root, a.origin === "session") }));
+  // SPEC-EXT-014 § 5.1: a session extension takes the place of an installed one of the same name.
+  const sessionNames = new Set(described.filter((d) => d.a.origin === "session").map((d) => d.ext.name));
+  const kept = described.filter((d) => d.a.origin === "session" || !sessionNames.has(d.ext.name));
   const byName = new Map<string, string[]>();
-  for (const { a, ext } of described) byName.set(ext.name, [...(byName.get(ext.name) ?? []), a.root]);
+  for (const { a, ext } of kept) byName.set(ext.name, [...(byName.get(ext.name) ?? []), a.root]);
   const loaded: Array<{ id: string; extension: Extension }> = [];
   const skillLocations: SkillLocation[] = [];
   const hookSources: Array<{ origin: "extension"; value: unknown; file: string; labelScope: string }> = [];
   const connectorSources: ConnectorSource[] = [];
-  for (const { a, ext } of [...described].sort((x, y) => (x.ext.name < y.ext.name ? -1 : 1))) {
-    const id = `${ext.name}@${a.origin}`;
+  for (const { a, ext } of [...kept].sort((x, y) => (x.ext.name < y.ext.name ? -1 : 1))) {
+    const id = a.id ?? `${ext.name}@${a.origin}`;
     const origins = byName.get(ext.name)!;
     if (origins.length > 1) {
       if (origins[0] === a.root) report.push(`Deux extensions actives portent le nom ${ext.name} (${origins.join(", ")}) ; désactivez-en une.`); // ERR-03
@@ -150,8 +157,8 @@ export function loadExtensions(active: readonly ActiveExtension[], inputs: LoadI
     if (ext.unsupported.length > 0) report.push(`Extension ${id} : composants non chargés dans cette version : ${ext.unsupported.join(", ")}.`);
     const skills = countEntries(ext.skillsDirs, true);
     const commands = countEntries(ext.commandsDirs, false);
-    summaries.push(`${a.origin === "session" ? "Extension de développement active" : "Extension active"} : ${id} (${ext.version}) — ${skills} compétence(s), ${commands} commande(s), ${hookCount} crochet(s), ${connectorCount} connecteur(s).`);
+    summaries.push({ origin: a.origin, text: `${a.origin === "session" ? "Extension de développement active" : "Extension active"} : ${id} (${ext.version}) — ${skills} compétence(s), ${commands} commande(s), ${hookCount} crochet(s), ${connectorCount} connecteur(s).` });
     loaded.push({ id, extension: ext });
   }
-  return { loaded, skillLocations, hookSources, connectorSources, report: [...summaries, ...report] };
+  return { loaded, skillLocations, hookSources, connectorSources, summaries, report };
 }

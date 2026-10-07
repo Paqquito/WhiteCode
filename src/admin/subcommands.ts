@@ -18,6 +18,7 @@ import { effectiveCapabilities, isDeliveredProvider } from "../providers/adapter
 import { capabilitiesOf, isResolveFailure, type ModelCatalog, type ModelEntry } from "../providers/catalog";
 import { suggest } from "../shared/suggest";
 import { renderValidation, validateExtension } from "../extensions/validate";
+import { catalogAdd, catalogList, catalogRemove, catalogUpdate, extensionAdd, extensionEnable, extensionList, extensionRemove, scopeOf, type ExtensionAdminContext } from "../extensions/admin";
 
 export interface AdminDependencies {
   readonly streams: StandardStreams;
@@ -100,6 +101,50 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
     }
     case "config validate":
       return configValidate(deps, parsed.args[0], parsed.options.get("scope"), write, err);
+    case "catalog add":
+    case "catalog list":
+    case "catalog update":
+    case "catalog remove":
+    case "extension add":
+    case "extension list":
+    case "extension enable":
+    case "extension disable":
+    case "extension remove": {
+      const scopeOption = parsed.options.get("scope");
+      const scope = scopeOf(scopeOption);
+      if (!scope) {
+        err(`Portée invalide : ${String(scopeOption)} (user, project ou local).`);
+        return ExitCode.UsageOrConfiguration;
+      }
+      const needsArg = !["catalog list", "catalog update", "extension list"].includes(`${family.name} ${operation.name}`);
+      const arg = parsed.args[0];
+      if (needsArg && !arg) {
+        err(`Argument manquant : ${operation.args ?? "<nom>"}.`);
+        return ExitCode.UsageOrConfiguration;
+      }
+      const ctx = extensionContext(deps, write, out, err);
+      const lean = parsed.options.get("lean-context");
+      const name = parsed.options.get("name");
+      switch (`${family.name} ${operation.name}`) {
+        case "catalog add":
+          return catalogAdd(ctx, arg!, scope, typeof lean === "string" ? lean.split(",").map((p) => p.trim()).filter((p) => p !== "") : undefined, typeof name === "string" ? name : undefined);
+        case "catalog list":
+          return catalogList(ctx);
+        case "catalog update":
+          return catalogUpdate(ctx, arg);
+        case "catalog remove":
+          return catalogRemove(ctx, arg!, scopeOption === undefined ? undefined : scope);
+        case "extension add":
+          return extensionAdd(ctx, arg!, scope, parsed.options.has("force"));
+        case "extension list":
+          return extensionList(ctx, parsed.options.has("installable"));
+        case "extension enable":
+        case "extension disable":
+          return extensionEnable(ctx, arg!, scope, operation.name === "enable");
+        default:
+          return extensionRemove(ctx, arg!, scopeOption === undefined ? undefined : scope, parsed.options.has("preserve-data"));
+      }
+    }
     case "extension validate": {
       // SPEC-EXT-012: 0 without error, 1 with errors, 2 when the path does not exist (ERR-01).
       const path = parsed.args[0];
@@ -122,6 +167,30 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
 }
 
 type Writer = (document: unknown, text: () => string) => void;
+
+/** What the `catalog` and `extension` operations need: settings, the files of the writable scopes, Git, a confirmation. */
+function extensionContext(deps: AdminDependencies, write: Writer, out: (t: string) => void, err: (t: string) => void): ExtensionAdminContext {
+  const { settings, locations } = loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir });
+  return {
+    configDir: locations.configDir,
+    cwd: deps.cwd,
+    platform: deps.system.platform,
+    product: { name: deps.identity.get("PRODUCT"), version: deps.identity.version, cli: deps.identity.get("PRODUCT_CLI") },
+    settings,
+    files: { user: locations.userSettingsFile, project: locations.projectSettingsFile, local: locations.localSettingsFile },
+    runner: { env: deps.env.childEnvironment(), timeoutMs: 300_000 },
+    out,
+    err,
+    write,
+    // SPEC-EXT-002 EF-01: asked on a terminal only; elsewhere `--force` stands for the confirmation.
+    confirm: async (question) => {
+      if (!deps.streams.stdinIsTTY) return false;
+      deps.streams.writeErr(`${question} [o/N] `);
+      for await (const line of deps.streams.stdinLines()) return /^(o|oui|y|yes)$/i.test(line.trim());
+      return false;
+    },
+  };
+}
 
 function settingsOf(deps: AdminDependencies): Settings {
   return loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir }).settings;

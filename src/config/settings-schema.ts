@@ -183,6 +183,15 @@ export const SETTINGS: readonly SettingDef[] = [
   // SPEC-EXT-009, SPEC-EXT-015: extensions (lot 4).
   { key: "extensions.options", schema: Type.Record(Type.String(), Type.Unknown()), default: {}, scopes: [U, P, L, G], owner: "SPEC-EXT-015" },
   { key: "extensions.managedOnly", schema: bool(), default: false, scopes: [G], owner: "SPEC-EXT-009" },
+  // Activations and catalogues merge key by key, the strongest scope last (SPEC-EXT-003 § 5.1: managed > local > project > user).
+  { key: "extensions.enabled", schema: Type.Record(Type.String(), Type.Boolean()), default: {}, scopes: [U, P, L, G], owner: "SPEC-EXT-002" },
+  { key: "extensions.catalogs", schema: Type.Record(Type.String(), Type.Unknown()), default: {}, scopes: [U, P, L, G], owner: "SPEC-EXT-004" },
+  { key: "extensions.strictCatalogs", schema: strList(), scopes: [G], owner: "SPEC-EXT-009" },
+  { key: "extensions.blockedCatalogs", schema: strList(), default: [], scopes: [G], owner: "SPEC-EXT-009" },
+  { key: "extensions.blocked", schema: strList(), default: [], scopes: [G], owner: "SPEC-EXT-009" },
+  { key: "extensions.allowFlagged", schema: strList(), default: [], scopes: [G], owner: "SPEC-EXT-010" },
+  { key: "extensions.allowPrerelease", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-EXT-008" },
+  { key: "extensions.autoInstallProjectExtensions", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-EXT-003" },
   // SPEC-EXT-019: skills (lot 4).
   { key: "skills.maxDescriptionsTokens", schema: int(100, 100_000), default: 4_000, scopes: [U, G], owner: "SPEC-EXT-019" },
   // SPEC-MCP-001 to 022, SPEC-PER-019: connectors (lot 3).

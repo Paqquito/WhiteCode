@@ -69,12 +69,12 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
     name: "extension",
     role: "Extensions",
     operations: [
-      op("list", "Liste les extensions installées et leur version."),
-      op("add", "Installe une extension.", { args: "<référence>" }),
+      op("list", "Liste les extensions installées et leur version.", { delivered: true, options: ["json", "installable"] }),
+      op("add", "Installe une extension.", { args: "<référence>", delivered: true, options: ["scope", "force"] }),
       op("show", "Affiche les contributions d'une extension.", { args: "<nom>" }),
-      op("remove", "Désinstalle une extension.", { args: "<nom>" }),
-      op("enable", "Active une extension installée.", { args: "<nom>" }),
-      op("disable", "Désactive une extension installée.", { args: "<nom>" }),
+      op("remove", "Désinstalle une extension.", { args: "<nom>", delivered: true, options: ["scope", "force", "preserve-data"] }),
+      op("enable", "Active une extension installée.", { args: "<nom>", delivered: true, options: ["scope"] }),
+      op("disable", "Désactive une extension installée.", { args: "<nom>", delivered: true, options: ["scope"] }),
       op("update", "Met à jour une ou toutes les extensions.", { args: "[<nom>]" }),
       op("rollback", "Revient à la version précédente d'une extension.", { args: "<nom>" }),
       op("validate", "Vérifie la conformité d'une extension en cours de développement.", { args: "<chemin>", delivered: true, options: ["json"] }),
@@ -84,10 +84,10 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
     name: "catalog",
     role: "Catalogues d'extensions",
     operations: [
-      op("list", "Liste les catalogues d'extensions configurés."),
-      op("add", "Ajoute un catalogue d'extensions.", { args: "<référence>" }),
-      op("update", "Actualise l'index d'un ou de tous les catalogues.", { args: "[<nom>]" }),
-      op("remove", "Retire un catalogue.", { args: "<nom>" }),
+      op("list", "Liste les catalogues d'extensions configurés.", { delivered: true, options: ["json"] }),
+      op("add", "Ajoute un catalogue d'extensions.", { args: "<référence>", delivered: true, options: ["scope", "lean-context", "name"] }),
+      op("update", "Actualise l'index d'un ou de tous les catalogues.", { args: "[<nom>]", delivered: true }),
+      op("remove", "Retire un catalogue.", { args: "<nom>", delivered: true, options: ["scope"] }),
     ],
   },
   {
@@ -142,7 +142,8 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
 export const FAMILY_BY_NAME: ReadonlyMap<string, FamilyDef> = new Map(FAMILY_CATALOG.map((f) => [f.name, f]));
 
 /** Common options of the sub-commands (§ 5.4): `true` when the option takes a value. */
-export const COMMON_OPTIONS: Readonly<Record<string, boolean>> = { json: false, scope: true, force: false, "preserve-data": false, name: true, verbose: false, help: false };
+/** § 5.4 of SPEC-MOD-012, plus the options proper to an operation: `--lean-context` (SPEC-EXT-004), `--installable` (SPEC-EXT-002). */
+export const COMMON_OPTIONS: Readonly<Record<string, boolean>> = { json: false, scope: true, force: false, "preserve-data": false, name: true, verbose: false, help: false, "lean-context": true, installable: false };
 
 export interface ParsedSubcommand {
   readonly family: string;

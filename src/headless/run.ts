@@ -67,6 +67,7 @@ import { ConnectorManager, type ConnectorEvent } from "../connectors/manager";
 import { connectorSources, projectChoice, projectStateKey, type ProjectState } from "../connectors/session";
 import { createDiscoverToolsTool } from "../tools/discover-tools";
 import { loadExtensions } from "../extensions/load";
+import { activeInstalled } from "../extensions/active";
 import { recognize } from "../commands/recognize";
 import { framed, loadSkill } from "../skills/invoke";
 import { loadSkills, modelSkills, skillsSection, skillsSignature, type Skill, type SkillLocation } from "../skills/registry";
@@ -589,10 +590,14 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   if (sessionExtensions.length > 0 && settings.get<boolean>("extensions.managedOnly"))
     throw new RunError("Option --extension-dir refusée : seules les extensions gérées sont admises (extensions.managedOnly).", ExitCode.UsageOrConfiguration); // FA-01
   for (const d of sessionExtensions) if (!existsSync(d)) throw new RunError(`Dossier d'extension introuvable : ${d}.`, ExitCode.UsageOrConfiguration); // ERR-01
+  // SPEC-EXT-003: the installed extensions active in this project (managed > local > project > user).
+  const installedExtensions = activeInstalled(settings, locations.configDir, { name: identity.get("PRODUCT"), version: identity.version, cli: identity.get("PRODUCT_CLI") });
+  for (const line of installedExtensions.report) err(`avertissement : ${line}`);
   const extensions = loadExtensions(
-    sessionExtensions.map((root) => ({ root, origin: "session" as const })),
+    [...installedExtensions.active, ...sessionExtensions.map((root) => ({ root, origin: "session" as const }))],
     { options: settings.get<Record<string, unknown>>("extensions.options"), dataDir: (name) => join(locations.configDir, "extension-data", name) },
   );
+  for (const s of extensions.summaries) if (s.origin === "session") err(s.text); // SPEC-EXT-014 step 3
   for (const line of extensions.report) err(line);
 
   // SPEC-MCP-001, SPEC-MCP-021, SPEC-PER-019: the effective connectors; their tools reach the registry once connected.
