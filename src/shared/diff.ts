@@ -55,16 +55,38 @@ function myers(a: readonly string[], b: readonly string[]): Op[] {
   return ops.reverse();
 }
 
-/** Unified difference between two texts (LF line endings), with `context` lines around each change; empty when equal. */
-export function unifiedDiff(before: string, after: string, label: string, context = 3): string {
-  if (before === after) return "";
+export type DiffOp = Op;
+
+/** A change of a file, as a tool will make it, for its presentation before approval (SPEC-IHM-005). */
+export interface FileChange {
+  readonly path: string;
+  /** Content before (LF line endings), absent for a creation. */
+  readonly before?: string;
+  /** Content after, absent for a deletion. */
+  readonly after?: string;
+  /** Sizes in bytes, for a binary file. */
+  readonly binary?: { readonly before?: number; readonly after?: number };
+  /** Change of line endings or of encoding, invisible otherwise. */
+  readonly format?: string;
+}
+
+/** Line operations from `before` to `after` (LF line endings); a whole replacement beyond the work bound. */
+export function diffLines(before: string, after: string): { ops: DiffOp[]; whole: boolean } {
   const a = splitLines(before);
   const b = splitLines(after);
-  const ops: Op[] =
-    a.length * b.length > MAX_WORK
-      ? [...a.map((line): Op => ({ kind: "del", line })), ...b.map((line): Op => ({ kind: "add", line }))]
-      : myers(a, b);
-  const out = [`--- ${label}`, `+++ ${label}`];
+  if (a.length * b.length > MAX_WORK) return { ops: [...a.map((line): Op => ({ kind: "del", line })), ...b.map((line): Op => ({ kind: "add", line }))], whole: true };
+  return { ops: myers(a, b), whole: false };
+}
+
+export interface Hunk {
+  readonly oldStart: number;
+  readonly newStart: number;
+  readonly ops: readonly DiffOp[];
+}
+
+/** Sections: `context` lines around each change; changes closer than twice the context share a section. */
+export function hunksOf(ops: readonly DiffOp[], context = 3): Hunk[] {
+  const out: Hunk[] = [];
   let i = 0;
   let oldLine = 1;
   let newLine = 1;
@@ -75,7 +97,6 @@ export function unifiedDiff(before: string, after: string, label: string, contex
       newLine++;
       continue;
     }
-    // Hunk: back up `context` lines, extend while changes are closer than 2 × context.
     const startOp = Math.max(0, i - context);
     const back = i - startOp;
     let end = i;
@@ -87,19 +108,29 @@ export function unifiedDiff(before: string, after: string, label: string, contex
       } else gap = 0;
       end++;
     }
-    end = Math.min(ops.length, end - Math.max(0, gap - context));
-    const hunk = ops.slice(startOp, end);
-    const oldStart = oldLine - back;
-    const newStart = newLine - back;
-    const oldCount = hunk.filter((o) => o.kind !== "add").length;
-    const newCount = hunk.filter((o) => o.kind !== "del").length;
-    out.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`);
-    for (const o of hunk) out.push(`${o.kind === "same" ? " " : o.kind === "del" ? "-" : "+"}${o.line}`);
+    // Keep `context` of the unchanged lines that follow the last change.
+    let trailing = 0;
+    while (trailing < end - i && ops[end - 1 - trailing]!.kind === "same") trailing++;
+    end = Math.min(ops.length, end - Math.max(0, trailing - context));
+    out.push({ oldStart: oldLine - back, newStart: newLine - back, ops: ops.slice(startOp, end) });
     for (const o of ops.slice(i, end)) {
       if (o.kind !== "add") oldLine++;
       if (o.kind !== "del") newLine++;
     }
     i = end;
+  }
+  return out;
+}
+
+/** Unified difference between two texts (LF line endings), with `context` lines around each change; empty when equal. */
+export function unifiedDiff(before: string, after: string, label: string, context = 3): string {
+  if (before === after) return "";
+  const out = [`--- ${label}`, `+++ ${label}`];
+  for (const h of hunksOf(diffLines(before, after).ops, context)) {
+    const oldCount = h.ops.filter((o) => o.kind !== "add").length;
+    const newCount = h.ops.filter((o) => o.kind !== "del").length;
+    out.push(`@@ -${h.oldStart},${oldCount} +${h.newStart},${newCount} @@`);
+    for (const o of h.ops) out.push(`${o.kind === "same" ? " " : o.kind === "del" ? "-" : "+"}${o.line}`);
   }
   return out.join("\n");
 }

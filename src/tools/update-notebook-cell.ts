@@ -107,7 +107,7 @@ export const updateNotebookCellTool: Tool<UpdateNotebookCellInput> = {
   async preview(input, ctx): Promise<ToolPreview> {
     const p = plan(input, ctx);
     if ("refusal" in p) return p;
-    return { diff: unifiedDiff(toLf(p.before), toLf(p.after), input.path) };
+    return { diff: unifiedDiff(toLf(p.before), toLf(p.after), input.path), change: { path: input.path, before: toLf(p.before), after: toLf(p.after) } };
   },
 
   async execute(input, ctx): Promise<ToolOutcome> {

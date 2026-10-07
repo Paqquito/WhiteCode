@@ -91,6 +91,37 @@ import { userView } from "../interactive/views";
 import { buildFileIndex, type FileIndex } from "../interactive/completion";
 import { InputHistory } from "../interactive/history";
 import { readUsage, writeUsage } from "../interactive/usage";
+import type { DiffOptions } from "../ui/diff-view";
+import { DEFAULT_CODE_THEME } from "../ui/highlight";
+import type { MarkdownOptions } from "../ui/markdown";
+
+/** Options of the rich text, of the colouring of code and of the differences (SPEC-IHM-003 to SPEC-IHM-005). */
+function renderOptions(settings: { get<T>(key: string): T }): { markdown: MarkdownOptions; diff: DiffOptions } {
+  const highlightOptions = {
+    enabled: settings.get<boolean>("ui.syntaxHighlighting.enabled"),
+    maxBytes: settings.get<number>("ui.syntaxHighlighting.maxBytes"),
+    timeoutMs: settings.get<number>("ui.syntaxHighlighting.timeoutMs"),
+    theme: DEFAULT_CODE_THEME,
+  };
+  return {
+    markdown: {
+      enabled: settings.get<boolean>("ui.richText.enabled"),
+      maxRenderedChars: settings.get<number>("ui.richText.maxRenderedChars"),
+      maxNestingLevel: settings.get<number>("ui.richText.maxNestingLevel"),
+      wrapTables: settings.get<boolean>("ui.wrapTables"),
+      highlight: highlightOptions,
+      extraLanguages: settings.get<Record<string, string>>("ui.syntaxHighlighting.extraLanguages"),
+    },
+    diff: {
+      contextLines: settings.get<number>("ui.diff.contextLines"),
+      layout: settings.get<string>("ui.diff.layout"),
+      maxDisplayedLines: settings.get<number>("ui.diff.maxDisplayedLines"),
+      intraline: settings.get<boolean>("ui.diff.intralineHighlight"),
+      showInvisible: settings.get<boolean>("ui.diff.showInvisibleChanges"),
+      highlight: highlightOptions,
+    },
+  };
+}
 
 /** Sources of the commands, as shown in the completion. */
 const COMMAND_SOURCE_LABEL: Readonly<Record<string, string>> = { internal: "produit", managed: "organisation", project: "projet", user: "utilisateur", extension: "extension", connector: "connecteur" };
@@ -1446,6 +1477,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       historyGlobal: settings.get<string>("ui.history.scope") === "global",
       completion,
       usage: completionUsage,
+      render: renderOptions(settings),
     });
   }
 

@@ -3,6 +3,7 @@
 
 import type { PermissionMode } from "../config/settings-schema";
 import type { AskOrigin, Decision } from "./engine";
+import type { FileChange } from "../shared/diff";
 
 export type HumanAnswer =
   | { readonly answer: "yes" }
@@ -24,6 +25,8 @@ export interface ApprovalRequest {
   readonly suggestions: readonly string[];
   /** Difference of the change, shown before confirmation (SPEC-OUT-003 EF-06). */
   readonly preview?: string;
+  /** The change itself, for a structured presentation (SPEC-IHM-005). */
+  readonly change?: FileChange;
   /** Identity of the requesting agent when relayed (sub-agent, teammate). */
   readonly requester?: string;
   /** Why the action is dangerous, if it is (SPEC-IHM-027 § 5.3 point 1). */

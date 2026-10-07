@@ -8,6 +8,8 @@ import type { Span } from "../ui/text";
 
 export interface ViewContext {
   readonly unicode: UnicodeLevel;
+  /** Rendering of the rich text of the model (SPEC-IHM-003); plain text otherwise. */
+  readonly markdown?: (content: string) => Node;
 }
 
 const MARKS: Readonly<Record<UnicodeLevel, { user: string; model: string; tool: string; result: string; spinner: readonly string[] }>> = {
@@ -19,16 +21,22 @@ const MARKS: Readonly<Record<UnicodeLevel, { user: string; model: string; tool: 
 export const marks = (u: UnicodeLevel) => MARKS[u];
 
 /** A block with a mark in front of its first line and an indentation for the others. */
-function marked(mark: string, markStyle: Style | undefined, spans: readonly Span[]): Node {
-  return box([box([text([{ text: mark, style: markStyle }])], { width: 2 }), box([text(spans)], { width: "grow" })], { direction: "row" });
+function marked(mark: string, markStyle: Style | undefined, body: readonly Span[] | Node): Node {
+  const content = Array.isArray(body) ? text(body as readonly Span[]) : (body as Node);
+  return box([box([text([{ text: mark, style: markStyle }])], { width: 2 }), box([content], { width: "grow" })], { direction: "row" });
 }
 
 export function userView(content: string, v: ViewContext): Node {
   return marked(marks(v.unicode).user, { dim: true }, [{ text: content, style: { bold: true } }]);
 }
 
-export function modelView(content: string, v: ViewContext): Node {
-  return marked(marks(v.unicode).model, undefined, [{ text: content }]);
+/**
+ * The text of the model, under its mark and indented: a content imitating a notice of the product stays inside this
+ * block, visibly distinct from the real notices, which start in the first column (CA-06 of SPEC-IHM-003).
+ */
+export function modelView(content: string | Node, v: ViewContext): Node {
+  const body = typeof content === "string" ? (v.markdown ? v.markdown(content) : text(content)) : content;
+  return marked(marks(v.unicode).model, undefined, body);
 }
 
 export function toolCallView(name: string, summary: string, v: ViewContext): Node {

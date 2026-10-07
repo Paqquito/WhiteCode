@@ -21,6 +21,8 @@ import { literalTriggers } from "./triggers";
 import { InputAssist, type AssistOptions } from "./assist";
 import type { UsageStats } from "./completion";
 import type { InputHistory } from "./history";
+import { MarkdownRenderer, type MarkdownOptions } from "../ui/markdown";
+import { diffNode, type DiffOptions } from "../ui/diff-view";
 import { activityView, interruptionView, modelView, noticeView, toolCallView, toolResultView, userView, type ViewContext } from "./views";
 
 export interface AppSettings {
@@ -97,6 +99,8 @@ export interface AppOptions {
   /** Sources of the completion (SPEC-IHM-009); absent when it is disabled. */
   readonly completion?: AssistOptions["completion"];
   readonly usage?: Map<string, UsageStats>;
+  /** Rich text of the answers (SPEC-IHM-003, SPEC-IHM-004) and differences of the changes (SPEC-IHM-005). */
+  readonly render?: { readonly markdown: MarkdownOptions; readonly diff: DiffOptions };
   readonly clock?: () => number;
   readonly scheduler?: Scheduler;
 }
@@ -121,6 +125,8 @@ export class InteractiveApp {
   #spinner = 0;
   #animation: ReturnType<typeof setInterval> | undefined;
   #stream = "";
+  /** Renderer of the response being produced: its finished blocks are not parsed again (ENF-02 of SPEC-IHM-003). */
+  #streamRenderer: MarkdownRenderer | undefined;
   /** The text of the current response was committed before its end (by a call of a tool). */
   #responseCommitted = false;
   #exitArmed: { combo: string; until: number } | undefined;
@@ -131,7 +137,8 @@ export class InteractiveApp {
 
   constructor(o: AppOptions) {
     this.#o = o;
-    this.#view = { unicode: o.capabilities.unicode };
+    const render = o.render;
+    this.#view = { unicode: o.capabilities.unicode, ...(render ? { markdown: (c: string) => new MarkdownRenderer(render.markdown, o.capabilities.unicode).render(c) } : {}) };
     this.#editor = new Editor(o.settings.inputMaxChars);
     this.#keymap = o.keymap ?? new Keymap();
     this.#queue = [...(o.restored?.queue ?? [])];
@@ -261,6 +268,7 @@ export class InteractiveApp {
         break;
       case "response_restarted":
         this.#stream = "";
+        this.#streamRenderer = undefined;
         this.#redraw();
         break;
       case "assistant_message":
@@ -303,6 +311,7 @@ export class InteractiveApp {
     }
     const content = (final ?? this.#stream).trim();
     this.#stream = "";
+    this.#streamRenderer = undefined;
     if (!content) return;
     this.commit(modelView(content, this.#view));
     if (final === undefined) this.#responseCommitted = true;
@@ -386,7 +395,10 @@ export class InteractiveApp {
     const count = this.#approvals.length > 1 ? ` (1/${this.#approvals.length})` : "";
     const rows: Node[] = [text([{ text: r.toolName, style: { bold: true } }, { text: ` : ${r.summary}` }])];
     if (r.requester) rows.push(text([{ text: `Demandé par : ${r.requester}`, style: { dim: true } }])); // EF-04
-    if (r.preview) {
+    if (r.change && this.#o.render) {
+      // SPEC-IHM-005 EF-01: the change presented as a difference before the decision.
+      rows.push(diffNode(r.change, { ...this.#o.render.diff, maxDisplayedLines: Math.min(this.#o.render.diff.maxDisplayedLines, 40) }));
+    } else if (r.preview) {
       // EF-01: exactly what will be written; a long preview is cut with the number of hidden lines.
       const lines = r.preview.replace(/\n$/, "").split("\n");
       const shown = lines.slice(0, 20);
@@ -779,7 +791,11 @@ export class InteractiveApp {
     // The list of completion and the search band, right above the input area.
     if (!approval && !this.#confirm) panels.push(...this.#assist.panels());
     const stream: Node[] = [];
-    if (this.#stream) stream.push(modelView(this.#stream, this.#view));
+    if (this.#stream) {
+      // § 5.2 of SPEC-IHM-003: the content being produced is rendered by its probable intention.
+      if (this.#o.render && !this.#streamRenderer) this.#streamRenderer = new MarkdownRenderer(this.#o.render.markdown, this.#view.unicode);
+      stream.push(modelView(this.#streamRenderer ? this.#streamRenderer.render(this.#stream) : this.#stream, this.#view));
+    }
     if (this.running) stream.push(activityView(this.#activity, this.#now - this.#turnStarted, this.#spinner, this.#view));
     return composeFrame(
       { stream: stream.length > 0 ? box(stream) : undefined, panels, input: this.#inputNode(size.columns, ctx), status: this.#statusNode() },

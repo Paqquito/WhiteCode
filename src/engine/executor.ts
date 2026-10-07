@@ -11,6 +11,7 @@ import type { StopReason, ToolCall, ToolResultPart } from "../providers/types";
 import type { ToolRegistry } from "../tools/registry";
 import { textOutcome, type RuleSubject, type Tool, type ToolContext, type ToolOutcome } from "../tools/types";
 import type { EventSink } from "./events";
+import type { FileChange } from "../shared/diff";
 import { REPETITION_REMINDER, type GuardVerdict, type LoopGuard } from "./loop-guard";
 import type { ResultStore } from "../session/result-store";
 import { boundText } from "../tools/output-bounds";
@@ -236,7 +237,7 @@ export class ResponseExecution {
         fileWriteInsideAllowed: subject.kind === "paths" && subject.access === "write" && subject.paths.every((p) => insideAllowed(p, ctx.allowedDirectories, ctx.platform)),
       };
       const decision = decide(query, pctx);
-      const resolved = await this.#resolve(call, tool, decision, pctx.mode, preview?.diff, signal, subject);
+      const resolved = await this.#resolve(call, tool, decision, pctx.mode, preview && "diff" in preview ? preview : undefined, signal, subject);
       if (!resolved.allowed) return finish(await this.#refuse(call, resolved.reason, decision.step), false);
 
       // Scheduling (RG-01 to RG-03): a safe call waits for the last barrier; a barrier waits for every previous call.
@@ -252,7 +253,7 @@ export class ResponseExecution {
           const byMode = decision.kind === "allow" && (decision.step === 3 || decision.step === 7);
           if (again.kind === "deny") return finish(await this.#refuse(call, again.reason, again.step), false);
           if (again.kind === "ask" && byMode) {
-            const second = await this.#resolve(call, tool, again, now.mode, preview?.diff, signal, subject);
+            const second = await this.#resolve(call, tool, again, now.mode, preview && "diff" in preview ? preview : undefined, signal, subject);
             if (!second.allowed) return finish(await this.#refuse(call, second.reason, again.step), false);
           }
         }
@@ -309,7 +310,7 @@ export class ResponseExecution {
     tool: Tool<never>,
     decision: Decision,
     mode: PermissionMode,
-    diff: string | undefined,
+    shown: { readonly diff: string; readonly change?: FileChange } | undefined,
     signal: AbortSignal,
     subject: RuleSubject,
   ): Promise<{ allowed: boolean; reason: string }> {
@@ -329,7 +330,8 @@ export class ResponseExecution {
         reason: decision.reason,
         origin: decision.origin,
         suggestions: decision.suggestions,
-        ...(diff !== undefined && diff !== "" ? { preview: diff } : {}),
+        ...(shown?.diff ? { preview: shown.diff } : {}),
+        ...(shown?.change ? { change: shown.change } : {}),
         ...(tool.danger?.(call.input as never) ? { danger: tool.danger(call.input as never) } : {}),
       },
       mode,

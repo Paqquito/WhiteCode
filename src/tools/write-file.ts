@@ -16,7 +16,7 @@ export interface WriteFileInput {
 }
 
 /** Refusal before any write, or the current state of the target. */
-function inspect(input: WriteFileInput, ctx: ToolContext): { refusal: ToolOutcome } | { before?: string } {
+function inspect(input: WriteFileInput, ctx: ToolContext): { refusal: ToolOutcome } | { before?: string; binary?: number } {
   let exists = false;
   try {
     const s = statSync(input.path);
@@ -28,8 +28,9 @@ function inspect(input: WriteFileInput, ctx: ToolContext): { refusal: ToolOutcom
   if (!exists) return {};
   const precondition = readPreconditionError(input.path, ctx, true, "rewrite"); // ERR-01, ERR-02, RG-02
   if (precondition) return { refusal: textOutcome(precondition, true, "invalid_input") };
-  const decoded = decodeText(readBytesIfExists(input.path) ?? new Uint8Array());
-  return { before: decoded ? toLf(decoded.text) : "" };
+  const bytes = readBytesIfExists(input.path) ?? new Uint8Array();
+  const decoded = decodeText(bytes);
+  return decoded ? { before: toLf(decoded.text) } : { before: "", binary: bytes.length };
 }
 
 export const writeFileTool: Tool<WriteFileInput> = {
@@ -61,7 +62,9 @@ export const writeFileTool: Tool<WriteFileInput> = {
   async preview(input, ctx): Promise<ToolPreview> {
     const state = inspect(input, ctx);
     if ("refusal" in state) return state;
-    return { diff: unifiedDiff(state.before ?? "", toLf(input.content), input.path) };
+    const after = toLf(input.content);
+    const change = state.binary !== undefined ? { path: input.path, binary: { before: state.binary, after: Buffer.byteLength(input.content, "utf8") } } : { path: input.path, before: state.before, after };
+    return { diff: unifiedDiff(state.before ?? "", after, input.path), change };
   },
 
   async execute(input, ctx): Promise<ToolOutcome> {

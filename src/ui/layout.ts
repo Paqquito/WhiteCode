@@ -50,7 +50,13 @@ export interface LinesNode {
   readonly cursor?: { readonly row: number; readonly col: number };
 }
 
-export type Node = TextNode | BoxNode | LinesNode;
+/** Content computed for the width it receives (tables, separators, differences). */
+export interface RenderNode {
+  readonly kind: "render";
+  readonly render: (width: number, ctx: LayoutContext) => Laid;
+}
+
+export type Node = TextNode | BoxNode | LinesNode | RenderNode;
 
 export interface LayoutContext {
   readonly unicode: UnicodeLevel;
@@ -236,5 +242,9 @@ function allocate(children: readonly Node[], width: number): number[] {
 export function layoutNode(node: Node, width: number, ctx: LayoutContext): Laid {
   const w = Math.max(1, width);
   if (node.kind === "lines") return { lines: node.lines.map((l) => pad(l.slice(), w)), cursor: node.cursor && node.cursor.col < w ? node.cursor : undefined };
+  if (node.kind === "render") {
+    const laid = node.render(w, ctx);
+    return { lines: laid.lines.map((l) => pad(l, w)), cursor: laid.cursor };
+  }
   return node.kind === "text" ? layoutText(node, w, ctx) : layoutBox(node, w, ctx);
 }

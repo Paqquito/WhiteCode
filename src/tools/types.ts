@@ -77,7 +77,8 @@ export interface ToolContext extends ToolEnvironment {
 }
 
 /** Difference shown with an approval request (SPEC-OUT-003 EF-06), or an early refusal found before asking. */
-export type ToolPreview = { readonly diff: string } | { readonly refusal: ToolOutcome };
+/** The difference shown before a decision (SPEC-OUT-003 EF-06), with the change it describes (SPEC-IHM-005). */
+export type ToolPreview = { readonly diff: string; readonly change?: FileChange } | { readonly refusal: ToolOutcome };
 
 export type ToolErrorKind = "invalid_input" | "permission_denied" | "unavailable" | "timeout" | "execution" | "interrupted" | "not_executed";
 
@@ -108,6 +109,8 @@ export interface Tool<I = Record<string, unknown>> {
   execute(input: I, ctx: ToolContext): Promise<ToolOutcome>;
   summary(input: I): string;
 }
+
+import type { FileChange } from "../shared/diff";
 
 export function textOutcome(text: string, isError = false, errorKind?: ToolErrorKind): ToolOutcome {
   return { isError, errorKind: isError ? (errorKind ?? "execution") : undefined, content: [{ type: "text", text }] };

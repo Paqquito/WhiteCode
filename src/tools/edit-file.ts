@@ -91,7 +91,7 @@ export const editFileTool: Tool<EditFileInput> = {
   async preview(input, ctx): Promise<ToolPreview> {
     const p = plan(input, ctx);
     if ("refusal" in p) return p;
-    return { diff: unifiedDiff(p.before, p.plan.content, input.path) };
+    return { diff: unifiedDiff(p.before, p.plan.content, input.path), change: { path: input.path, before: p.before, after: p.plan.content } };
   },
 
   async execute(input, ctx): Promise<ToolOutcome> {
