@@ -1,7 +1,7 @@
 // Test helpers: identities, a fictitious model catalogue, isolated workspaces and an in-process CLI runner.
 // No real provider nor model name is used (decision D-09): tests configure the provider explicitly.
 
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Identity } from "../../src/identity/identity";
@@ -50,7 +50,9 @@ export interface Workspace {
 
 /** Temporary home, configuration folder, managed folder and project, never the real ones. */
 export function workspace(): Workspace {
-  const root = mkdtempSync(join(tmpdir(), "ws-"));
+  // The real path of the temporary folder: on CI runners it is a short 8.3 name (Windows) or behind a symbolic link
+  // (macOS), and the product compares the paths of the tools with real paths.
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), "ws-"));
   const ws = {
     root,
     home: join(root, "home"),

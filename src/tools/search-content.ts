@@ -382,9 +382,14 @@ export const searchContentTool: Tool<SearchContentInput> = {
         run = await searchRipgrep(ctx.ripgrepPath, q);
       } catch (error) {
         const message = (error as Error).message;
-        if (/regex|parse error/i.test(message)) return textOutcome(`Invalid regular expression: ${message}`, true, "invalid_input");
-        run = searchBuiltIn(q);
-        fallbackNote = " The system search engine failed; the built-in search was used.";
+        // Without multiline, a line holds no line break, so such an expression matches nothing, as with the built-in
+        // engine (SPEC-OUT-007 CA-04); ripgrep reports it as an error instead.
+        if (!q.multiline && /literal "\\n" is not allowed/.test(message)) run = { files: [], timedOut: false };
+        else if (/regex|parse error/i.test(message)) return textOutcome(`Invalid regular expression: ${message}`, true, "invalid_input");
+        else {
+          run = searchBuiltIn(q);
+          fallbackNote = " The system search engine failed; the built-in search was used.";
+        }
       }
     } else run = searchBuiltIn(q);
 

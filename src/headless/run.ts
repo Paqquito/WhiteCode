@@ -843,7 +843,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     searchMaxLineLength: settings.get<number>("tools.search.maxLineLength"),
     searchTimeoutMs: settings.get<number>("tools.search.timeout"),
   };
-  const allowedDirectories = [projectReal];
+  // The working folder as given and its real path (a symbolic link, such as /var on macOS, or a short Windows name):
+  // the model may use either form, and both designate the same folder (SPEC-PER-010).
+  const allowedDirectories = [...new Set([cwd, projectReal])];
   // Protected locations (SPEC-PER-010 EF-02, gap E-045), derived from the identity.
   const protectedPaths = protectedLocations({
     home: system.home,

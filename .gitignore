@@ -4,4 +4,5 @@ dist/
 src/identity/generated/
 *.log
 .env
-dist/
+# Lock file of the coding assistant, never versioned.
+.claude/scheduled_tasks.lock

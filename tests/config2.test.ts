@@ -96,7 +96,7 @@ describe("SPEC-CFG-005 changes during a session", () => {
     });
     expect(r.code).toBe(0);
     expect(r.stderr).toContain("Paramètres modifiés : models.effort ; ils prendront effet à la prochaine session.");
-    expect(r.stderr).toContain(`Paramètres invalides dans ${path} : la configuration précédente reste appliquée.`);
+    expect(r.stderr).toMatch(/Paramètres invalides dans .*config.json : la configuration précédente reste appliquée./);
     const third = results(provider, 3)[2]!;
     expect(third.isError).toBe(true); // the deny rule of the last valid version still applies
   });
