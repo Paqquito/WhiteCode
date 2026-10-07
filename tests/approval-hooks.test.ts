@@ -122,7 +122,7 @@ describe("habilitated approval hooks", () => {
     const res = await run(ws, p, { hooks: { approval_needed: [declaration] }, permissions: { decisionHooks: [entry] } });
     expect(res.stderr).toContain("le crochet user/approval_needed/policy ne peut pas être habilité : la commande lance un script défini par le projet (npm run)");
     expect(toolResult(p)).toContain("Not allowed in this run");
-  });
+  }, 30_000); // a cold start of PowerShell on the Windows runners can take several seconds
 
   test("TECH — SPEC-PER-001 § 5.3 point c — an incomplete entry is ignored, and the warning gives the identity to copy", async () => {
     const ws = workspace();
