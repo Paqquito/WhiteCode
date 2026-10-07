@@ -218,6 +218,17 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "ui.retainedLines", schema: int(10, 1_000_000), default: 2_000, scopes: [U], owner: "SPEC-IHM-002" },
   { key: "ui.inputMinHeight", schema: int(1, 100), default: 1, scopes: [U], owner: "SPEC-IHM-002" },
   { key: "ui.inputMaxHeight", schema: int(1, 100), default: 10, scopes: [U], owner: "SPEC-IHM-002" },
+  // SPEC-MOD-001, SPEC-IHM-007, SPEC-IHM-011: interactive session, input area and queue (lot 5).
+  { key: "ui.exitConfirmation", schema: bool(), default: true, scopes: [U], owner: "SPEC-MOD-001" },
+  { key: "ui.sessionSummary", schema: bool(), default: true, scopes: [U], owner: "SPEC-MOD-001" },
+  { key: "ui.replayOnResume", schema: enumOf(["condensed", "full", "none"]), default: "condensed", scopes: [U], owner: "SPEC-MOD-001" },
+  { key: "ui.exitDoublePressWindow", schema: durationSchema(), kind: "duration", default: 1_500, scopes: [U], owner: "SPEC-MOD-001" },
+  { key: "ui.input.maxChars", schema: int(100, 10_000_000), default: 100_000, scopes: [U], owner: "SPEC-IHM-007" },
+  { key: "ui.input.warnChars", schema: int(100, 10_000_000), default: 20_000, scopes: [U], owner: "SPEC-IHM-007" },
+  { key: "ui.input.persistDraft", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-007" },
+  { key: "ui.queue.maxMessages", schema: int(1, 1_000), default: 10, scopes: [U], owner: "SPEC-IHM-011" },
+  { key: "ui.queue.autoSend", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-011" },
+  { key: "ui.drafts.maxStashed", schema: int(1, 1_000), default: 10, scopes: [U], owner: "SPEC-IHM-011" },
 
   // Options forbidden by the managed policy (SPEC-MOD-011 § 11, decision D-13, gap E-029).
   { key: "policy.forbiddenOptions", schema: strList(), default: [], scopes: [G], owner: "SPEC-MOD-011", merge: "concat" },

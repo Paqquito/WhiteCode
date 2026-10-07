@@ -2,9 +2,11 @@
 //             SPEC-MOT-004 (§ 5.3 steps 1 to 4, EF-01, EF-02, ERR-01 to ERR-05, RG-01, RG-02, ENF-01, CA-03, CA-04),
 //             SPEC-SES-002 (§ 5.1, § 5.3 steps 4 to 6, FA-02, EF-01, EF-05, ERR-01, CA-01 to CA-05), SPEC-SES-003 (§ 5.3, EF-01, EF-02, ERR-01, ERR-02, CA-01, CA-02),
 //             SPEC-CFG-004 (ERR-01), SPEC-CFG-005 (steps 4 and 5, EF-02, EF-03), SPEC-CFG-008 (§ 5.3, EF-01, EF-02, ERR-01),
-//             SPEC-SES-004 (ERR-03, CA-01, CA-02), SPEC-SES-008 (FA-01, EF-03), SPEC-SES-012 (§ 5.3, EF-01, EF-03, ERR-01, ERR-02, CA-01, CA-02), SPEC-SES-015 (steps 2 to 4, FA-01)
-// Supports: SPEC-MOT-005 (loading per segment, files touched), SPEC-MOT-007 (reminder producers), SPEC-CFG-001, SPEC-CFG-007 (RG-02, FA-01), SPEC-OUT-008, SPEC-OUT-009 (EF-07), SPEC-PER-001 (CA-05), SPEC-PER-003, SPEC-PER-010, SPEC-MOD-003 (CA-02, CA-04, CA-05), SPEC-SES-001, SPEC-API-006, decisions D-03, D-05, D-09, D-10, D-13, gaps E-013, E-017, E-018, E-045, E-050
-// Composition root of a non-interactive run: options → identity and settings → provider → engine → output.
+//             SPEC-SES-004 (ERR-03, CA-01, CA-02), SPEC-SES-008 (FA-01, EF-03), SPEC-SES-012 (§ 5.3, EF-01, EF-03, ERR-01, ERR-02, CA-01, CA-02), SPEC-SES-015 (steps 2 to 4, FA-01),
+//             SPEC-MOD-001 (§ 5.1, EF-01, EF-04, ERR-01, FA-04 summary at exit, FA-06, CA-05)
+// Supports: SPEC-MOT-005 (loading per segment, files touched), SPEC-MOT-007 (reminder producers), SPEC-CFG-001, SPEC-CFG-007 (RG-02, FA-01), SPEC-OUT-008, SPEC-OUT-009 (EF-07), SPEC-PER-001 (CA-05), SPEC-PER-003, SPEC-PER-010, SPEC-MOD-003 (CA-02, CA-04, CA-05), SPEC-SES-001, SPEC-API-006, decisions D-03, D-05, D-09, D-10, D-13, gaps E-013, E-017, E-018, E-045, E-050, E-094
+// Composition root of a session: options → identity and settings → provider → engine → automated output, or the
+// interactive application (lot 5).
 
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -74,6 +76,16 @@ import { loadSkills, modelSkills, skillsSection, skillsSignature, type Skill, ty
 import { createUseSkillTool } from "../tools/use-skill";
 import { closingFields, combineResults, exitCodeFor, renderResult, type ResultFormat } from "./output";
 import { EventStream } from "./stream-output";
+import { InteractiveApp } from "../interactive/app";
+import { InputStateWriter, inputStatePath, readInputState, sessionDirOf } from "../interactive/input-state";
+import { replayHistory } from "../interactive/replay";
+import { runInteractiveLoop } from "../interactive/session";
+import { literalTriggers } from "../interactive/triggers";
+import { detectCapabilities } from "../ui/capabilities";
+import type { UnicodeLevel } from "../ui/style";
+
+/** RG-01 of SPEC-IHM-027: a key typed during this delay after a dialog appears never decides it. */
+const DIALOG_GUARD_MS = 300;
 
 export interface ProviderFactoryOptions {
   readonly providerId: string;
@@ -145,8 +157,9 @@ function ruleAnchor(origin: Scope | "env", projectRoot: string, cwd: string): st
 /** Runs the command line; returns the exit code (SPEC-MOD-002 § 7.3). Never exits the process itself. */
 export async function runCli(argv: readonly string[], deps: RunDependencies): Promise<number> {
   const { streams, identity } = deps;
-  const err = (text: string) => streams.writeErr(text.endsWith("\n") ? text : `${text}\n`);
-  const holder: { stream?: EventStream; cleanups: Array<() => void> } = { cleanups: [] };
+  const holder: RunHolder = { cleanups: [] };
+  // Once the interactive interface holds the terminal, the messages of the product go through it (SPEC-IHM-001 RG-03).
+  const err = (text: string) => (holder.errSink ? holder.errSink(text) : streams.writeErr(text.endsWith("\n") ? text : `${text}\n`));
   try {
     return await run(argv, deps, err, holder);
   } catch (error) {
@@ -176,7 +189,13 @@ export async function runCli(argv: readonly string[], deps: RunDependencies): Pr
   }
 }
 
-async function run(argv: readonly string[], deps: RunDependencies, err: (text: string) => void, holder: { stream?: EventStream; cleanups: Array<() => void> }): Promise<number> {
+interface RunHolder {
+  stream?: EventStream;
+  cleanups: Array<() => void>;
+  errSink?: (text: string) => void;
+}
+
+async function run(argv: readonly string[], deps: RunDependencies, err: (text: string) => void, holder: RunHolder): Promise<number> {
   const { streams, identity, system } = deps;
   // SPEC-MOD-012: `<famille> [<opération>] …` is an administration operation, never a session (EF-04).
   if (looksLikeSubcommand(argv)) {
@@ -274,8 +293,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   for (const issue of env.issues) err(`avertissement [environnement] : ${issue.message}`);
   if (verbose) for (const w of identity.warnings) err(`avertissement [identité] : ${w.message}`);
 
-  // SPEC-MOD-002 § 5.1: automated run on request, or when no terminal is attached.
-  const nonInteractive = opt("non-interactive") === true || !streams.stdinIsTTY || !streams.stdoutIsTTY;
+  // SPEC-MOD-002 § 5.1: automated run on request, or when no terminal is attached; otherwise the interactive mode, the
+  // default (EF-01 of SPEC-MOD-001).
+  const terminal = streams.terminal;
+  let nonInteractive = opt("non-interactive") === true || !streams.stdinIsTTY || !streams.stdoutIsTTY;
   // Session options (SPEC-SES-002 to 004, SPEC-SES-012), checked before anything else is started.
   const ephemeral = opt("ephemeral") === true;
   const reopenOption = opt("reopen") as string | true | undefined;
@@ -293,6 +314,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   if (assignedId !== undefined && !UUID.test(assignedId)) throw usage(`Identifiant de session invalide : ${assignedId} (un UUID est attendu).`);
   if (assignedId !== undefined && reopening && !reopenAsCopy) throw usage("--assign-session-id désigne une nouvelle session : avec une reprise, il ne s'emploie qu'avec --reopen-as-copy.");
   if (opt("dry-run") === true && opt("restore-files") === undefined) throw usage("--dry-run s'utilise avec --reopen et --restore-files.");
+  // ERR-01 of SPEC-MOD-001: without a usable terminal, the run goes on in automated mode, with a warning.
+  if (!nonInteractive && terminal === undefined) {
+    err("Aucun terminal interactif disponible : exécution en mode automatisé.");
+    nonInteractive = true;
+  }
   // SPEC-SES-007: restoring files is an operation of its own, without the model, a shell, a connector or a hook (EF-02),
   // and without API credentials (EF-07).
   if (opt("restore-files") !== undefined) {
@@ -322,10 +348,6 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       clock: deps.now,
     });
   }
-  if (!nonInteractive) {
-    throw new RunError("Le mode interactif n'est pas disponible dans cette version : utilisez --non-interactive.", ExitCode.UsageOrConfiguration);
-  }
-
   // EF-04 of SPEC-MOD-011: options lifting a protection are announced at start-up.
   const dangers = dangerOptions(parsed);
   if (dangers.length > 0) err(`Options levant une protection actives : ${dangers.join(", ")}.`);
@@ -351,7 +373,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
 
   // Requests (EF-06 of SPEC-MOD-002): argument, otherwise standard input; `jsonl`: one message per line (gap E-050).
   let requests: AsyncIterable<InputItem>;
-  if (requestFormat === "jsonl") {
+  if (!nonInteractive) {
+    // SPEC-MOD-001: the requests come from the input area; an initial request is the first message (CA-04).
+    requests = (async function* () {})();
+  } else if (requestFormat === "jsonl") {
     requests = jsonlRequests(parsed.prompt, streams.stdinLines());
   } else {
     let prompt = parsed.prompt;
@@ -368,7 +393,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
 
   // Gap E-013: encrypted storage is not delivered; never fall back to plain text.
   // SPEC-SES-012: --ephemeral writes no conversation data at all.
-  const persist = !ephemeral && settings.get<boolean>("engine.nonInteractive.persistSession");
+  // EF-04 of SPEC-MOD-001: an interactive session is always recorded, at the end of each turn.
+  const persist = !ephemeral && (!nonInteractive || settings.get<boolean>("engine.nonInteractive.persistSession"));
   if (persist && settings.get<boolean>("storage.encryption.enabled")) {
     throw new RunError("Stockage chiffré indisponible dans cette version : la session n'a pas été démarrée (aucune écriture en clair).", ExitCode.UsageOrConfiguration);
   }
@@ -522,7 +548,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     organization,
     timeoutMs: env.ownDuration("REQUEST_TIMEOUT") ?? DEFAULT_REQUEST_TIMEOUT_MS,
     idleTimeoutMs: settings.get<number>("api.streamIdleTimeout"),
-    headers: { "User-Agent": identity.get("USER_AGENT"), [`${prefix}version`]: identity.version, [`${prefix}entrypoint`]: "non-interactive" },
+    headers: { "User-Agent": identity.get("USER_AGENT"), [`${prefix}version`]: identity.version, [`${prefix}entrypoint`]: nonInteractive ? "non-interactive" : "interactive" },
   };
   const provider = withRequestLog((deps.providerFactory ?? createProvider)(providerOptions), providerOptions, (m, d) => debug.log("api", m, d));
   // CA-03 of SPEC-API-001: thinking requested explicitly from a model without it is announced as unavailable, without error.
@@ -545,8 +571,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   try {
     const initial = resolveInitialMode(
       typeof opt("approval-mode") === "string" ? (opt("approval-mode") as string) : undefined,
-      settings.get<PermissionMode>("engine.nonInteractive.defaultPermissionMode"),
-      true,
+      settings.get<PermissionMode>(nonInteractive ? "engine.nonInteractive.defaultPermissionMode" : "permissions.initialMode"),
+      nonInteractive,
       availability,
       (m) => err(`avertissement : ${m}`),
     );
@@ -701,7 +727,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     }
     return values.length > 0 ? Math.min(...values) : undefined;
   };
-  const maxIterationsEffective = strictest("engine.limits.maxIterations", typeof maxIterations === "string" ? Number(maxIterations) : undefined, "itérations") ?? 50;
+  const maxIterationsEffective = strictest("engine.limits.maxIterations", typeof maxIterations === "string" ? Number(maxIterations) : undefined, "itérations") ?? (nonInteractive ? 50 : undefined);
   const durationOption = opt("max-duration");
   const maxDurationSeconds = strictest("engine.limits.maxDurationSeconds", typeof durationOption === "string" ? Number(durationOption) : undefined, "durée");
   const costOption = opt("max-cost");
@@ -883,7 +909,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       gitState: captureRepository(),
       identity,
       variant: "main",
-      nonInteractive: true,
+      nonInteractive,
       model: resolvedModel,
       cwd,
       additionalDirectories: [],
@@ -920,7 +946,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     trust: trust.source,
     contractVersion: built.contractVersion,
     promptFamily: built.family,
-    entrypoint: "non-interactive",
+    entrypoint: nonInteractive ? "non-interactive" : "interactive",
   };
   if (continued) {
     transcript?.append("system", { event: "reopened", model: resolvedModel.id, provider: providerId, permissionMode: modeState.mode, at: reopenAt ?? null });
@@ -1164,14 +1190,17 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     startedAt: runStarted,
   });
   const progress = settings.get<boolean>("engine.nonInteractive.progressToStderr");
+  // The interactive application shows the events itself (SPEC-MOD-001 § 5.2 step 5).
+  let app: InteractiveApp | undefined;
   const emit = (event: EngineEvent) => {
     deps.onEvent?.(event);
     stream?.engine(event);
-    if (event.type === "warning") err(`avertissement : ${event.message}`);
-    if (progress && event.type === "tool_call") err(`… ${event.name}`);
+    app?.onEngineEvent(event);
+    if (event.type === "warning" && !app) err(`avertissement : ${event.message}`);
+    if (progress && event.type === "tool_call" && !app) err(`… ${event.name}`);
     if (event.type === "permission" && event.decision === "deny") debug.log("permissions", "denied", { callId: event.callId, step: event.step });
     // EF-04 of SPEC-API-003: the wait is visible.
-    if (event.type === "retry") err(`Service du modèle indisponible (${event.reason}) : nouvel essai dans ${Math.max(1, Math.round(event.delayMs / 1000))} s (essai ${event.attempt + 1}/${event.maxRetries + 1}).`);
+    if (event.type === "retry" && !app) err(`Service du modèle indisponible (${event.reason}) : nouvel essai dans ${Math.max(1, Math.round(event.delayMs / 1000))} s (essai ${event.attempt + 1}/${event.maxRetries + 1}).`);
     if (event.type === "loop_detected") debug.log("engine", "loop detected", { tool: event.toolName, count: event.count });
     if (event.type === "tool_call" && event.name === "read_file") {
       const path = (event.input as { path?: unknown })?.path;
@@ -1182,7 +1211,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         recentFiles.length = Math.min(recentFiles.length, 20);
       }
     }
-    if (event.type === "compacted") err(`Contexte compacté : ${event.tokensBefore} → ${event.tokensAfter} jetons.`);
+    if (event.type === "compacted" && !app) err(`Contexte compacté : ${event.tokensBefore} → ${event.tokensAfter} jetons.`);
   };
   // Context of the main agent (SPEC-MOT-010 to SPEC-MOT-014).
   const coefficients = settings.get<Record<string, Record<string, number>>>("context.tokenEstimation")[resolvedModel.family];
@@ -1306,6 +1335,50 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     void hooks.fire("settings_modified", { keys: reload.changed, scope: reload.scopes.join(",") }); // SPEC-CFG-005 step 6
   };
 
+  // SPEC-MOD-001: the interactive application, also the human authority of the permission decisions (SPEC-IHM-027).
+  let stateWriter: InputStateWriter | undefined;
+  if (!nonInteractive) {
+    const capabilities = detectCapabilities({
+      colorMode: settings.get<string>("ui.colorMode"),
+      unicodeLevel: settings.get<UnicodeLevel>("ui.unicodeLevel"),
+      noColorOption: opt("no-color") === true,
+      variable: (name) => env.public(name),
+      platform: system.platform,
+    });
+    const restored = reopened ? readInputState(inputStatePath(sessionDirOf(reopened.info.path))) : undefined;
+    if (transcript) stateWriter = new InputStateWriter(inputStatePath(transcript.sessionDir), settings.get<boolean>("ui.input.persistDraft"));
+    app = new InteractiveApp({
+      terminal: terminal!,
+      capabilities,
+      settings: {
+        maxFramesPerSecond: settings.get<number>("ui.maxFramesPerSecond"),
+        minColumns: settings.get<number>("ui.minColumns"),
+        retainedLines: settings.get<number>("ui.retainedLines"),
+        inputMinHeight: settings.get<number>("ui.inputMinHeight"),
+        inputMaxHeight: settings.get<number>("ui.inputMaxHeight"),
+        inputMaxChars: settings.get<number>("ui.input.maxChars"),
+        inputWarnChars: settings.get<number>("ui.input.warnChars"),
+        queueMax: settings.get<number>("ui.queue.maxMessages"),
+        queueAutoSend: settings.get<boolean>("ui.queue.autoSend"),
+        draftsMax: settings.get<number>("ui.drafts.maxStashed"),
+        exitConfirmation: settings.get<boolean>("ui.exitConfirmation"),
+        exitDoublePressMs: settings.get<number>("ui.exitDoublePressWindow"),
+        dialogGuardMs: DIALOG_GUARD_MS,
+      },
+      status: () => ({ mode: modeState.mode, model: resolvedModel.id }),
+      cycleMode: () => void modeState.cycle(),
+      describeCall: (name, input) => {
+        try {
+          return registry.get(name)?.summary(input as never) ?? "";
+        } catch {
+          return "";
+        }
+      },
+      restored,
+      onInputState: (s) => stateWriter?.update(s),
+    });
+  }
+
   const loopDeps: LoopDeps = {
     beforeRequest: () => {
       applySettingsChanges();
@@ -1345,7 +1418,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       registry,
       hooks,
       // SPEC-PER-001 § 5.3 point c: the habilitated `approval_needed` hooks answer before any other authority.
-      authorities: { habilitatedHook: hooks.approvalHook, ...deps.authorities },
+      authorities: { habilitatedHook: hooks.approvalHook, ...deps.authorities, ...(app ? { human: app.approvals } : {}) },
       concurrency: settings.get<number>("engine.toolConcurrency"),
       toolTimeoutMs: settings.get<number>("engine.toolTimeout"),
       persistRule,
@@ -1380,8 +1453,83 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     },
   };
 
-  // One turn per request, in order, in the same session (CA-04 of SPEC-MOD-003).
+  // One request: a skill or a simple command `/<name> [arguments]` (SPEC-CMD-001 § 5.1, SPEC-EXT-020), whose unknown
+  // name is never sent to the model (FA-01 of SPEC-CMD-001), or a message; then a turn.
   const results: TurnResult[] = [];
+  const processRequest = async (original: string | readonly ContentPart[], signal: AbortSignal): Promise<{ result?: TurnResult; refused?: string }> => {
+    let content = original;
+    const first = typeof content === "string" ? content : content.find((p) => p.type === "text")?.text;
+    const entry = first !== undefined ? recognize(first) : undefined;
+    if (entry?.kind === "command") {
+      const loaded = loadSkill(skillSet, entry.name, entry.args, "user", { session: sessionId });
+      if (!loaded.ok) return { refused: loaded.message };
+      activateSkill(loaded.skill);
+      const text = framed(loaded.skill, loaded.content, `/${entry.name}${entry.args ? ` ${entry.args}` : ""}`);
+      content = typeof content === "string" ? text : content.map((p) => (p.type === "text" && p.text === first ? { type: "text" as const, text } : p));
+    } else if (entry?.kind === "text" && entry.text !== first) {
+      content = typeof content === "string" ? entry.text : content.map((p) => (p.type === "text" && p.text === first ? { type: "text" as const, text: entry.text } : p));
+    }
+    const result = await runTurn(loopDeps, content, signal);
+    skillAllows.length = 0; // EF-02 of SPEC-EXT-020: the grants of a skill end with its turn
+    results.push(result);
+    // SPEC-SES-008 FA-01, EF-03: the title is the beginning of the first message.
+    if (transcript && results.length === 1 && !(reopened && sessionTitle(reopened.records) !== undefined)) {
+      const title = titleFrom(content);
+      if (title) transcript.append("system", { event: "title", title, source: "first_message" });
+    }
+    return { result };
+  };
+
+  if (app) {
+    const interactiveApp = app;
+    // FA-06 of SPEC-MOD-001: the history of a reopened session is shown again, condensed by default.
+    const replay = settings.get<string>("ui.replayOnResume");
+    interactiveApp.start();
+    holder.cleanups.push(() => interactiveApp.stop());
+    holder.errSink = (text) => interactiveApp.writeLine(text);
+    if (reopened && replay !== "none") replayHistory(interactiveApp, reopened.chain, replay === "full", (name, input) => registry.get(name)?.summary(input as never) ?? "");
+    const onSignal = () => interactiveApp.forceExit();
+    if (controller.signal.aborted) onSignal();
+    else controller.signal.addEventListener("abort", onSignal, { once: true });
+    const started = Date.now();
+    await runInteractiveLoop({
+      app: interactiveApp,
+      initialPrompt: parsed.prompt,
+      queueAutoSend: settings.get<boolean>("ui.queue.autoSend"),
+      process: async (text, signal) => {
+        // SPEC-CMD-023: the built-in exit command.
+        if (/^\s*\/(exit|quit)\s*$/.test(text)) return { kind: "exit" };
+        // FA-06 of SPEC-IHM-007: doubled trigger characters give their literal character.
+        const sent = literalTriggers(text).text;
+        const outcome = await processRequest(sent, signal);
+        if (outcome.refused !== undefined) {
+          interactiveApp.notice("error", outcome.refused);
+          return { kind: "shown" };
+        }
+        return { kind: "turn", result: outcome.result! };
+      },
+    });
+    stateWriter?.flush();
+    interactiveApp.stop();
+    holder.errSink = undefined;
+    await hooks.fire("session_closed", { reason: "exit" });
+    await hooks.close();
+    await connectors?.close();
+    await shellRuntime?.stopAll();
+    transcript?.close();
+    if (transcript?.warning) err(`avertissement : ${transcript.warning}`);
+    // FA-04: a summary of the session at exit (duration, turns, cost) and how to reopen it.
+    if (settings.get<boolean>("ui.sessionSummary") && results.length > 0) {
+      const budget = ledger.snapshot;
+      const seconds = Math.round((Date.now() - started) / 1000);
+      const cost = budget.unknownCost ? "coût inconnu" : `coût ${budget.confirmed.toFixed(4)} ${budget.currency}`;
+      streams.writeOut(`Session ${sessionId} : ${results.length} tour${results.length > 1 ? "s" : ""}, ${seconds} s, ${cost}.\n`);
+      if (transcript) streams.writeOut(`Pour la reprendre : ${identity.get("PRODUCT_CLI")} --reopen=${sessionId}\n`);
+    }
+    return bySignal ? ExitCode.Interrupted : ExitCode.Success;
+  }
+
+  // Automated run: one turn per request, in order, in the same session (CA-04 of SPEC-MOD-003).
   for await (const item of requests) {
     if (controller.signal.aborted) break;
     if (item.kind === "invalid") {
@@ -1390,33 +1538,13 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       else err(`avertissement : message d'entrée illisible, ignoré (ligne ${item.line}) : ${item.reason}`);
       continue;
     }
-    // SPEC-CMD-001 § 5.1, SPEC-EXT-020: a request `/<name> [arguments]` invokes a skill or a simple command; an
-    // unknown one is not sent to the model (FA-01 of SPEC-CMD-001).
-    let content: string | readonly ContentPart[] = item.content;
-    const first = typeof content === "string" ? content : content.find((p) => p.type === "text")?.text;
-    const entry = first !== undefined ? recognize(first) : undefined;
-    if (entry?.kind === "command") {
-      const loaded = loadSkill(skillSet, entry.name, entry.args, "user", { session: sessionId });
-      if (!loaded.ok) {
-        const message = loaded.message;
-        if (stream) stream.emit("error", { code: "invalid_command", message });
-        else err(message);
-        continue;
-      }
-      activateSkill(loaded.skill);
-      const text = framed(loaded.skill, loaded.content, `/${entry.name}${entry.args ? ` ${entry.args}` : ""}`);
-      content = typeof content === "string" ? text : content.map((p) => (p.type === "text" && p.text === first ? { type: "text" as const, text } : p));
-    } else if (entry?.kind === "text" && entry.text !== first) {
-      content = typeof content === "string" ? entry.text : content.map((p) => (p.type === "text" && p.text === first ? { type: "text" as const, text: entry.text } : p));
+    const outcome = await processRequest(item.content, controller.signal);
+    if (outcome.refused !== undefined) {
+      if (stream) stream.emit("error", { code: "invalid_command", message: outcome.refused });
+      else err(outcome.refused);
+      continue;
     }
-    const result = await runTurn(loopDeps, content, controller.signal);
-    skillAllows.length = 0; // EF-02 of SPEC-EXT-020: the grants of a skill end with its turn
-    results.push(result);
-    // SPEC-SES-008 FA-01, EF-03: in a non-interactive run, the title is the beginning of the first message.
-    if (transcript && results.length === 1 && !(reopened && sessionTitle(reopened.records) !== undefined)) {
-      const title = titleFrom(content);
-      if (title) transcript.append("system", { event: "title", title, source: "first_message" });
-    }
+    const result = outcome.result!;
     if (stream) stream.emit("turn_completed", { turn: results.length, result: result.finalText, haltReason: result.stopCause });
     else if (format === "text" && requestFormat === "jsonl" && result.stopCause === "completed") streams.writeOut(renderResult("text", { sessionId, result, exitCode: 0, turns: results.length }));
     if (result.stopCause !== "completed") break;

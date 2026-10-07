@@ -330,6 +330,7 @@ export class ResponseExecution {
         origin: decision.origin,
         suggestions: decision.suggestions,
         ...(diff !== undefined && diff !== "" ? { preview: diff } : {}),
+        ...(tool.danger?.(call.input as never) ? { danger: tool.danger(call.input as never) } : {}),
       },
       mode,
       this.#deps.authorities,

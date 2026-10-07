@@ -75,4 +75,5 @@ export const runPowerShellTool: Tool<ShellInput> = {
       : `${descriptionPowerShell.trim()}\n\nEdition: PowerShell 7 or later.`,
   // EF-04, RG-01: dangerous cmdlets always ask, before any allow rule (step 5 of SPEC-PER-001), except in unrestricted mode.
   permissionContribution: (input) => (dangerousPowerShell(input.command) ? "ask" : undefined),
+  danger: (input) => dangerousPowerShell(input.command),
 };

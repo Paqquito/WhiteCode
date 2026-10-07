@@ -43,7 +43,14 @@ export interface BoxNode {
   readonly children: readonly Node[];
 }
 
-export type Node = TextNode | BoxNode;
+/** Lines already laid out (a view that manages its own window, such as the input area); cut or padded to the width. */
+export interface LinesNode {
+  readonly kind: "lines";
+  readonly lines: readonly (readonly Cell[])[];
+  readonly cursor?: { readonly row: number; readonly col: number };
+}
+
+export type Node = TextNode | BoxNode | LinesNode;
 
 export interface LayoutContext {
   readonly unicode: UnicodeLevel;
@@ -228,5 +235,6 @@ function allocate(children: readonly Node[], width: number): number[] {
 /** Lays `node` out in `width` columns; deterministic for a given tree, width and context (EF-08 of SPEC-IHM-001). */
 export function layoutNode(node: Node, width: number, ctx: LayoutContext): Laid {
   const w = Math.max(1, width);
+  if (node.kind === "lines") return { lines: node.lines.map((l) => pad(l.slice(), w)), cursor: node.cursor && node.cursor.col < w ? node.cursor : undefined };
   return node.kind === "text" ? layoutText(node, w, ctx) : layoutBox(node, w, ctx);
 }

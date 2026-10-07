@@ -99,6 +99,8 @@ export interface Tool<I = Record<string, unknown>> {
   ruleSubject(input: I, ctx: ToolContext): RuleSubject;
   /** Tool-specific contribution to the permission decision (SPEC-PER-001 step 5). */
   permissionContribution?(input: I, ctx: ToolContext): "allow" | "ask" | undefined;
+  /** Why the call is dangerous, if it is: the dialog then proposes « Non » by default (SPEC-IHM-027 CA-02). */
+  danger?(input: I): string | undefined;
   /** Own time limit of a call (SPEC-MOT-002 EF-05), bounded by `engine.toolTimeout`. */
   timeoutMs?(input: I, ctx: ToolContext): number;
   /** Computed before the permission decision: the difference to show, or a refusal that makes asking pointless. */

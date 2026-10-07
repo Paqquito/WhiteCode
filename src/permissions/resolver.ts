@@ -26,6 +26,8 @@ export interface ApprovalRequest {
   readonly preview?: string;
   /** Identity of the requesting agent when relayed (sub-agent, teammate). */
   readonly requester?: string;
+  /** Why the action is dangerous, if it is (SPEC-IHM-027 § 5.3 point 1). */
+  readonly danger?: string;
 }
 
 /** Choice of the user when a loop is detected (SPEC-MOT-046 § 5.3 point 3). */
