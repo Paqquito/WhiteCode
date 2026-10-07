@@ -1,5 +1,6 @@
 // Implements: SPEC-MCP-022 (§ 5.1, § 5.3 steps 1 to 4, FA-02, EF-01 to EF-03, ERR-01), SPEC-MCP-001 (§ 5.3 steps 4 and 5, FA-02, EF-02, EF-03),
-//             SPEC-MCP-009 (§ 5.2 list changes, FA-01, FA-02, ERR-02), SPEC-MCP-020 (§ 5.3 step 3), SPEC-MCP-002 (ENF-01 launches in parallel)
+//             SPEC-MCP-009 (§ 5.2 list changes, FA-01, FA-02, ERR-02), SPEC-MCP-020 (§ 5.3 step 3), SPEC-MCP-002 (ENF-01 launches in parallel),
+//             SPEC-MCP-011 (§ 5.3 step 2, EF-01, EF-03, ERR-01)
 // The connections of a session: started in parallel without blocking, published to the tool registry once connected,
 // reconnected with an exponential delay, closed at the end.
 
@@ -7,7 +8,7 @@ import { isAbsolute, resolve } from "node:path";
 import type { PlatformName } from "../platform/system";
 import type { Tool } from "../tools/types";
 import { expand, type ConnectorDeclaration } from "./declarations";
-import { ConnectionError, StdioConnection, type McpToolInfo } from "./stdio-client";
+import { ConnectionError, StdioConnection, type McpPromptInfo, type McpToolInfo } from "./stdio-client";
 import { connectorTool, qualifiedToolName, schemaProblem } from "./tools";
 
 export type ConnectorState = "pending" | "connecting" | "connected" | "error" | "unavailable";
@@ -63,6 +64,8 @@ interface Entry {
   tools: Map<string, Tool<never>>;
   /** Names currently published by the server. */
   live: Set<string>;
+  /** Prompts of the server, exposed as commands (SPEC-MCP-011). */
+  prompts: readonly McpPromptInfo[];
   attempts: number;
   /** Last lines of the standard error, kept after a loss (SPEC-MCP-002 EF-02, CA-03). */
   stderr: readonly string[];
@@ -86,7 +89,7 @@ export class ConnectorManager {
     for (const d of o.connectors) {
       let settle!: () => void;
       const settled = new Promise<void>((r) => (settle = r));
-      this.#entries.set(d.name, { d, state: "pending", tools: new Map(), live: new Set(), attempts: 0, stderr: [], overflows: 0, settled, settle });
+      this.#entries.set(d.name, { d, state: "pending", tools: new Map(), live: new Set(), prompts: [], attempts: 0, stderr: [], overflows: 0, settled, settle });
     }
   }
 
@@ -149,12 +152,14 @@ export class ConnectorManager {
         clientInfo: this.#o.clientInfo,
         onNotification: (method) => {
           if (method === "notifications/tools/list_changed") void this.#refresh(e);
+          if (method === "notifications/prompts/list_changed") void this.#refreshPrompts(e); // EF-03 of SPEC-MCP-011
         },
         onLost: (reason) => this.#lost(e, reason),
       });
       if (this.#closed) return void (await conn.close(0));
       e.conn = conn;
       const published = await this.#publish(e, await conn.listTools(this.#o.connectTimeoutMs));
+      if (conn.capabilities["prompts"]) e.prompts = await conn.listPrompts(this.#o.connectTimeoutMs).catch(() => []);
       e.state = "connected";
       e.error = undefined;
       e.attempts = 0;
@@ -226,6 +231,47 @@ export class ConnectorManager {
     } catch (err) {
       this.#o.report(`avertissement : connecteur ${e.d.name} : liste des outils illisible (${err instanceof Error ? err.message : String(err)}).`);
     }
+  }
+
+  async #refreshPrompts(e: Entry): Promise<void> {
+    if (!e.conn || this.#closed) return;
+    try {
+      e.prompts = await e.conn.listPrompts(this.#o.connectTimeoutMs);
+    } catch (err) {
+      this.#o.report(`avertissement : connecteur ${e.d.name} : liste des prompts illisible (${err instanceof Error ? err.message : String(err)}).`);
+    }
+  }
+
+  /**
+   * SPEC-MCP-011 EF-01: the prompts of every connector, as commands `cnx_<server>_<prompt>`; a prompt of a connector that
+   * is not connected stays listed, unavailable (ERR-01).
+   */
+  prompts(): Array<{ readonly server: string; readonly command: string; readonly prompt: McpPromptInfo; readonly available: boolean }> {
+    const taken = new Set<string>();
+    const out: Array<{ server: string; command: string; prompt: McpPromptInfo; available: boolean }> = [];
+    for (const e of this.#entries.values())
+      for (const p of [...e.prompts].sort((a, b) => (a.name < b.name ? -1 : 1))) {
+        const command = qualifiedToolName(e.d.name, p.name, taken);
+        taken.add(command);
+        out.push({ server: e.d.name, command, prompt: p, available: e.state === "connected" && e.conn !== undefined });
+      }
+    return out;
+  }
+
+  /** § 5.3 step 2: the content of a prompt, as the text of a message of the user. */
+  async getPrompt(server: string, name: string, args: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<string> {
+    const e = this.#entries.get(server);
+    if (!e?.conn || e.state !== "connected") throw new Error(`Connecteur ${server} indisponible.`); // ERR-01
+    const r = await e.conn.getPrompt(name, args, { timeoutMs: this.#o.toolTimeoutMs, signal });
+    const parts: string[] = [];
+    for (const m of r.messages) {
+      const contents = Array.isArray(m.content) ? m.content : m.content ? [m.content] : [];
+      for (const c of contents) {
+        if (c.type === "text" && typeof c.text === "string") parts.push(c.text);
+        else if (c.type === "resource" && typeof c.resource?.text === "string") parts.push(c.resource.text);
+      }
+    }
+    return parts.join("\n\n");
   }
 
   /** FA-01 of SPEC-MCP-002, step 3: lost connection, reconnection with an exponential delay, bounded (EF-03). */

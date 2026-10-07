@@ -73,7 +73,7 @@ describe("SPEC-EXT-019 skills", () => {
     const res = await run(ws, p, ["--allow-project-trust", "x"]);
     expect(system(p)).toContain("- revue: Project review.");
     expect(system(p)).not.toContain("User review.");
-    expect(res.stderr).toContain("La compétence revue de portée user est masquée par celle de portée project.");
+    expect(res.stderr).toContain("La compétence revue de portée user est masquée par celle de portée project ; elle reste joignable par /user:revue.");
   });
 
   test("TECH — SPEC-EXT-019/FA-01, FA-02, ERR-01, ERR-02 — project skill of a folder not approved ignored; simple commands for the user only; invalid headers reported", async () => {

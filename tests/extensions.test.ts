@@ -89,7 +89,7 @@ describe("SPEC-EXT-011 and SPEC-EXT-014 loading", () => {
     const b = extension(ws, "b", { "extension.json": manifest("b"), "commands/deploy.md": "Deploy with B: ${ARGS}" });
     const short = new ScriptedProvider([{ text: "done" }]);
     const res = await run(ws, short, ["--extension-dir", a, "--extension-dir", b, "/deploy prod"]);
-    expect(res.stderr).toContain("Nom ambigu : /deploy est fourni par plusieurs extensions ; précisez /a:deploy ou /b:deploy.");
+    expect(res.stderr).toContain("Plusieurs commandes portent le nom deploy : utilisez /a:deploy ou /b:deploy.");
     expect(short.requests).toHaveLength(0);
     const qualified = new ScriptedProvider([{ text: "done" }]);
     await run(ws, qualified, ["--extension-dir", b, "--extension-dir", a, "/b:deploy prod"]);

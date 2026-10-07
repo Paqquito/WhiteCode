@@ -26,7 +26,8 @@ export function loadSkill(set: SkillSet, name: string, args: string, caller: Cal
   // A short name of an extension command (SPEC-EXT-011 FA-01); an ambiguous one lists the qualified names.
   const ambiguous = user ? set.ambiguous.get(name) : undefined;
   if (ambiguous) return { ok: false, kind: "unknown", message: `Nom ambigu : /${name} est fourni par plusieurs extensions ; précisez ${ambiguous.map((n) => `/${n}`).join(" ou ")}.` };
-  const skill = set.skills.get((user ? set.aliases.get(name) : undefined) ?? name);
+  // SPEC-CMD-001 § 5.4: `/project:<name>` and `/user:<name>` reach a command even when it is masked (CA-09).
+  const skill = set.skills.get((user ? set.aliases.get(name) : undefined) ?? name) ?? (user ? set.qualified.get(name) : undefined);
   if (!skill) {
     const near = suggest(name, [...set.skills.values()].filter((s) => s.invocation === "both" || s.invocation === caller).map((s) => s.name), 3);
     if (user) return { ok: false, kind: "unknown", message: `Commande inconnue : /${name}.${near.length > 0 ? ` Noms proches : ${near.map((n) => `/${n}`).join(", ")}.` : ""}` }; // FA-01 of SPEC-CMD-001

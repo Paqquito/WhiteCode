@@ -28,6 +28,8 @@ interface FakeConfig {
   addToolAfterMs?: { ms: number; tool: FakeTool };
   /** Answers with a line that is not JSON-RPC. */
   garbage?: boolean;
+  /** Prompts of the server: `prompts/get` answers `text` with each `{arg}` replaced by its value. */
+  prompts?: Array<{ name: string; description?: string; arguments?: Array<{ name: string; required?: boolean }>; text: string }>;
 }
 
 const config = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as FakeConfig;
@@ -48,7 +50,7 @@ async function handle(msg: { id?: number; method?: string; params?: any }): Prom
       process.stdout.write("this is not json\n");
       return;
     }
-    send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: msg.params.protocolVersion, capabilities: { tools: { listChanged: true } }, serverInfo: { name: "fake", version: "1.0.0" } } });
+    send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: msg.params.protocolVersion, capabilities: { tools: { listChanged: true }, ...(config.prompts ? { prompts: { listChanged: true } } : {}) }, serverInfo: { name: "fake", version: "1.0.0" } } });
     if (config.addToolAfterMs) {
       const { ms, tool } = config.addToolAfterMs;
       setTimeout(() => {
@@ -74,6 +76,20 @@ async function handle(msg: { id?: number; method?: string; params?: any }): Prom
     if (r?.delayMs) await Bun.sleep(r.delayMs);
     const text = r?.json !== undefined ? JSON.stringify(r.json) : r?.text !== undefined ? r.text.repeat(r.repeat ?? 1) : `called ${msg.params.name} with ${JSON.stringify(msg.params.arguments)}`;
     send({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text }], isError: r?.isError === true } });
+    return;
+  }
+  if (msg.method === "prompts/list") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { prompts: (config.prompts ?? []).map(({ text: _text, ...p }) => p) } });
+    return;
+  }
+  if (msg.method === "prompts/get") {
+    const p = (config.prompts ?? []).find((x) => x.name === msg.params.name);
+    if (!p) {
+      send({ jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: "Unknown prompt" } });
+      return;
+    }
+    const text = p.text.replace(/\{(\w+)\}/g, (_: string, k: string) => String(msg.params.arguments?.[k] ?? ""));
+    send({ jsonrpc: "2.0", id: msg.id, result: { messages: [{ role: "user", content: { type: "text", text } }] } });
     return;
   }
   if (msg.method === "ping") {

@@ -17,6 +17,12 @@ export interface McpToolInfo {
   readonly annotations?: { readonly readOnlyHint?: boolean; readonly destructiveHint?: boolean; readonly idempotentHint?: boolean; readonly openWorldHint?: boolean };
 }
 
+export interface McpPromptInfo {
+  readonly name: string;
+  readonly description?: string;
+  readonly arguments?: ReadonlyArray<{ readonly name: string; readonly description?: string; readonly required?: boolean }>;
+}
+
 export interface McpContent {
   readonly type: string;
   readonly text?: string;
@@ -235,6 +241,25 @@ export class StdioConnection {
       if (!cursor) break;
     }
     return tools;
+  }
+
+  /** `prompts/list`, every page (SPEC-MCP-011). */
+  async listPrompts(timeoutMs: number): Promise<McpPromptInfo[]> {
+    const prompts: McpPromptInfo[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 100; page++) {
+      const r = (await this.request("prompts/list", cursor ? { cursor } : {}, { timeoutMs })) as { prompts?: McpPromptInfo[]; nextCursor?: string };
+      prompts.push(...(Array.isArray(r?.prompts) ? r.prompts.filter((p) => typeof p?.name === "string") : []));
+      cursor = typeof r?.nextCursor === "string" && r.nextCursor !== "" ? r.nextCursor : undefined;
+      if (!cursor) break;
+    }
+    return prompts;
+  }
+
+  /** `prompts/get`: the messages of a prompt for its arguments. */
+  async getPrompt(name: string, args: Readonly<Record<string, string>>, o: { timeoutMs: number; signal?: AbortSignal }): Promise<{ messages: ReadonlyArray<{ role?: string; content?: McpContent | readonly McpContent[] }> }> {
+    const r = (await this.request("prompts/get", { name, arguments: args }, o)) as { messages?: Array<{ role?: string; content?: McpContent }> };
+    return { messages: Array.isArray(r?.messages) ? r.messages : [] };
   }
 
   async callTool(name: string, args: unknown, o: { timeoutMs: number; signal?: AbortSignal }): Promise<McpCallResult> {

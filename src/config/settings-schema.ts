@@ -229,6 +229,12 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "ui.queue.maxMessages", schema: int(1, 1_000), default: 10, scopes: [U], owner: "SPEC-IHM-011" },
   { key: "ui.queue.autoSend", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-011" },
   { key: "ui.drafts.maxStashed", schema: int(1, 1_000), default: 10, scopes: [U], owner: "SPEC-IHM-011" },
+  // SPEC-IHM-014: key bindings; SPEC-CMD-001: commands (lot 5).
+  { key: "ui.keybindings.bindings", schema: Type.Record(Type.String(), Type.Union([Type.String(), Type.Array(Type.String())])), default: {}, scopes: [U], owner: "SPEC-IHM-014" },
+  { key: "ui.keybindings.showFooterHints", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-014" },
+  { key: "ui.keybindings.strictConflicts", schema: bool(), default: false, scopes: [U], owner: "SPEC-IHM-014" },
+  { key: "commands.disabled", schema: strList(), default: [], scopes: [U, P, G], owner: "SPEC-CMD-001", merge: "concat" },
+  { key: "commands.allowProjectCommands", schema: bool(), default: true, scopes: [U, P, G], owner: "SPEC-CMD-001", restrictiveValues: [false] },
 
   // Options forbidden by the managed policy (SPEC-MOD-011 § 11, decision D-13, gap E-029).
   { key: "policy.forbiddenOptions", schema: strList(), default: [], scopes: [G], owner: "SPEC-MOD-011", merge: "concat" },

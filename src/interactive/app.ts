@@ -16,7 +16,7 @@ import { tone, type Tone } from "../ui/style";
 import { openTerminalSession, type TerminalSession } from "../ui/terminal-session";
 import { spansToLines, type Cell, type Span } from "../ui/text";
 import { recognize } from "../commands/recognize";
-import { Keymap, type KeyContext } from "./keymap";
+import { comboLabel, Keymap, type KeyContext } from "./keymap";
 import { literalTriggers } from "./triggers";
 import { activityView, interruptionView, modelView, noticeView, toolCallView, toolResultView, userView, type ViewContext } from "./views";
 
@@ -69,6 +69,8 @@ interface Confirm {
 }
 
 const RULE_SCOPES = ["session", "local", "project", "user"] as const;
+/** SPEC-CMD-023: the exit command, effective even during a turn. */
+export const EXIT_COMMAND = /^\s*\/(exit|quit)\s*$/;
 const SCOPE_LABEL: Readonly<Record<(typeof RULE_SCOPES)[number], string>> = { session: "session", local: "projet (local)", project: "projet (partagé)", user: "utilisateur" };
 
 export interface AppOptions {
@@ -82,6 +84,10 @@ export interface AppOptions {
   readonly describeCall: (name: string, input: unknown) => string;
   readonly restored?: InputState;
   readonly onInputState?: (state: InputState) => void;
+  /** Effective key bindings (SPEC-IHM-014 § 5.4); the defaults otherwise. */
+  readonly keymap?: Keymap;
+  /** `ui.keybindings.showFooterHints`. */
+  readonly showFooterHints?: boolean;
   readonly clock?: () => number;
   readonly scheduler?: Scheduler;
 }
@@ -90,7 +96,7 @@ export class InteractiveApp {
   readonly #o: AppOptions;
   readonly #view: ViewContext;
   readonly #keys = new KeyParser();
-  readonly #keymap = new Keymap();
+  #keymap: Keymap;
   readonly #editor: Editor;
   readonly #queue: string[];
   readonly #stash: string[];
@@ -117,6 +123,7 @@ export class InteractiveApp {
     this.#o = o;
     this.#view = { unicode: o.capabilities.unicode };
     this.#editor = new Editor(o.settings.inputMaxChars);
+    this.#keymap = o.keymap ?? new Keymap();
     this.#queue = [...(o.restored?.queue ?? [])];
     this.#stash = [...(o.restored?.stash ?? [])];
     if (o.restored?.draft) this.#editor.set(o.restored.draft);
@@ -124,6 +131,12 @@ export class InteractiveApp {
 
   get #now(): number {
     return (this.#o.clock ?? Date.now)();
+  }
+
+  /** New key bindings, applied at once (FA-03 of SPEC-IHM-014). */
+  setKeymap(keymap: Keymap): void {
+    this.#keymap = keymap;
+    this.#redraw();
   }
 
   get viewContext(): ViewContext {
@@ -430,11 +443,14 @@ export class InteractiveApp {
 
   // ---- Exit (FA-04, EF-05) ----------------------------------------------------------------------------------------
 
-  /** Exit asked by a key or a command: confirmed when work is in progress (EF-05, SPEC-IHM-011 CA-06). */
-  async requestExit(): Promise<void> {
+  /**
+   * Exit asked by a key or a command: confirmed when work is in progress (EF-05, SPEC-IHM-011 CA-06). The exit command
+   * takes effect at once, a turn in flight being interrupted (SPEC-CMD-023 § 5.1, FA-01); only queued messages make it ask.
+   */
+  async requestExit(o: { readonly byCommand?: boolean } = {}): Promise<void> {
     if (this.#exiting) return;
     const work: string[] = [];
-    if (this.running) work.push("un tour est en cours");
+    if (this.running && !o.byCommand) work.push("un tour est en cours");
     if (this.#queue.length > 0) work.push(`${this.#queue.length} message${this.#queue.length > 1 ? "s" : ""} en attente ne ${this.#queue.length > 1 ? "seront" : "sera"} pas envoyé${this.#queue.length > 1 ? "s" : ""}`);
     if (work.length > 0 && this.#o.settings.exitConfirmation) {
       const yes = await this.confirm(`Travail en cours : ${work.join(" ; ")}. Quitter quand même ?`, "quitter", "rester");
@@ -640,6 +656,12 @@ export class InteractiveApp {
   #submit(): void {
     const content = this.#editor.text;
     if (content.trim() === "") return; // EF-06, CA-06
+    if (EXIT_COMMAND.test(content)) {
+      this.#editor.set("");
+      this.#saveState();
+      void this.requestExit({ byCommand: true });
+      return;
+    }
     if (this.running || !this.#waiting) {
       if (this.#queue.length >= this.#o.settings.queueMax) {
         this.notice("warning", "File d'attente pleine."); // ERR-01, FA-04: the draft stays in the input area
@@ -762,7 +784,15 @@ export class InteractiveApp {
     if (this.#queue.length > 0) parts.push({ text: ` · ${this.#queue.length} message${this.#queue.length > 1 ? "s" : ""} en attente`, style: { bold: true } });
     if (this.#stash.length > 0) parts.push({ text: ` · ${this.#stash.length} brouillon${this.#stash.length > 1 ? "s" : ""} de côté` });
     if (this.#hint) parts.push({ text: ` · ${this.#hint}`, style: { bold: true } });
-    else parts.push({ text: " · Maj+Tab : mode · Ctrl+C deux fois : quitter" });
+    else if (this.#o.showFooterHints !== false) {
+      // § 5.6 of SPEC-IHM-014: the most useful actions, with their effective combinations.
+      const hint = (id: string, what: string) => {
+        const c = this.#keymap.effective(id)[0];
+        return c ? `${comboLabel(c)} : ${what}` : undefined;
+      };
+      const hints = [hint("mode.cycle", "mode"), hint("app.interrupt", "interrompre, deux fois : quitter"), "/help : aide"].filter((h) => h !== undefined);
+      parts.push({ text: ` · ${hints.join(" · ")}` });
+    }
     return text(parts.map((p) => ({ ...p, style: { dim: true, ...(p.style ?? {}) } })), { overflow: "clip" });
   }
 }

@@ -71,7 +71,7 @@ import { createDiscoverToolsTool } from "../tools/discover-tools";
 import { loadExtensions } from "../extensions/load";
 import { activeInstalled } from "../extensions/active";
 import { recognize } from "../commands/recognize";
-import { framed, loadSkill } from "../skills/invoke";
+import { framed, loadSkill, splitArguments } from "../skills/invoke";
 import { loadSkills, modelSkills, skillsSection, skillsSignature, type Skill, type SkillLocation } from "../skills/registry";
 import { createUseSkillTool } from "../tools/use-skill";
 import { closingFields, combineResults, exitCodeFor, renderResult, type ResultFormat } from "./output";
@@ -82,6 +82,12 @@ import { replayHistory } from "../interactive/replay";
 import { runInteractiveLoop } from "../interactive/session";
 import { literalTriggers } from "../interactive/triggers";
 import { detectCapabilities } from "../ui/capabilities";
+import { box, text, type Node } from "../ui/layout";
+import { CommandCatalog, promptUsage, type InternalCommand } from "../commands/catalog";
+import { INTERNAL_COMMANDS } from "../commands/internal";
+import { helpView, shortcutsHelp } from "../interactive/help";
+import { buildKeymap, Keymap } from "../interactive/keymap";
+import { userView } from "../interactive/views";
 import type { UnicodeLevel } from "../ui/style";
 
 /** RG-01 of SPEC-IHM-027: a key typed during this delay after a dialog appears never decides it. */
@@ -689,7 +695,14 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const skillLocations: SkillLocation[] = [
     { scope: "managed", skillsDir: join(locations.managedDir, "skills") },
     ...(trust.trusted
-      ? [{ scope: "project" as const, skillsDir: join(locations.projectRoot, identity.get("PROJECT_DIR"), "skills"), commandsDir: join(locations.projectRoot, identity.get("PROJECT_DIR"), "commands") }]
+      ? [
+          {
+            scope: "project" as const,
+            skillsDir: join(locations.projectRoot, identity.get("PROJECT_DIR"), "skills"),
+            // SPEC-CMD-001 § 11: the commands of the project may be refused by the user, the project or the organisation.
+            ...(settings.get<boolean>("commands.allowProjectCommands") ? { commandsDir: join(locations.projectRoot, identity.get("PROJECT_DIR"), "commands") } : {}),
+          },
+        ]
       : []),
     { scope: "user", skillsDir: join(locations.configDir, "skills"), commandsDir: join(locations.configDir, "commands") },
     ...extensions.skillLocations,
@@ -1335,9 +1348,14 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     void hooks.fire("settings_modified", { keys: reload.changed, scope: reload.scopes.join(",") }); // SPEC-CFG-005 step 6
   };
 
+  // SPEC-IHM-014 § 5.4: the key bindings of the session, the invalid ones reported without stopping the others (EF-04).
+  let keymap = new Keymap();
   // SPEC-MOD-001: the interactive application, also the human authority of the permission decisions (SPEC-IHM-027).
   let stateWriter: InputStateWriter | undefined;
   if (!nonInteractive) {
+    const built = buildKeymap(settings.get<Record<string, unknown>>("ui.keybindings.bindings"), { strictConflicts: settings.get<boolean>("ui.keybindings.strictConflicts") });
+    for (const w of built.warnings) err(`avertissement [raccourcis] : ${w}`);
+    keymap = built.keymap;
     const capabilities = detectCapabilities({
       colorMode: settings.get<string>("ui.colorMode"),
       unicodeLevel: settings.get<UnicodeLevel>("ui.unicodeLevel"),
@@ -1376,6 +1394,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       },
       restored,
       onInputState: (s) => stateWriter?.update(s),
+      keymap,
+      showFooterHints: settings.get<boolean>("ui.keybindings.showFooterHints"),
     });
   }
 
@@ -1453,21 +1473,65 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     },
   };
 
-  // One request: a skill or a simple command `/<name> [arguments]` (SPEC-CMD-001 § 5.1, SPEC-EXT-020), whose unknown
-  // name is never sent to the model (FA-01 of SPEC-CMD-001), or a message; then a turn.
+  // SPEC-CMD-001: the catalogue of the commands, built again for each request (skills reread, connectors connected).
+  const commandCatalog = () =>
+    new CommandCatalog({ internal: INTERNAL_COMMANDS, skills: skillSet, connectors: connectors?.prompts() ?? [], disabled: settings.get<string[]>("commands.disabled"), automated: nonInteractive });
+  for (const w of commandCatalog().warnings) err(`avertissement : ${w}`); // EF-01, CA-03
+
+  // One request: an internal command, a skill or a simple command, a prompt of a connector (SPEC-CMD-001 § 5.7), whose
+  // unknown name is never sent to the model (FA-01, EF-03), or a message; then a turn.
   const results: TurnResult[] = [];
-  const processRequest = async (original: string | readonly ContentPart[], signal: AbortSignal): Promise<{ result?: TurnResult; refused?: string }> => {
+  type RequestOutcome = { result?: TurnResult; refused?: string; shown?: Node; exit?: true };
+  const processRequest = async (original: string | readonly ContentPart[], signal: AbortSignal): Promise<RequestOutcome> => {
     let content = original;
     const first = typeof content === "string" ? content : content.find((p) => p.type === "text")?.text;
     const entry = first !== undefined ? recognize(first) : undefined;
+    const replaceFirst = (text: string) => (content = typeof content === "string" ? text : content.map((p) => (p.type === "text" && p.text === first ? { type: "text" as const, text } : p)));
     if (entry?.kind === "command") {
-      const loaded = loadSkill(skillSet, entry.name, entry.args, "user", { session: sessionId });
-      if (!loaded.ok) return { refused: loaded.message };
-      activateSkill(loaded.skill);
-      const text = framed(loaded.skill, loaded.content, `/${entry.name}${entry.args ? ` ${entry.args}` : ""}`);
-      content = typeof content === "string" ? text : content.map((p) => (p.type === "text" && p.text === first ? { type: "text" as const, text } : p));
+      const resolved = commandCatalog().resolve(entry.name);
+      switch (resolved.kind) {
+        case "ambiguous":
+        case "disabled":
+        case "unknown":
+          return { refused: resolved.message };
+        case "internal": {
+          // FA-04: the commands of the interface are refused in an automated run, with an explanation.
+          if (!app && resolved.command.interactiveOnly) return { refused: `Commande indisponible en exécution automatisée : /${entry.name}.` };
+          return runInternalCommand(resolved.command, entry.args);
+        }
+        case "connector": {
+          // SPEC-MCP-011 § 5.3: positional arguments in the declared order, then the content of the prompt as the message.
+          const c = resolved.entry;
+          if (!c.available) return { refused: `Connecteur ${c.server} indisponible.` }; // ERR-01
+          const words = splitArguments(entry.args);
+          const declared = c.prompt.arguments ?? [];
+          const missing = declared.filter((a, i) => a.required && words[i] === undefined);
+          if (missing.length > 0) return { refused: `Usage : /${c.command} ${promptUsage(c.prompt)}.` }; // FA-01 of SPEC-MCP-011, ERR-02 of SPEC-CMD-001
+          const args: Record<string, string> = {};
+          declared.forEach((a, i) => {
+            const v = i === declared.length - 1 && words.length > declared.length ? words.slice(i).join(" ") : words[i];
+            if (v !== undefined) args[a.name] = v;
+          });
+          let text: string;
+          try {
+            text = await connectors!.getPrompt(c.server, c.prompt.name, args, signal);
+          } catch (e) {
+            return { refused: `La commande a échoué : ${(e as Error).message}` }; // ERR-05 of SPEC-CMD-001
+          }
+          // EF-05 of SPEC-CMD-001: a message identifiable as coming from a command.
+          replaceFirst(`<command name="/${c.command}" source="connector ${c.server}">\n${text}\n</command>`);
+          break;
+        }
+        case "skill": {
+          const loaded = loadSkill(skillSet, resolved.name, entry.args, "user", { session: sessionId });
+          if (!loaded.ok) return { refused: loaded.message };
+          activateSkill(loaded.skill);
+          replaceFirst(framed(loaded.skill, loaded.content, `/${entry.name}${entry.args ? ` ${entry.args}` : ""}`));
+          break;
+        }
+      }
     } else if (entry?.kind === "text" && entry.text !== first) {
-      content = typeof content === "string" ? entry.text : content.map((p) => (p.type === "text" && p.text === first ? { type: "text" as const, text: entry.text } : p));
+      replaceFirst(entry.text);
     }
     const result = await runTurn(loopDeps, content, signal);
     skillAllows.length = 0; // EF-02 of SPEC-EXT-020: the grants of a skill end with its turn
@@ -1478,6 +1542,32 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       if (title) transcript.append("system", { event: "title", title, source: "first_message" });
     }
     return { result };
+  };
+  // The internal commands of this version (SPEC-CMD-001 rank 1): help, exit, key bindings.
+  const runInternalCommand = async (command: InternalCommand, args: string): Promise<RequestOutcome> => {
+    switch (command.name) {
+      case "exit":
+      case "quit":
+        return { exit: true };
+      case "help":
+        return { shown: helpView(commandCatalog().entries(), keymap) };
+      case "shortcuts":
+        if (args.trim() === "reset") {
+          // FA-03, CA-07 of SPEC-IHM-014: the default bindings again, in the settings file and in the session.
+          try {
+            setValueInSettingsFile(locations.userSettingsFile, ["ui", "keybindings", "bindings"], undefined, system.platform);
+          } catch (e) {
+            return { refused: `La commande a échoué : ${(e as Error).message}` };
+          }
+          keymap = new Keymap();
+          app?.setKeymap(keymap);
+          return { shown: text("Raccourcis par défaut rétablis.") };
+        }
+        if (args.trim() !== "") return { refused: "Usage : /shortcuts [reset]." };
+        return { shown: box(shortcutsHelp(keymap)) };
+      default:
+        return { refused: `Commande indisponible dans cette version : /${command.name}.` };
+    }
   };
 
   if (app) {
@@ -1497,13 +1587,18 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       initialPrompt: parsed.prompt,
       queueAutoSend: settings.get<boolean>("ui.queue.autoSend"),
       process: async (text, signal) => {
-        // SPEC-CMD-023: the built-in exit command.
-        if (/^\s*\/(exit|quit)\s*$/.test(text)) return { kind: "exit" };
         // FA-06 of SPEC-IHM-007: doubled trigger characters give their literal character.
         const sent = literalTriggers(text).text;
         const outcome = await processRequest(sent, signal);
+        if (outcome.exit) return { kind: "exit" };
         if (outcome.refused !== undefined) {
           interactiveApp.notice("error", outcome.refused);
+          return { kind: "shown" };
+        }
+        // RG-03 of SPEC-CMD-001: the execution of a command is visible; a display command never calls the model (RG-04).
+        if (outcome.shown) {
+          interactiveApp.commit(userView(text.trim(), interactiveApp.viewContext));
+          interactiveApp.commit(outcome.shown);
           return { kind: "shown" };
         }
         return { kind: "turn", result: outcome.result! };

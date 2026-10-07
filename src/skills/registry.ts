@@ -47,6 +47,8 @@ export interface SkillSet {
   readonly aliases: ReadonlyMap<string, string>;
   /** Short names claimed by several extensions: available to none, their qualified names listed. */
   readonly ambiguous: ReadonlyMap<string, readonly string[]>;
+  /** Qualified forms `project:<name>` and `user:<name>`, masked or not (SPEC-CMD-001 § 5.4, CA-09). */
+  readonly qualified: ReadonlyMap<string, Skill>;
   readonly warnings: readonly string[];
 }
 
@@ -149,12 +151,17 @@ function readLocation(loc: SkillLocation, warnings: string[]): Skill[] {
 export function loadSkills(locations: readonly SkillLocation[]): SkillSet {
   const warnings: string[] = [];
   const skills = new Map<string, Skill>();
+  const qualified = new Map<string, Skill>();
   for (const scope of PRIORITY)
     for (const loc of locations.filter((l) => l.scope === scope))
       for (const s of readLocation(loc, warnings)) {
+        if ((s.scope === "project" || s.scope === "user") && !qualified.has(`${s.scope}:${s.name}`)) qualified.set(`${s.scope}:${s.name}`, s);
         const current = skills.get(s.name);
         if (!current) skills.set(s.name, s);
-        else if (current.scope !== s.scope) warnings.push(`La compétence ${s.name} de portée ${s.scope} est masquée par celle de portée ${current.scope}.`);
+        else if (current.scope !== s.scope) {
+          const reach = s.scope === "project" || s.scope === "user" ? ` ; elle reste joignable par /${s.scope}:${s.name}` : "";
+          warnings.push(`La compétence ${s.name} de portée ${s.scope} est masquée par celle de portée ${current.scope}${reach}.`);
+        }
       }
   // SPEC-EXT-011 FA-01, SPEC-CMD-001 § 5.3: the short name of an extension command, unless a skill or command of the
   // product, project or user holds it, or another extension claims it too; never dependent on the loading order.
@@ -171,7 +178,7 @@ export function loadSkills(locations: readonly SkillLocation[]): SkillSet {
     if (names.length === 1) aliases.set(short, names[0]!);
     else ambiguous.set(short, names);
   }
-  return { skills: new Map([...skills].sort(([a], [b]) => (a < b ? -1 : 1))), aliases, ambiguous, warnings };
+  return { skills: new Map([...skills].sort(([a], [b]) => (a < b ? -1 : 1))), aliases, ambiguous, qualified, warnings };
 }
 
 /** Signature of the locations (folders, definitions and their times), to detect a change during the session (EF-04). */
