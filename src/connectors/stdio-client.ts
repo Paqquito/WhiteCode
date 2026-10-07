@@ -108,8 +108,6 @@ export class StdioConnection {
   /** Steps 1 and 2: the process, then the MCP session negotiated within the connection time limit. */
   static async open(o: StdioOptions): Promise<StdioConnection> {
     const c = new StdioConnection(o);
-    const onAbort = () => void c.close(0);
-    o.signal?.addEventListener("abort", onAbort, { once: true });
     try {
       if (o.signal?.aborted) throw new ConnectionError(`Connecteur ${o.name} : démarrage annulé.`);
       const init = (await c.request(
@@ -124,10 +122,9 @@ export class StdioConnection {
       c.serverInfo = init.serverInfo ?? {};
       c.capabilities = init.capabilities ?? {};
       c.notify("notifications/initialized", {});
-      o.signal?.removeEventListener("abort", onAbort);
       return c;
     } catch (e) {
-      o.signal?.removeEventListener("abort", onAbort);
+      // An interruption cancels the initialisation request; the process is then stopped here, once.
       await c.close(0);
       let error: Error = e instanceof Error ? e : new Error(String(e));
       if (e instanceof RequestTimeout) error = new ConnectionError(`Connecteur ${o.name} : pas de réponse à l'initialisation.`); // ERR-02
