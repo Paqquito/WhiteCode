@@ -75,7 +75,7 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
       op("remove", "Désinstalle une extension.", { args: "<nom>", delivered: true, options: ["scope", "force", "preserve-data"] }),
       op("enable", "Active une extension installée.", { args: "<nom>", delivered: true, options: ["scope"] }),
       op("disable", "Désactive une extension installée.", { args: "<nom>", delivered: true, options: ["scope"] }),
-      op("update", "Met à jour une ou toutes les extensions.", { args: "[<nom>]" }),
+      op("update", "Met à jour une ou toutes les extensions.", { args: "[<nom>]", delivered: true, options: ["force"] }),
       op("rollback", "Revient à la version précédente d'une extension.", { args: "<nom>" }),
       op("validate", "Vérifie la conformité d'une extension en cours de développement.", { args: "<chemin>", delivered: true, options: ["json"] }),
     ],

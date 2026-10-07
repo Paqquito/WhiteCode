@@ -9,10 +9,13 @@ import type { Settings } from "../config/settings";
 import { setValueInSettingsFile } from "../config/settings-writer";
 import { satisfies } from "../platform/semver";
 import type { PlatformName } from "../platform/system";
-import { parseRef } from "./active";
+import { parseRef } from "./ref";
 import { cachedCatalog, catalogsDir, fetchSource, parseSource, readCatalog, refreshCatalog, type Catalog, type CatalogRegistration, type GitRunner } from "./catalog";
 import { describeExtension } from "./extension";
-import { commitInstall, engineProblem, fetchExtension, installedVersions, listInstalled, uninstall } from "./store";
+import { engineProblem, installedVersions, listInstalled, uninstall } from "./store";
+import { installExtension, type InstallInputs } from "./install";
+import { blockedReason, flagOf } from "./policy";
+import { compareVersions } from "../platform/semver";
 
 export type WritableScope = "user" | "project" | "local";
 
@@ -100,7 +103,15 @@ export function catalogUpdate(ctx: ExtensionAdminContext, only: string | undefin
   for (const name of names) {
     const r = refreshCatalog(ctx.configDir, name, all[name]!, ctx.cwd, ctx.runner);
     if (r.error) ctx.err(`avertissement : rafraîchissement impossible du catalogue ${name} (${r.error}) ; le cache est conservé.`);
-    else ctx.out(`Catalogue ${name} à jour : ${r.catalog!.extensions.length} extension(s).`);
+    else {
+      ctx.out(`Catalogue ${name} à jour : ${r.catalog!.extensions.length} extension(s).`);
+      // SPEC-EXT-010 step 2, CA-01: the installed extensions it flags, with the reason.
+      for (const i of listInstalled(ctx.configDir).filter((x) => x.catalog === name)) {
+        const flag = flagOf(ctx.settings, ctx.configDir, i.name, name, i.versions[0]!);
+        if (flag?.severity === "critical") ctx.err(`Extension ${i.name}@${name} désactivée : signalée critique par son catalogue : ${flag.reason}`);
+        else if (flag) ctx.err(`avertissement : extension ${i.name}@${name} signalée par son catalogue : ${flag.reason}`);
+      }
+    }
   }
   return OK;
 }
@@ -141,7 +152,7 @@ function locate(ctx: ExtensionAdminContext, ref: string): { name: string; catalo
   return { name, catalog: c };
 }
 
-/** `extension add <name>@<catalogue> [--scope] [--force]` (§ 5.3): fetched, validated, summarised, confirmed, installed, activated. */
+/** `extension add <name>@<catalogue> [--scope] [--force]` (§ 5.3): with its dependencies (SPEC-EXT-007), activated in the scope. */
 export async function extensionAdd(ctx: ExtensionAdminContext, ref: string, scope: WritableScope, force: boolean): Promise<number> {
   const found = locate(ctx, ref);
   if (typeof found === "string") {
@@ -154,52 +165,73 @@ export async function extensionAdd(ctx: ExtensionAdminContext, ref: string, scop
     return FAILED;
   }
   const key = `${entry.name}@${found.catalog.name}`;
-  const blocked = ctx.settings.get<string[]>("extensions.blocked");
-  if (blocked.includes(entry.name) || blocked.includes(key)) {
-    ctx.err("Extension bloquée par votre organisation."); // ERR-02
-    return FAILED;
-  }
-  const { fetched, error } = fetchExtension(ctx.configDir, found.catalog, entry, ctx.runner);
-  if (!fetched) {
-    ctx.err(error!);
-    return FAILED;
-  }
-  // Step 4 (EF-01): the summary, executable code first, then the confirmation.
-  const c = fetched.report.components;
-  const executable = fetched.report.problems.filter((p) => p.level === "info" && p.message.startsWith("Code exécutable"));
-  const dependencies = Object.entries((fetched.extension.manifest?.["dependencies"] ?? {}) as Record<string, string>);
-  ctx.out(
-    [
-      `Extension ${key} ${fetched.extension.version} — ${fetched.extension.description}`,
-      `Compétences : ${c.skills.join(", ") || "aucune"} ; commandes : ${c.commands.join(", ") || "aucune"} ; crochets : ${c.hooks} ; connecteurs : ${c.connectors.join(", ") || "aucun"}.`,
-      ...(executable.length > 0 ? ["Code exécutable :", ...executable.map((p) => `  ${p.message.replace(/^Code exécutable : /, "")}`)] : ["Aucun code exécutable."]),
-      ...(dependencies.length > 0 ? [`Dépendances : ${dependencies.map(([n, r]) => `${n} ${r}`).join(", ")}.`] : []),
-    ].join("\n"),
-  );
-  // Dependencies already installed in a version that satisfies the constraint (their resolution comes with SPEC-EXT-007).
-  const missing = dependencies.filter(([n, range]) => {
-    const dep = parseRef(n);
-    return !installedVersions(ctx.configDir, dep.catalog ?? found.catalog.name, dep.name).some((v) => satisfies(v, range));
+  const outcome = await installExtension(installInputs(ctx), found.catalog, entry, async (summary) => {
+    ctx.out(summary.join("\n")); // step 4, EF-01
+    return force || ctx.confirm(`Installer ${key} et l'activer en portée ${scope} ?`);
   });
-  if (missing.length > 0) {
-    rmSync(fetched.temp, { recursive: true, force: true });
-    ctx.err(`Dépendances non installées : ${missing.map(([n]) => n).join(", ")} ; installez-les d'abord.`);
-    return FAILED;
+  if (!outcome.ok) {
+    ctx.err(outcome.error);
+    return outcome.consent ? CONSENT : FAILED;
   }
-  if (!force && !(await ctx.confirm(`Installer ${key} et l'activer en portée ${scope} ?`))) {
-    rmSync(fetched.temp, { recursive: true, force: true });
-    ctx.err("Installation non confirmée : relancez avec --force après avoir lu le récapitulatif.");
-    return CONSENT;
-  }
-  const dir = commitInstall(ctx.configDir, found.catalog.name, fetched);
-  const problem = engineProblem(fetched.extension, ctx.product.version, ctx.product.name);
-  if (problem) {
-    ctx.err(`Extension ${key} installée dans ${dir} mais non activée : ${problem}`); // CA-01 of SPEC-EXT-008
-    return FAILED;
-  }
-  setValueInSettingsFile(ctx.files[scope], ["extensions", "enabled", key], true, ctx.platform);
-  ctx.out(`Extension ${key} ${fetched.extension.version} installée et activée en portée ${scope} ; elle sera chargée par les prochaines sessions.`);
+  // Step 6 and SPEC-EXT-007 step 4: the extension and its dependencies are activated in the same scope.
+  for (const k of outcome.activate) setValueInSettingsFile(ctx.files[scope], ["extensions", "enabled", k], true, ctx.platform);
+  for (const i of outcome.inactive) ctx.err(`Extension ${i.key} installée mais non activée : ${i.problem}`); // CA-01 of SPEC-EXT-008
+  const target = outcome.steps.find((s) => s.key === key)!;
+  if (outcome.inactive.some((i) => i.key === key)) return FAILED;
+  const deps = outcome.steps.filter((s) => s.key !== key).map((s) => `${s.key} ${s.version}`);
+  ctx.out(`Extension ${key} ${target.version} installée et activée en portée ${scope}${deps.length > 0 ? `, avec ${deps.join(", ")}` : ""} ; elle sera chargée par les prochaines sessions.`);
   return OK;
+}
+
+function installInputs(ctx: ExtensionAdminContext): InstallInputs {
+  return { configDir: ctx.configDir, settings: ctx.settings, runner: ctx.runner, product: ctx.product };
+}
+
+/**
+ * `extension update [<name>] [--force]`: the version of the catalogue when it is higher than the installed one; a
+ * pre-release only with `extensions.allowPrerelease` (SPEC-EXT-008 FA-01, CA-02). The previous version stays installed (EF-03).
+ */
+export async function extensionUpdate(ctx: ExtensionAdminContext, ref: string | undefined, force: boolean): Promise<number> {
+  const keys = ref ? [installedKey(ctx, ref)] : listInstalled(ctx.configDir).map((i) => `${i.name}@${i.catalog}`);
+  let code = OK;
+  for (const k of keys) {
+    if (typeof k !== "string") {
+      ctx.err(k.error);
+      return FAILED;
+    }
+    const { name, catalog } = parseRef(k);
+    const registration = ctx.settings.get<Record<string, CatalogRegistration>>("extensions.catalogs")[catalog!];
+    const refreshed = registration ? refreshCatalog(ctx.configDir, catalog!, registration, ctx.cwd, ctx.runner) : { error: "catalogue non configuré" };
+    if (refreshed.error) ctx.err(`avertissement : catalogue ${catalog} non rafraîchi (${refreshed.error}) ; dernière liste connue utilisée.`);
+    const c = refreshed.catalog ?? cachedCatalog(ctx.configDir, catalog!);
+    const entry = c?.extensions.find((e) => e.name === name);
+    const current = installedVersions(ctx.configDir, catalog!, name)[0]!;
+    if (!c || !entry) {
+      ctx.err(`${k} : absente du catalogue ; aucune mise à jour.`);
+      continue;
+    }
+    if (entry.version && compareVersions(entry.version, current) <= 0) {
+      ctx.out(`${k} est à jour (${current}).`);
+      continue;
+    }
+    if (entry.version && entry.version.includes("-") && !ctx.settings.get<boolean>("extensions.allowPrerelease")) {
+      ctx.out(`${k} : la version ${entry.version} est une préversion ; ignorée (extensions.allowPrerelease).`);
+      continue;
+    }
+    const outcome = await installExtension(installInputs(ctx), c, entry, async (summary) => {
+      ctx.out(summary.join("\n"));
+      return force || ctx.confirm(`Mettre à jour ${k} ?`);
+    });
+    if (!outcome.ok) {
+      ctx.err(`${k} : ${outcome.error}`);
+      code = outcome.consent ? CONSENT : FAILED;
+      continue;
+    }
+    const target = outcome.steps.find((s) => s.key === k)!;
+    if (compareVersions(target.version, current) <= 0) ctx.out(`${k} est à jour (${current}).`);
+    else ctx.out(`${k} mise à jour : ${current} → ${target.version}.`);
+  }
+  return code;
 }
 
 /** The installed extension a reference designates: `<name>@<catalogue>`, or a name installed from one catalogue only. */
@@ -226,6 +258,17 @@ export function extensionEnable(ctx: ExtensionAdminContext, ref: string, scope: 
   if (value) {
     const { name, catalog } = parseRef(key);
     const version = installedVersions(ctx.configDir, catalog!, name)[0]!;
+    const blocked = blockedReason(ctx.settings, name, catalog!);
+    if (blocked) {
+      ctx.err(blocked);
+      return FAILED;
+    }
+    // SPEC-EXT-010 CA-02: never for an extension flagged critical.
+    const flag = flagOf(ctx.settings, ctx.configDir, name, catalog!, version);
+    if (flag?.severity === "critical") {
+      ctx.err(`Extension ${key} signalée critique par son catalogue : ${flag.reason}. Activation refusée.`);
+      return FAILED;
+    }
     const problem = engineProblem(describeExtension(join(ctx.configDir, "extensions", catalog!, name, version), false), ctx.product.version, ctx.product.name);
     if (problem) {
       ctx.err(`Extension ${key} non activée : ${problem}`);

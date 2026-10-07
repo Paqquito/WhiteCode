@@ -18,7 +18,7 @@ import { effectiveCapabilities, isDeliveredProvider } from "../providers/adapter
 import { capabilitiesOf, isResolveFailure, type ModelCatalog, type ModelEntry } from "../providers/catalog";
 import { suggest } from "../shared/suggest";
 import { renderValidation, validateExtension } from "../extensions/validate";
-import { catalogAdd, catalogList, catalogRemove, catalogUpdate, extensionAdd, extensionEnable, extensionList, extensionRemove, scopeOf, type ExtensionAdminContext } from "../extensions/admin";
+import { catalogAdd, catalogList, catalogRemove, catalogUpdate, extensionAdd, extensionEnable, extensionList, extensionRemove, extensionUpdate, scopeOf, type ExtensionAdminContext } from "../extensions/admin";
 
 export interface AdminDependencies {
   readonly streams: StandardStreams;
@@ -109,14 +109,15 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
     case "extension list":
     case "extension enable":
     case "extension disable":
-    case "extension remove": {
+    case "extension remove":
+    case "extension update": {
       const scopeOption = parsed.options.get("scope");
       const scope = scopeOf(scopeOption);
       if (!scope) {
         err(`Portée invalide : ${String(scopeOption)} (user, project ou local).`);
         return ExitCode.UsageOrConfiguration;
       }
-      const needsArg = !["catalog list", "catalog update", "extension list"].includes(`${family.name} ${operation.name}`);
+      const needsArg = !["catalog list", "catalog update", "extension list", "extension update"].includes(`${family.name} ${operation.name}`);
       const arg = parsed.args[0];
       if (needsArg && !arg) {
         err(`Argument manquant : ${operation.args ?? "<nom>"}.`);
@@ -138,6 +139,8 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
           return extensionAdd(ctx, arg!, scope, parsed.options.has("force"));
         case "extension list":
           return extensionList(ctx, parsed.options.has("installable"));
+        case "extension update":
+          return extensionUpdate(ctx, arg, parsed.options.has("force"));
         case "extension enable":
         case "extension disable":
           return extensionEnable(ctx, arg!, scope, operation.name === "enable");

@@ -591,8 +591,20 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     throw new RunError("Option --extension-dir refusée : seules les extensions gérées sont admises (extensions.managedOnly).", ExitCode.UsageOrConfiguration); // FA-01
   for (const d of sessionExtensions) if (!existsSync(d)) throw new RunError(`Dossier d'extension introuvable : ${d}.`, ExitCode.UsageOrConfiguration); // ERR-01
   // SPEC-EXT-003: the installed extensions active in this project (managed > local > project > user).
-  const installedExtensions = activeInstalled(settings, locations.configDir, { name: identity.get("PRODUCT"), version: identity.version, cli: identity.get("PRODUCT_CLI") });
+  const installedExtensions = await activeInstalled({
+    settings,
+    configDir: locations.configDir,
+    product: { name: identity.get("PRODUCT"), version: identity.version, cli: identity.get("PRODUCT_CLI") },
+    runner: { env: env.childEnvironment(), timeoutMs: 300_000 },
+    cwd,
+    userSettingsFile: locations.userSettingsFile,
+    platform: system.platform,
+  });
+  for (const line of installedExtensions.imposedProblems) err(`avertissement : ${line}`); // FA-01 of SPEC-EXT-009: never hidden
   for (const line of installedExtensions.report) err(`avertissement : ${line}`);
+  // SPEC-EXT-009 § 5.3 step 3, EF-03: with `extensions.managedOnly`, only the managed customisations and the managed
+  // extensions count; the others are left out and reported.
+  const managedOnlyCustomisation = settings.get<boolean>("extensions.managedOnly");
   const extensions = loadExtensions(
     [...installedExtensions.active, ...sessionExtensions.map((root) => ({ root, origin: "session" as const }))],
     { options: settings.get<Record<string, unknown>>("extensions.options"), dataDir: (name) => join(locations.configDir, "extension-data", name) },
@@ -613,7 +625,13 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       projectState,
       cliValues: Array.isArray(connectorsOption) ? connectorsOption : [],
       cwd,
-    }).concat(extensions.connectorSources),
+    })
+      .filter((src) => {
+        if (!managedOnlyCustomisation || src.scope === "managed" || src.content === undefined) return true;
+        err(`avertissement : connecteurs de ${src.source} ignorés : seules les personnalisations gérées sont admises (extensions.managedOnly).`);
+        return false;
+      })
+      .concat(extensions.connectorSources),
     {
       connectorsOnly: opt("connectors-only") === true,
       allowList: settings.get<unknown[] | undefined>("mcp.allowList"),
@@ -650,6 +668,12 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     { scope: "user", skillsDir: join(locations.configDir, "skills"), commandsDir: join(locations.configDir, "commands") },
     ...extensions.skillLocations,
   ];
+  if (managedOnlyCustomisation) {
+    const unmanaged = skillLocations.filter((l) => l.scope === "project" || l.scope === "user");
+    const ignored = [...loadSkills(unmanaged).skills.keys()];
+    if (ignored.length > 0) err(`avertissement : compétences ignorées : ${ignored.join(", ")} : seules les personnalisations gérées sont admises (extensions.managedOnly).`);
+    skillLocations.splice(0, skillLocations.length, ...skillLocations.filter((l) => l.scope === "managed" || l.scope === "extension"));
+  }
   let skillSet = loadSkills(skillLocations);
   let skillsStamp = skillsSignature(skillLocations);
   for (const w of skillSet.warnings) err(`avertissement : ${w}`);
@@ -763,7 +787,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     const byScope = s.valuesByScope("hooks").map((v) =>
       v.origin === "project" ? { origin: v.origin, value: JSON.parse(initialProjectHooks), file: initialProjectHooksFile } : { ...v, file: s.sourcesOf(v.origin, "hooks").join(" + ") || v.origin },
     );
-    const snapshot = buildSnapshot([...byScope, ...extensions.hookSources], {
+    const kept = managedOnlyCustomisation ? byScope.filter((v) => v.origin === "managed") : byScope;
+    const snapshot = buildSnapshot([...kept, ...extensions.hookSources], {
       disabled: disabled ? { value: disabled.value === true, origin: disabled.origin } : undefined,
       managedOnly: s.get<boolean>("hooksConfig.managedOnly"),
       noHooks: opt("no-hooks") === true,
