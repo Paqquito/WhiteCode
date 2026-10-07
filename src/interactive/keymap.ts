@@ -5,7 +5,7 @@
 
 import { comboOf, type KeyEvent } from "../ui/keys";
 
-export type KeyContext = "dialog" | "input" | "app";
+export type KeyContext = "dialog" | "search" | "list" | "input" | "app";
 
 export interface ActionDef {
   /** Stable identifier (RG-02). */
@@ -46,6 +46,15 @@ export const ACTIONS: readonly ActionDef[] = [
   { id: "draft.stash", context: "input", label: "Mettre le brouillon de côté", defaults: ["ctrl+s"] },
   { id: "draft.restore", context: "input", label: "Restituer le dernier brouillon mis de côté", defaults: ["alt+s"] },
   { id: "queue.clear", context: "input", label: "Vider la file des messages en attente", defaults: ["alt+x"] },
+  { id: "history.search", context: "input", label: "Rechercher dans l'historique des saisies", defaults: ["ctrl+r"] },
+  { id: "list.next", context: "list", label: "Proposition suivante", defaults: ["down", "ctrl+n"] },
+  { id: "list.previous", context: "list", label: "Proposition précédente", defaults: ["up", "ctrl+p"] },
+  { id: "list.accept", context: "list", label: "Insérer la proposition (sans envoyer)", defaults: ["tab", "enter"] },
+  { id: "list.close", context: "list", label: "Fermer la liste en gardant la saisie", defaults: ["escape"] },
+  { id: "search.next", context: "search", label: "Correspondance plus ancienne", defaults: ["ctrl+r", "up"] },
+  { id: "search.previous", context: "search", label: "Correspondance plus récente", defaults: ["ctrl+s", "down"] },
+  { id: "search.accept", context: "search", label: "Placer l'entrée dans la saisie (sans envoyer)", defaults: ["enter", "tab"] },
+  { id: "search.cancel", context: "search", label: "Annuler la recherche", defaults: ["escape"] },
   { id: "dialog.confirm", context: "dialog", label: "Valider le choix", defaults: ["enter"] },
   { id: "dialog.previous", context: "dialog", label: "Choix précédent", defaults: ["up", "shift+tab"] },
   { id: "dialog.next", context: "dialog", label: "Choix suivant", defaults: ["down"] },
@@ -172,7 +181,7 @@ export function buildKeymap(custom: Readonly<Record<string, unknown>>, o: { read
   }
   // EF-03: conflicts within a context, reported once each.
   const conflicts: string[] = [];
-  for (const context of ["dialog", "input", "app"] as const) {
+  for (const context of ["dialog", "search", "list", "input", "app"] as const) {
     const owners = new Map<string, string[]>();
     const ordered = [...bindings.values()].filter((b) => BY_ID.get(b.id)!.context === context).sort((a, b) => Number(b.custom) - Number(a.custom));
     for (const b of ordered) for (const c of b.combos) owners.set(c, [...(owners.get(c) ?? []), b.id]);

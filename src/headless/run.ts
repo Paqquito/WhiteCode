@@ -88,6 +88,12 @@ import { INTERNAL_COMMANDS } from "../commands/internal";
 import { helpView, shortcutsHelp } from "../interactive/help";
 import { buildKeymap, Keymap } from "../interactive/keymap";
 import { userView } from "../interactive/views";
+import { buildFileIndex, type FileIndex } from "../interactive/completion";
+import { InputHistory } from "../interactive/history";
+import { readUsage, writeUsage } from "../interactive/usage";
+
+/** Sources of the commands, as shown in the completion. */
+const COMMAND_SOURCE_LABEL: Readonly<Record<string, string>> = { internal: "produit", managed: "organisation", project: "projet", user: "utilisateur", extension: "extension", connector: "connecteur" };
 import type { UnicodeLevel } from "../ui/style";
 
 /** RG-01 of SPEC-IHM-027: a key typed during this delay after a dialog appears never decides it. */
@@ -1352,6 +1358,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   let keymap = new Keymap();
   // SPEC-MOD-001: the interactive application, also the human authority of the permission decisions (SPEC-IHM-027).
   let stateWriter: InputStateWriter | undefined;
+  let history: InputHistory | undefined;
+  const usagePath = join(locations.configDir, "completion-usage.json");
+  const completionUsage = readUsage(usagePath);
   if (!nonInteractive) {
     const built = buildKeymap(settings.get<Record<string, unknown>>("ui.keybindings.bindings"), { strictConflicts: settings.get<boolean>("ui.keybindings.strictConflicts") });
     for (const w of built.warnings) err(`avertissement [raccourcis] : ${w}`);
@@ -1364,6 +1373,43 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       platform: system.platform,
     });
     const restored = reopened ? readInputState(inputStatePath(sessionDirOf(reopened.info.path))) : undefined;
+    // SPEC-IHM-008: the history of the inputs, on this machine only.
+    history = new InputHistory({
+      path: join(locations.configDir, "input-history.jsonl"),
+      dir: projectReal,
+      scope: settings.get<"folder" | "global">("ui.history.scope"),
+      maxEntries: settings.get<number>("ui.history.maxEntries"),
+      retentionDays: settings.get<number>("ui.history.retentionDays"),
+      enabled: settings.get<boolean>("ui.history.enabled"),
+      warn: (m) => err(`avertissement : ${m}`),
+    });
+    // SPEC-IHM-009: commands of the catalogue and files of the project, the index kept a few seconds (ENF-02).
+    let fileIndex: { at: number; index: FileIndex } | undefined;
+    const completion = settings.get<boolean>("ui.completion.enabled")
+      ? {
+          maxVisible: settings.get<number>("ui.completion.maxVisible"),
+          fuzzy: settings.get<boolean>("ui.completion.fuzzy"),
+          commands: () =>
+            commandCatalog()
+              .entries()
+              .map((e) => ({ value: e.name, description: e.description, source: COMMAND_SOURCE_LABEL[e.source], kind: "command" as const })),
+          files: () => {
+            if (!fileIndex || Date.now() - fileIndex.at > 10_000) {
+              fileIndex = {
+                at: Date.now(),
+                index: buildFileIndex(projectReal, {
+                  maxEntries: settings.get<number>("ui.completion.maxFileEntries"),
+                  timeoutMs: settings.get<number>("ui.completion.timeoutMs"),
+                  respectIgnoreFiles: settings.get<boolean>("tools.respectIgnoreFiles"),
+                  caseInsensitive: system.platform !== "linux",
+                  readDenied,
+                }),
+              };
+            }
+            return fileIndex.index;
+          },
+        }
+      : undefined;
     if (transcript) stateWriter = new InputStateWriter(inputStatePath(transcript.sessionDir), settings.get<boolean>("ui.input.persistDraft"));
     app = new InteractiveApp({
       terminal: terminal!,
@@ -1396,6 +1442,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       onInputState: (s) => stateWriter?.update(s),
       keymap,
       showFooterHints: settings.get<boolean>("ui.keybindings.showFooterHints"),
+      history,
+      historyGlobal: settings.get<string>("ui.history.scope") === "global",
+      completion,
+      usage: completionUsage,
     });
   }
 
@@ -1551,6 +1601,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         return { exit: true };
       case "help":
         return { shown: helpView(commandCatalog().entries(), keymap) };
+      case "history":
+        // EF-06, CA-07 of SPEC-IHM-008: the history of the inputs erased.
+        if (args.trim() !== "clear") return { refused: "Usage : /history clear." };
+        history?.clear();
+        return { shown: text("Historique des saisies effacé.") };
       case "shortcuts":
         if (args.trim() === "reset") {
           // FA-03, CA-07 of SPEC-IHM-014: the default bindings again, in the settings file and in the session.
@@ -1576,6 +1631,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     const replay = settings.get<string>("ui.replayOnResume");
     interactiveApp.start();
     holder.cleanups.push(() => interactiveApp.stop());
+    // SPEC-MOD-010 § 5.4, EF-04: the deferred maintenance (here, the pruning of the history) after the display.
+    setTimeout(() => history?.prune(), 0);
     holder.errSink = (text) => interactiveApp.writeLine(text);
     if (reopened && replay !== "none") replayHistory(interactiveApp, reopened.chain, replay === "full", (name, input) => registry.get(name)?.summary(input as never) ?? "");
     const onSignal = () => interactiveApp.forceExit();
@@ -1605,6 +1662,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       },
     });
     stateWriter?.flush();
+    writeUsage(usagePath, completionUsage);
     interactiveApp.stop();
     holder.errSink = undefined;
     await hooks.fire("session_closed", { reason: "exit" });

@@ -18,6 +18,9 @@ import { spansToLines, type Cell, type Span } from "../ui/text";
 import { recognize } from "../commands/recognize";
 import { comboLabel, Keymap, type KeyContext } from "./keymap";
 import { literalTriggers } from "./triggers";
+import { InputAssist, type AssistOptions } from "./assist";
+import type { UsageStats } from "./completion";
+import type { InputHistory } from "./history";
 import { activityView, interruptionView, modelView, noticeView, toolCallView, toolResultView, userView, type ViewContext } from "./views";
 
 export interface AppSettings {
@@ -88,6 +91,12 @@ export interface AppOptions {
   readonly keymap?: Keymap;
   /** `ui.keybindings.showFooterHints`. */
   readonly showFooterHints?: boolean;
+  /** History of the inputs (SPEC-IHM-008); `historyGlobal` shows the folder of origin of the entries. */
+  readonly history?: InputHistory;
+  readonly historyGlobal?: boolean;
+  /** Sources of the completion (SPEC-IHM-009); absent when it is disabled. */
+  readonly completion?: AssistOptions["completion"];
+  readonly usage?: Map<string, UsageStats>;
   readonly clock?: () => number;
   readonly scheduler?: Scheduler;
 }
@@ -98,6 +107,7 @@ export class InteractiveApp {
   readonly #keys = new KeyParser();
   #keymap: Keymap;
   readonly #editor: Editor;
+  readonly #assist: InputAssist;
   readonly #queue: string[];
   readonly #stash: string[];
   readonly #approvals: PendingApproval[] = [];
@@ -127,6 +137,16 @@ export class InteractiveApp {
     this.#queue = [...(o.restored?.queue ?? [])];
     this.#stash = [...(o.restored?.stash ?? [])];
     if (o.restored?.draft) this.#editor.set(o.restored.draft);
+    this.#assist = new InputAssist({
+      editor: this.#editor,
+      history: o.history,
+      showFolder: o.historyGlobal,
+      completion: o.completion,
+      maxChars: o.settings.inputMaxChars,
+      usage: o.usage,
+      notice: (m) => this.notice("warning", m),
+      now: () => this.#now,
+    });
   }
 
   get #now(): number {
@@ -508,7 +528,8 @@ export class InteractiveApp {
       return;
     }
     const approval = this.#approvals[0];
-    const contexts: KeyContext[] = approval || this.#confirm ? ["dialog", "app"] : ["input", "app"];
+    const searching = this.#assist.searching;
+    const contexts: KeyContext[] = approval || this.#confirm ? ["dialog", "app"] : searching ? ["search", "app"] : [...this.#assist.contexts(), "input", "app"];
     const action = this.#keymap.action(e, contexts);
     // Essential application actions keep priority over any edition (SPEC-IHM-013 § 5.5).
     if (action === "app.interrupt" || (action === "app.cancel" && this.running && !approval && !this.#confirm)) {
@@ -534,7 +555,34 @@ export class InteractiveApp {
       this.#exitArmed = undefined;
       this.#hint = undefined;
     }
+    if (searching) {
+      // § 5.3 of SPEC-IHM-008: the keys edit the term of the search, never the input.
+      this.#assist.searchKey(action, !e.ctrl && !e.alt ? e.text : undefined, e.name === "backspace");
+      this.#saveState();
+      this.#redraw();
+      return;
+    }
+    // Enter on a proposal that is already what is typed sends the message, as without the list.
+    if (action === "list.accept" && e.name === "enter" && this.#assist.selectedIsTyped()) {
+      this.#assist.close();
+      this.#inputAction(e, "input.submit");
+      this.#redraw();
+      return;
+    }
+    if (action?.startsWith("list.")) {
+      this.#assist.listKey(action);
+      this.#saveState();
+      this.#redraw();
+      return;
+    }
+    const before = this.#editor.text;
+    const caret = this.#editor.caret;
     this.#inputAction(e, action);
+    // The completion follows the text and the caret; an edit ends the browsing of the history.
+    if (action !== "input.up" && action !== "input.down" && action !== "input.submit") {
+      if (this.#editor.text !== before) this.#assist.edited();
+      else if (this.#editor.caret !== caret) this.#assist.refreshList();
+    }
     this.#redraw();
   }
 
@@ -600,10 +648,14 @@ export class InteractiveApp {
           this.#saveState();
           return;
         }
-        ed.up();
+        // SPEC-IHM-008 § 5.2: above the first line, the history (EF-03: a multiline input is edited first).
+        if (!ed.up()) this.#assist.older();
         return;
       case "input.down":
-        ed.down();
+        if (!ed.down()) this.#assist.newer();
+        return;
+      case "history.search":
+        this.#assist.startSearch();
         return;
       case "input.deleteBack":
         ed.backspace();
@@ -656,6 +708,7 @@ export class InteractiveApp {
   #submit(): void {
     const content = this.#editor.text;
     if (content.trim() === "") return; // EF-06, CA-06
+    this.#assist.submitted(content); // § 5.1 of SPEC-IHM-008: messages and commands are recorded
     if (EXIT_COMMAND.test(content)) {
       this.#editor.set("");
       this.#saveState();
@@ -723,6 +776,8 @@ export class InteractiveApp {
         ),
       );
     }
+    // The list of completion and the search band, right above the input area.
+    if (!approval && !this.#confirm) panels.push(...this.#assist.panels());
     const stream: Node[] = [];
     if (this.#stream) stream.push(modelView(this.#stream, this.#view));
     if (this.running) stream.push(activityView(this.#activity, this.#now - this.#turnStarted, this.#spinner, this.#view));
@@ -783,6 +838,8 @@ export class InteractiveApp {
     // EF-05 of SPEC-IHM-011: the number of waiting messages is always visible when not zero.
     if (this.#queue.length > 0) parts.push({ text: ` · ${this.#queue.length} message${this.#queue.length > 1 ? "s" : ""} en attente`, style: { bold: true } });
     if (this.#stash.length > 0) parts.push({ text: ` · ${this.#stash.length} brouillon${this.#stash.length > 1 ? "s" : ""} de côté` });
+    const position = this.#assist.position();
+    if (position) parts.push({ text: ` · ${position}`, style: { bold: true } }); // § 10 of SPEC-IHM-008
     if (this.#hint) parts.push({ text: ` · ${this.#hint}`, style: { bold: true } });
     else if (this.#o.showFooterHints !== false) {
       // § 5.6 of SPEC-IHM-014: the most useful actions, with their effective combinations.

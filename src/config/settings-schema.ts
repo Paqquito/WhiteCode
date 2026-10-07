@@ -229,6 +229,16 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "ui.queue.maxMessages", schema: int(1, 1_000), default: 10, scopes: [U], owner: "SPEC-IHM-011" },
   { key: "ui.queue.autoSend", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-011" },
   { key: "ui.drafts.maxStashed", schema: int(1, 1_000), default: 10, scopes: [U], owner: "SPEC-IHM-011" },
+  // SPEC-IHM-008: history of the inputs; SPEC-IHM-009: completion (lot 5; values in English, gap E-096).
+  { key: "ui.history.enabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-IHM-008" },
+  { key: "ui.history.scope", schema: enumOf(["folder", "global"]), default: "folder", scopes: [U], owner: "SPEC-IHM-008" },
+  { key: "ui.history.maxEntries", schema: int(1, 1_000_000), default: 5_000, scopes: [U, G], owner: "SPEC-IHM-008" },
+  { key: "ui.history.retentionDays", schema: int(1, 36_500), default: 90, scopes: [U, G], owner: "SPEC-IHM-008" },
+  { key: "ui.completion.enabled", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-009" },
+  { key: "ui.completion.maxVisible", schema: int(1, 100), default: 10, scopes: [U], owner: "SPEC-IHM-009" },
+  { key: "ui.completion.maxFileEntries", schema: int(10, 10_000_000), default: 20_000, scopes: [U], owner: "SPEC-IHM-009" },
+  { key: "ui.completion.timeoutMs", schema: int(10, 60_000), default: 200, scopes: [U], owner: "SPEC-IHM-009" },
+  { key: "ui.completion.fuzzy", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-009" },
   // SPEC-IHM-014: key bindings; SPEC-CMD-001: commands (lot 5).
   { key: "ui.keybindings.bindings", schema: Type.Record(Type.String(), Type.Union([Type.String(), Type.Array(Type.String())])), default: {}, scopes: [U], owner: "SPEC-IHM-014" },
   { key: "ui.keybindings.showFooterHints", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-014" },

@@ -65,6 +65,10 @@ export interface WalkOptions {
   /** Absolute time after which the walk stops (FA-02). */
   readonly deadline: number;
   readonly signal: AbortSignal;
+  /** Bound on the entries collected (files and folders): beyond, the walk stops (SPEC-IHM-009 EF-06). */
+  readonly maxEntries?: number;
+  /** Folders are collected too, with their relative path. */
+  readonly directories?: boolean;
 }
 
 export interface WalkedFile {
@@ -77,16 +81,27 @@ export interface WalkedFile {
 export interface WalkResult {
   readonly files: WalkedFile[];
   readonly timedOut: boolean;
+  /** Folders walked, relative to the root (with `directories`). */
+  readonly directories: string[];
+  /** The bound `maxEntries` was reached. */
+  readonly truncated: boolean;
 }
 
 /** Every regular file under `root`; folders reached twice through symbolic links are walked once. */
 export function walkFiles(root: string, options: WalkOptions, accept: (relativePath: string) => boolean = () => true): WalkResult {
   const files: WalkedFile[] = [];
+  const directories: string[] = [];
   const seen = new Set<string>();
   let timedOut = false;
+  let truncated = false;
+  const full = () => options.maxEntries !== undefined && files.length + directories.length >= options.maxEntries;
   const visit = (dir: string, layers: readonly IgnoreLayer[]): void => {
     if (Date.now() > options.deadline || options.signal.aborted) {
       timedOut = true;
+      return;
+    }
+    if (full()) {
+      truncated = true;
       return;
     }
     let real: string;
@@ -116,7 +131,11 @@ export function walkFiles(root: string, options: WalkOptions, accept: (relativeP
       }
     }
     for (const entry of entries.sort((a, b) => (a.name < b.name ? -1 : 1))) {
-      if (timedOut) return;
+      if (timedOut || truncated) return;
+      if (full()) {
+        truncated = true;
+        return;
+      }
       if (entry.name === VCS_FOLDER) continue;
       const path = join(dir, entry.name);
       const relPath = rel === "" ? entry.name : `${rel}/${entry.name}`;
@@ -127,10 +146,13 @@ export function walkFiles(root: string, options: WalkOptions, accept: (relativeP
         continue; // broken link
       }
       if (options.respectIgnoreFiles && ignoredBy(current, relPath, stats.isDirectory())) continue;
-      if (stats.isDirectory()) visit(path, current);
+      if (stats.isDirectory()) {
+        if (options.directories) directories.push(relPath);
+        visit(path, current);
+      }
       else if (stats.isFile() && accept(relPath)) files.push({ path, relativePath: relPath, stats });
     }
   };
   visit(root, []);
-  return { files, timedOut };
+  return { files, timedOut, directories, truncated };
 }

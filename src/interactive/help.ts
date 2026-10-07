@@ -16,7 +16,13 @@ const SOURCE_LABEL: Readonly<Record<CommandSource, string>> = {
   connector: "Commandes des connecteurs",
 };
 
-const CONTEXT_LABEL: Readonly<Record<KeyContext, string>> = { input: "Raccourcis de la zone de saisie", app: "Raccourcis de l'application", dialog: "Raccourcis des dialogues" };
+const CONTEXT_LABEL: Readonly<Record<KeyContext, string>> = {
+  input: "Raccourcis de la zone de saisie",
+  list: "Raccourcis de la liste de complétion",
+  search: "Raccourcis de la recherche dans l'historique",
+  app: "Raccourcis de l'application",
+  dialog: "Raccourcis des dialogues",
+};
 
 /** Two columns: a fixed first column, the second wrapped beside it. */
 function row(left: string, right: Span[], width: number): Node {
@@ -39,7 +45,7 @@ export function commandsHelp(entries: readonly CatalogEntry[]): Node[] {
   return out;
 }
 
-export function shortcutsHelp(keymap: Keymap, contexts: readonly KeyContext[] = ["input", "app", "dialog"]): Node[] {
+export function shortcutsHelp(keymap: Keymap, contexts: readonly KeyContext[] = ["input", "list", "search", "app", "dialog"]): Node[] {
   const out: Node[] = [];
   const groups = bindingsHelp(keymap, contexts);
   const width = columnWidth(groups.flatMap((g) => g.rows.map((r) => `  ${r.keys}`)), 16, 40);
