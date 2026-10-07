@@ -4,7 +4,6 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { RESOLVED_IDENTITY } from "../src/identity/generated/build-data";
 
 const root = join(import.meta.dir, "..");
 const TARGETS = ["bun-windows-x64", "bun-windows-arm64", "bun-linux-x64", "bun-linux-arm64", "bun-linux-x64-musl", "bun-linux-arm64-musl", "bun-darwin-x64", "bun-darwin-arm64"];
@@ -25,6 +24,8 @@ await step("identité et constantes", ["bun", "scripts/generate.ts", ...passthro
 await step("vérification des types", ["bunx", "tsc", "--noEmit", "-p", "."]);
 await step("contrôles statiques", ["bun", "scripts/check-static.ts"]);
 
+// The generated identity is read once the first step has written it: a fresh checkout has none yet.
+const { RESOLVED_IDENTITY } = await import("../src/identity/generated/build-data");
 const cli = (RESOLVED_IDENTITY.values["PRODUCT_CLI"]?.value as string) ?? "cli";
 const ti = process.argv.indexOf("--target");
 const targets = process.argv.includes("--all") ? TARGETS : ti >= 0 ? [process.argv[ti + 1]!] : [undefined];
