@@ -24,6 +24,8 @@ export interface ConnectorDeclaration {
   readonly maxOutputTokens?: number;
   /** Digest of the declaration as written (SPEC-PER-019 RG-01). */
   readonly fingerprint: string;
+  /** Marked indispensable by the managed configuration (SPEC-MOD-009 FA-04); read in the managed scope only. */
+  readonly required?: boolean;
 }
 
 export interface ConnectorSource {
@@ -133,6 +135,7 @@ function readSource(src: ConnectorSource, warnings: string[]): ConnectorDeclarat
       headers: (d["headers"] as Record<string, string> | undefined) ?? {},
       maxOutputTokens: typeof d["maxOutputTokens"] === "number" ? d["maxOutputTokens"] : undefined,
       fingerprint: fingerprint({ name, declaration: raw }),
+      ...(src.scope === "managed" && d["required"] === true ? { required: true } : {}),
     });
   }
   return out;

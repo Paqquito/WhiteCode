@@ -171,9 +171,9 @@ describe("SPEC-EXT-002 and SPEC-EXT-003 installation and activation", () => {
     expect(unconfirmed.stdout).toContain("Aucun code exécutable.");
     expect(readdirSync(join(ws.configHome, "extensions"))).toEqual([]);
     await admin(ws, ["extension", "add", "revue@team", "--force"]);
-    const removed = await admin(ws, ["catalog", "remove", "team"]);
+    const removed = await admin(ws, ["catalog", "remove", "team", "--force"]);
     expect(removed.stdout).toContain("Extensions installées depuis ce catalogue : revue");
-    const r = await admin(ws, ["extension", "remove", "revue@team"]);
+    const r = await admin(ws, ["extension", "remove", "revue@team", "--force"]);
     expect(r.stdout).toContain("Extension revue@team désinstallée.");
     expect(existsSync(join(ws.configHome, "extensions", "team", "revue"))).toBe(false);
   });

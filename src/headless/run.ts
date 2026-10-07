@@ -76,6 +76,8 @@ import { loadSkills, modelSkills, skillsSection, skillsSignature, type Skill, ty
 import { createUseSkillTool } from "../tools/use-skill";
 import { closingFields, combineResults, exitCodeFor, renderResult, type ResultFormat } from "./output";
 import { EventStream } from "./stream-output";
+import { purgeExpiredSessions } from "../session/maintenance";
+import { correctionMessage, extractStructured, loadOutputSchema, schemaInstruction } from "./structured";
 import { InteractiveApp } from "../interactive/app";
 import { InputStateWriter, inputStatePath, readInputState, sessionDirOf } from "../interactive/input-state";
 import { replayHistory } from "../interactive/replay";
@@ -249,6 +251,14 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     return runSubcommand(argv, { streams, identity, catalog: deps.catalog, env, cwd: deps.cwd, system, managedDir: deps.managedDir });
   }
   const parsed = parseCommandLine(argv);
+  // SPEC-MOD-010 EF-05: the duration of each phase of the start-up, for the journal.
+  const phases: Array<[string, number]> = [];
+  let phaseStart = Date.now();
+  const phase = (name: string) => {
+    const t = Date.now();
+    phases.push([name, t - phaseStart]);
+    phaseStart = t;
+  };
   const opt = (name: string) => parsed.options.get(name);
 
   if (opt("help")) {
@@ -317,6 +327,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     loaded = loadAll(env);
   }
   const { locations, firstPass, settings, trust } = loaded;
+  phase("environnement, options et configuration");
   // SPEC-CFG-005: the settings files are checked before each request; `liveSettings` holds the effective values.
   let liveSettings = settings;
   const reloader = new SettingsReloader({
@@ -333,7 +344,15 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   }
   const verbose = opt("verbose") === true;
   // SPEC-MOT-004: custom system instructions, validated at launch (§ 5.3 steps 1 to 3).
-  const customInstructions = readCustomInstructions(opt, deps.cwd, settings.get<boolean>("context.allowCustomSystemInstructions"), err);
+  const customOnly = readCustomInstructions(opt, deps.cwd, settings.get<boolean>("context.allowCustomSystemInstructions"), err);
+  // SPEC-MOD-004 step 1, EF-01: the output schema is checked before anything else is started (ERR-01: not recoverable).
+  const schemaOption = opt("output-schema");
+  const outputSchema = typeof schemaOption === "string" ? loadOutputSchema(schemaOption, deps.cwd, settings.get<number>("engine.output.schemaMaxDepth")) : undefined;
+  if (outputSchema && "error" in outputSchema) throw new RunError(outputSchema.error, ExitCode.UsageOrConfiguration);
+  // Step 2: the instruction derived from the schema joins the instructions of the model.
+  const customInstructions = outputSchema
+    ? { ...(customOnly ?? {}), addition: [customOnly?.addition, schemaInstruction(outputSchema.schema)].filter((x) => x !== undefined).join("\n\n") }
+    : customOnly;
   for (const issue of settings.issues) err(`avertissement [paramètres] : ${issue.message}`);
   for (const issue of env.issues) err(`avertissement [environnement] : ${issue.message}`);
   if (verbose) for (const w of identity.warnings) err(`avertissement [identité] : ${w.message}`);
@@ -486,6 +505,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     return allowList.some((a) => names.has(a));
   };
   let modelValue = settings.get<string | undefined>("models.selected") ?? "default";
+  if (typeof opt("model") === "string" && settings.origin("models.selected") === "managed" && opt("model") !== modelValue) {
+    err(`avertissement : le modèle est imposé par votre organisation : ${modelValue} s'applique, --model ${String(opt("model"))} est ignoré.`); // CA-03, ERR-02
+  }
   // SPEC-SES-002 step 4, EF-05: the model of the reopened session, unless --model says otherwise and while it is allowed.
   if (reopened?.model && settings.origin("models.selected") !== "cli") {
     const previous = deps.catalog.resolve(reopened.model, providerId, identity, resolveOptions);
@@ -596,6 +618,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     headers: { "User-Agent": identity.get("USER_AGENT"), [`${prefix}version`]: identity.version, [`${prefix}entrypoint`]: nonInteractive ? "non-interactive" : "interactive" },
   };
   const provider = withRequestLog((deps.providerFactory ?? createProvider)(providerOptions), providerOptions, (m, d) => debug.log("api", m, d));
+  phase("compatibilité et authentification");
   // CA-03 of SPEC-API-001: thinking requested explicitly from a model without it is announced as unavailable, without error.
   if (settings.get<boolean>("thinking.enabled") && settings.origin("thinking.enabled") !== "default" && resolvedModel.capabilities.thinking === "none") {
     err(`avertissement : la réflexion n'est pas disponible pour le modèle ${resolvedModel.id} (${providerId}) : elle est ignorée.`);
@@ -655,14 +678,24 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     throw e;
   }
 
+  // SPEC-MOD-009: the minimal mode, from the launch option only (§ 11); permission rules and managed policies stay (EF-02).
+  const minimal = opt("minimal") === true;
+  if (minimal) {
+    err(
+      "Session minimale : instructions de projet et d'utilisateur, extensions, compétences et commandes personnalisées, connecteurs et crochets (sauf ceux de l'organisation) ne sont pas chargés ; le contexte d'environnement est réduit au dossier courant et à la plateforme.",
+    ); // § 5.3 step 3, EF-03
+    earlyDebug.push(["startup", "minimal mode", {}]); // EF-05
+  }
   // SPEC-EXT-014, SPEC-EXT-011: the extensions of `--extension-dir`, for this session only, without any persistent trace.
   const extensionDirs = opt("extension-dir");
-  const sessionExtensions = (Array.isArray(extensionDirs) ? extensionDirs : []).map((d) => absolute(d, cwd));
+  const sessionExtensions = minimal ? [] : (Array.isArray(extensionDirs) ? extensionDirs : []).map((d) => absolute(d, cwd));
   if (sessionExtensions.length > 0 && settings.get<boolean>("extensions.managedOnly"))
     throw new RunError("Option --extension-dir refusée : seules les extensions gérées sont admises (extensions.managedOnly).", ExitCode.UsageOrConfiguration); // FA-01
   for (const d of sessionExtensions) if (!existsSync(d)) throw new RunError(`Dossier d'extension introuvable : ${d}.`, ExitCode.UsageOrConfiguration); // ERR-01
   // SPEC-EXT-003: the installed extensions active in this project (managed > local > project > user).
-  const installedExtensions = await activeInstalled({
+  const installedExtensions = minimal
+    ? { active: [], report: [], imposedProblems: [] }
+    : await activeInstalled({
     settings,
     configDir: locations.configDir,
     product: { name: identity.get("PRODUCT"), version: identity.version, cli: identity.get("PRODUCT_CLI") },
@@ -682,11 +715,12 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   );
   for (const s of extensions.summaries) if (s.origin === "session") err(s.text); // SPEC-EXT-014 step 3
   for (const line of extensions.report) err(line);
+  phase("extensions et compétences");
 
   // SPEC-MCP-001, SPEC-MCP-021, SPEC-PER-019: the effective connectors; their tools reach the registry once connected.
   const projectState = readUserState(locations.userStateFile).projects?.[projectStateKey(locations.projectRoot, system.platform)] as ProjectState | undefined;
   const connectorsOption = opt("connectors");
-  const connectorSet = resolveConnectors(
+  const resolved = resolveConnectors(
     connectorSources({
       configDir: locations.configDir,
       managedDir: locations.managedDir,
@@ -716,6 +750,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       }),
     },
   );
+  if (minimal) {
+    const required = resolved.connectors.filter((c) => c.required);
+    if (required.length > 0) throw new RunError(`Le mode minimal est incompatible avec la configuration en vigueur : connecteur indispensable ${required.map((c) => c.name).join(", ")}.`, ExitCode.UsageOrConfiguration);
+  }
+  const connectorSet = minimal ? { connectors: [], excluded: [], warnings: [] } : resolved;
   for (const w of connectorSet.warnings) err(`avertissement : ${w}`);
   for (const x of connectorSet.excluded) {
     if (x.reason.startsWith("remplacé")) continue; // an ordinary override (§ 5.3 step 2)
@@ -746,6 +785,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     { scope: "user", skillsDir: join(locations.configDir, "skills"), commandsDir: join(locations.configDir, "commands") },
     ...extensions.skillLocations,
   ];
+  if (minimal) skillLocations.splice(0); // § 5.1: no skill nor custom command; the internal commands stay
   if (managedOnlyCustomisation) {
     const unmanaged = skillLocations.filter((l) => l.scope === "project" || l.scope === "user");
     const ignored = [...loadSkills(unmanaged).skills.keys()];
@@ -865,7 +905,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     const byScope = s.valuesByScope("hooks").map((v) =>
       v.origin === "project" ? { origin: v.origin, value: JSON.parse(initialProjectHooks), file: initialProjectHooksFile } : { ...v, file: s.sourcesOf(v.origin, "hooks").join(" + ") || v.origin },
     );
-    const kept = managedOnlyCustomisation ? byScope.filter((v) => v.origin === "managed") : byScope;
+    const kept = managedOnlyCustomisation || minimal ? byScope.filter((v) => v.origin === "managed") : byScope;
     const snapshot = buildSnapshot([...kept, ...extensions.hookSources], {
       disabled: disabled ? { value: disabled.value === true, origin: disabled.origin } : undefined,
       managedOnly: s.get<boolean>("hooksConfig.managedOnly"),
@@ -925,7 +965,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // of the default instructions leaves them out (SPEC-MOT-003 FA-01).
   let instructionsLoader: InstructionsLoader | undefined;
   const loadProjectInstructions = (): string | undefined => {
-    if (customInstructions?.replacement !== undefined) return undefined;
+    if (customInstructions?.replacement !== undefined || minimal) return undefined;
     instructionsLoader = new InstructionsLoader({
       instructionsFile: identity.get("INSTRUCTIONS_FILE"),
       localInstructionsFile: identity.get("LOCAL_INSTRUCTIONS_FILE"),
@@ -958,7 +998,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     buildSystemInstructions({
       projectInstructions: loadProjectInstructions(),
       customInstructions,
-      gitState: captureRepository(),
+      gitState: minimal ? undefined : captureRepository(),
       identity,
       variant: "main",
       nonInteractive,
@@ -999,6 +1039,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     contractVersion: built.contractVersion,
     promptFamily: built.family,
     entrypoint: nonInteractive ? "non-interactive" : "interactive",
+    ...(minimal ? { minimal: true } : {}),
   };
   if (continued) {
     transcript?.append("system", { event: "reopened", model: resolvedModel.id, provider: providerId, permissionMode: modeState.mode, at: reopenAt ?? null });
@@ -1080,7 +1121,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   if (connectors) {
     connectors.start();
     holder.cleanups.push(() => void connectors.close());
-    if (opt("wait-for-mcp") === true) await connectors.waitAll(settings.get<number>("mcp.connectTimeout") + 5_000);
+    if (opt("wait-for-mcp") === true) await connectors.waitAll(settings.get<number>("mcp.connectTimeout") + 5_000, controller.signal);
   }
   // Connector tools: deferred beyond `mcp.eagerToolsThreshold` (SPEC-MCP-009 EF-05); appended to the request once
   // published or loaded, so that the definitions already sent keep their place (SPEC-OUT-030 EF-02).
@@ -1474,7 +1515,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         exitDoublePressMs: settings.get<number>("ui.exitDoublePressWindow"),
         dialogGuardMs: DIALOG_GUARD_MS,
       },
-      status: () => ({ mode: modeState.mode, model: resolvedModel.id }),
+      status: () => ({ mode: modeState.mode, model: minimal ? `${resolvedModel.id} · session minimale` : resolvedModel.id }),
       cycleMode: () => void modeState.cycle(),
       describeCall: (name, input) => {
         try {
@@ -1587,6 +1628,25 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     },
   };
 
+  phase("session");
+  // SPEC-MOD-010 EF-05, CA-06: the journal of the start-up, shown with `engine.startup.verboseLog`.
+  const reportPhases = () => {
+    debug.log("startup", "phases", Object.fromEntries(phases));
+    if (settings.get<boolean>("engine.startup.verboseLog")) err(`Démarrage : ${phases.map(([n, ms]) => `${n} ${ms} ms`).join(" · ")}.`);
+  };
+  // § 5.4, RG-03: no model; a failure leaves the work for the next launch (EF-07).
+  let maintained = false;
+  const deferredMaintenance = () => {
+    if (maintained || !settings.get<boolean>("engine.startup.deferredMaintenance")) return;
+    maintained = true;
+    try {
+      history?.prune();
+      const purged = purgeExpiredSessions(locations.sessionsDir, settings.get<number>("sessions.retentionDays"), Date.now(), new Set([sessionId]));
+      if (purged.removed.length > 0) debug.log("maintenance", "expired sessions purged", { count: purged.removed.length });
+    } catch {
+      // retried at the next launch
+    }
+  };
   // SPEC-CMD-001: the catalogue of the commands, built again for each request (skills reread, connectors connected).
   const commandCatalog = () =>
     new CommandCatalog({ internal: INTERNAL_COMMANDS, skills: skillSet, connectors: connectors?.prompts() ?? [], disabled: settings.get<string[]>("commands.disabled"), automated: nonInteractive });
@@ -1708,7 +1768,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     interactiveApp.start();
     holder.cleanups.push(() => interactiveApp.stop());
     // SPEC-MOD-010 § 5.4, EF-04: the deferred maintenance (here, the pruning of the history) after the display.
-    setTimeout(() => history?.prune(), 0);
+    phase("affichage");
+    reportPhases();
+    // SPEC-MOD-010 § 5.4, EF-04, CA-04: the deferred maintenance starts after the display.
+    setTimeout(deferredMaintenance, 0);
     holder.errSink = (text) => interactiveApp.writeLine(text);
     if (reopened && replay !== "none") replayHistory(interactiveApp, reopened.chain, replay === "full", (name, input) => registry.get(name)?.summary(input as never) ?? "");
     const onSignal = () => interactiveApp.forceExit();
@@ -1794,6 +1857,12 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     return bySignal ? ExitCode.Interrupted : ExitCode.Success;
   }
 
+  // SPEC-MOD-004: the structured result of the run, or why there is none.
+  let structured: { attempts: number; value?: unknown; surrounding?: string; errors: string[]; lastText: string } | undefined;
+  if (!app) {
+    phase("affichage");
+    reportPhases();
+  }
   // Automated run: one turn per request, in order, in the same session (CA-04 of SPEC-MOD-003).
   for await (const item of requests) {
     if (controller.signal.aborted) break;
@@ -1809,7 +1878,23 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       else err(outcome.refused);
       continue;
     }
-    const result = outcome.result!;
+    let result = outcome.result!;
+    // SPEC-MOD-004 steps 4 to 6: the result extracted and validated; FA-01: a bounded number of corrections (EF-03, EF-07).
+    if (outputSchema && !("error" in outputSchema) && result.stopCause === "completed") {
+      const strict = settings.get<boolean>("engine.output.schemaStrictExtraction");
+      let extracted = extractStructured(result.finalText, strict, outputSchema.check);
+      let attempts = 1;
+      const retries = settings.get<number>("engine.output.schemaRetries");
+      while (extracted.errors.length > 0 && attempts <= retries && !controller.signal.aborted) {
+        const again = await runTurn(loopDeps, correctionMessage(extracted.errors), controller.signal);
+        results.push(again);
+        result = again;
+        attempts++;
+        if (again.stopCause !== "completed") break;
+        extracted = extractStructured(again.finalText, strict, outputSchema.check);
+      }
+      structured = { attempts, value: extracted.errors.length === 0 ? extracted.value : undefined, surrounding: extracted.surrounding, errors: extracted.errors, lastText: result.finalText };
+    } else if (outputSchema) structured = { attempts: 0, errors: ["the run stopped before its final answer"], lastText: result.finalText }; // FA-04
     if (stream) stream.emit("turn_completed", { turn: results.length, result: result.finalText, haltReason: result.stopCause });
     else if (format === "text" && requestFormat === "jsonl" && result.stopCause === "completed") streams.writeOut(renderResult("text", { sessionId, result, exitCode: 0, turns: results.length }));
     if (result.stopCause !== "completed") break;
@@ -1834,9 +1919,28 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     ...combineResults(results),
     cost: { currency: budget.currency, confirmed: budget.unknownCost ? undefined : budget.confirmed, conservative: budget.conservative, reserved: budget.reserved, cap: budget.cap },
   };
-  const exitCode = exitCodeFor(combined.stopCause, bySignal);
+  deferredMaintenance(); // after the run: never before the display (EF-04)
+  let exitCode = exitCodeFor(combined.stopCause, bySignal);
   if (combined.stopCause !== "completed" && combined.message) err(combined.message);
-  const summary = { sessionId, result: combined, exitCode, turns: results.length };
+  // FA-02, EF-04, ERR-03: without a conforming result, the run fails explicitly; the last result and the errors go to
+  // the standard error, never an approximate result to the output (RG-01).
+  if (structured && structured.value === undefined) {
+    if (exitCode === ExitCode.Success) exitCode = ExitCode.ExecutionError;
+    err(
+      structured.attempts > 0
+        ? `Le résultat ne respecte pas le schéma après ${structured.attempts} tentative${structured.attempts > 1 ? "s" : ""}.`
+        : "Aucun résultat structuré n'a pu être extrait : l'exécution s'est arrêtée avant sa réponse finale.",
+    );
+    for (const e of structured.errors) err(`  ${e}`);
+    if (structured.lastText) err(`Dernier résultat obtenu :\n${structured.lastText}`);
+  }
+  const summary = {
+    sessionId,
+    result: combined,
+    exitCode,
+    turns: results.length,
+    ...(structured ? { structured: { value: structured.value, attempts: structured.attempts, surrounding: structured.surrounding, conforming: structured.value !== undefined } } : {}),
+  };
   if (stream) stream.close(closingFields(summary));
   // With `jsonl` requests in `text`, each answer was already written after its turn.
   else if (format === "json" || requestFormat !== "jsonl") streams.writeOut(renderResult(format as "text" | "json", summary));

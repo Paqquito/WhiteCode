@@ -32,6 +32,8 @@ export interface RunSummary {
   readonly exitCode: ExitCodeValue;
   /** Turns of the run: one per input message. */
   readonly turns: number;
+  /** SPEC-MOD-004: the structured result, emitted only when it conforms (RG-01), and its metadata. */
+  readonly structured?: { readonly value?: unknown; readonly attempts: number; readonly surrounding?: string; readonly conforming: boolean };
 }
 
 /** Totals of several turns: sums of iterations, usage, cost and duration; answer and cause of the last one. */
@@ -63,6 +65,13 @@ export function closingFields(s: RunSummary): Record<string, unknown> {
     ...(r.refusalCategory !== undefined ? { refusalCategory: r.refusalCategory } : {}),
     exitCode: s.exitCode,
     turns: s.turns,
+    // SPEC-MOD-004 FA-05, CA-05: the structured result in its own field, with its validation metadata (§ 7.1).
+    ...(s.structured
+      ? {
+          ...(s.structured.conforming ? { structuredResult: s.structured.value } : {}),
+          structuredOutput: { conforming: s.structured.conforming, attempts: s.structured.attempts, ...(s.structured.surrounding ? { surroundingText: s.structured.surrounding } : {}) },
+        }
+      : {}),
     iterations: r.iterations,
     elapsedMs: r.durationMs,
     model: r.model,
@@ -88,5 +97,7 @@ export function jsonDocument(s: RunSummary): Record<string, unknown> {
 export function renderResult(format: Exclude<ResultFormat, "jsonl">, s: RunSummary): string {
   if (format === "json") return `${JSON.stringify(jsonDocument(s))}\n`;
   if (s.result.stopCause === "error" || s.result.stopCause === "blocked") return "";
+  // SPEC-MOD-004 step 6: in text, the conforming document alone; nothing when there is none (EF-04).
+  if (s.structured) return s.structured.conforming ? `${JSON.stringify(s.structured.value, null, 2)}\n` : "";
   return s.result.finalText.endsWith("\n") || s.result.finalText === "" ? s.result.finalText : `${s.result.finalText}\n`;
 }

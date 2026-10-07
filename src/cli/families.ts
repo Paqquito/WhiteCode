@@ -87,7 +87,7 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
       op("list", "Liste les catalogues d'extensions configurés.", { delivered: true, options: ["json"] }),
       op("add", "Ajoute un catalogue d'extensions.", { args: "<référence>", delivered: true, options: ["scope", "lean-context", "name"] }),
       op("update", "Actualise l'index d'un ou de tous les catalogues.", { args: "[<nom>]", delivered: true }),
-      op("remove", "Retire un catalogue.", { args: "<nom>", delivered: true, options: ["scope"] }),
+      op("remove", "Retire un catalogue.", { args: "<nom>", delivered: true, options: ["scope", "force"] }),
     ],
   },
   {

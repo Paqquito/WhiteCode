@@ -210,6 +210,13 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "mcp.maxReconnects", schema: int(0, 100), default: 6, scopes: [U, G], owner: "SPEC-MCP-022" },
   { key: "environment.variables", schema: Type.Record(Type.String(), Type.String()), default: {}, scopes: [U, G], owner: "SPEC-CFG-007", widening: true },
 
+  // SPEC-MOD-010: phases of the start-up and deferred maintenance (lot 5).
+  { key: "engine.startup.deferredMaintenance", schema: bool(), default: true, scopes: [U], owner: "SPEC-MOD-010" },
+  { key: "engine.startup.verboseLog", schema: bool(), default: false, scopes: [U], owner: "SPEC-MOD-010" },
+  // SPEC-MOD-004: structured output (lot 5).
+  { key: "engine.output.schemaRetries", schema: int(0, 5), default: 2, scopes: [U, P], owner: "SPEC-MOD-004" },
+  { key: "engine.output.schemaStrictExtraction", schema: bool(), default: false, scopes: [U, P], owner: "SPEC-MOD-004" },
+  { key: "engine.output.schemaMaxDepth", schema: int(1, 100), default: 12, scopes: [U], owner: "SPEC-MOD-004" },
   // SPEC-IHM-001, SPEC-IHM-002: rendering and layout of the interactive interface (lot 5; values in English, gap E-093).
   { key: "ui.colorMode", schema: enumOf(["auto", "none", "16", "256", "truecolor"]), default: "auto", scopes: [U], owner: "SPEC-IHM-001" },
   { key: "ui.maxFramesPerSecond", schema: int(1, 240), default: 30, scopes: [U], owner: "SPEC-IHM-001" },

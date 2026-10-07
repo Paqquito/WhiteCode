@@ -57,7 +57,7 @@ export const OPTIONS: readonly OptionDef[] = [
   { name: "request-format", value: "required", type: "enum", enumValues: ["text", "jsonl"], group: "Entrées et sorties", description: "Format d'entrée.", defaultText: "text", delivered: true, owner: "SPEC-MOD-003" },
   { name: "result-format", value: "required", type: "enum", enumValues: ["text", "json", "jsonl"], group: "Entrées et sorties", description: "Format de sortie.", defaultText: "text", delivered: true, owner: "SPEC-MOD-003" },
   { name: "stream-profile", value: "required", type: "enum", enumValues: ["standard", "compact"], group: "Entrées et sorties", description: "Profil de présentation d'une sortie jsonl.", defaultText: "standard", delivered: false, owner: "SPEC-OBS-022" },
-  { name: "output-schema", value: "required", type: "path-or-content", group: "Entrées et sorties", description: "Schéma de sortie.", delivered: false, owner: "SPEC-MOD-004" },
+  { name: "output-schema", value: "required", type: "path-or-content", group: "Entrées et sorties", description: "Schéma JSON du résultat attendu (fichier ou contenu).", delivered: true, owner: "SPEC-MOD-004" },
   { name: "emit-partial", value: "none", group: "Entrées et sorties", description: "Émet les fragments progressifs dans le flux.", delivered: false, owner: "SPEC-MOD-003" },
   { name: "emit-hook-events", value: "none", group: "Entrées et sorties", description: "Émet les événements de crochets dans le flux.", delivered: false, owner: "SPEC-MOD-003" },
   { name: "verbose", value: "none", group: "Entrées et sorties", description: "Diagnostic détaillé sur la sortie d'erreur.", delivered: true, owner: "SPEC-MOD-011" },
@@ -91,7 +91,7 @@ export const OPTIONS: readonly OptionDef[] = [
   { name: "extension-dir-watch", value: "none", group: "Extensions, connecteurs et configuration", description: "Recharge les extensions locales à chaque modification.", delivered: false, owner: "SPEC-EXT-014" },
   { name: "inbound-connectors", value: "required", type: "list", group: "Extensions, connecteurs et configuration", description: "Connecteurs autorisés à pousser des messages entrants.", delivered: false, owner: "SPEC-MCP-013" },
   { name: "dangerously-allow-unlisted-inbound", value: "none", group: "Extensions, connecteurs et configuration", description: "Accepte des canaux entrants hors liste autorisée.", danger: true, delivered: false, owner: "SPEC-MCP-013" },
-  { name: "minimal", value: "none", group: "Extensions, connecteurs et configuration", description: "Mode minimal.", delivered: false, owner: "SPEC-MOD-009" },
+  { name: "minimal", value: "none", delivered: true, group: "Extensions, connecteurs et configuration", description: "Session minimale : sans instructions de projet, extensions, compétences, connecteurs ni crochets non gérés.", owner: "SPEC-MOD-009" },
 
   // Miscellaneous
   { name: "help", value: "none", group: "Divers", description: "Affiche l'aide.", delivered: true, owner: "SPEC-MOD-011" },

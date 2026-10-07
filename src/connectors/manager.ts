@@ -83,6 +83,8 @@ export class ConnectorManager {
   #active = 0;
   readonly #queue: Array<() => void> = [];
   #closed = false;
+  /** Aborted by `close`: the connections being set up are stopped too (SPEC-MOD-010 CA-05). */
+  readonly #shutdown = new AbortController();
 
   constructor(o: ConnectorManagerOptions) {
     this.#o = o;
@@ -99,8 +101,12 @@ export class ConnectorManager {
   }
 
   /** FA-02 (`--wait-for-mcp`): waits until every connector is connected or failed, within `timeoutMs`. */
-  async waitAll(timeoutMs: number): Promise<void> {
-    await Promise.race([Promise.all([...this.#entries.values()].map((e) => e.settled)), new Promise((r) => setTimeout(r, timeoutMs))]);
+  async waitAll(timeoutMs: number, signal?: AbortSignal): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // SPEC-MOD-010 EF-06: an interruption ends the wait at once.
+    const aborted = new Promise<void>((r) => (signal?.aborted ? r() : signal?.addEventListener("abort", () => r(), { once: true })));
+    await Promise.race([Promise.all([...this.#entries.values()].map((e) => e.settled)), new Promise((r) => (timer = setTimeout(r, timeoutMs))), aborted]);
+    clearTimeout(timer);
   }
 
   status(): ConnectorStatus[] {
@@ -155,6 +161,7 @@ export class ConnectorManager {
           if (method === "notifications/prompts/list_changed") void this.#refreshPrompts(e); // EF-03 of SPEC-MCP-011
         },
         onLost: (reason) => this.#lost(e, reason),
+        signal: this.#shutdown.signal,
       });
       if (this.#closed) return void (await conn.close(0));
       e.conn = conn;
@@ -307,6 +314,7 @@ export class ConnectorManager {
   /** Step 4: every connection closed, every server process stopped (SPEC-MCP-002 EF-03). */
   async close(): Promise<void> {
     this.#closed = true;
+    this.#shutdown.abort();
     this.#queue.length = 0;
     await Promise.all(
       [...this.#entries.values()].map(async (e) => {

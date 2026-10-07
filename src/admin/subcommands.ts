@@ -134,7 +134,7 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
         case "catalog update":
           return catalogUpdate(ctx, arg);
         case "catalog remove":
-          return catalogRemove(ctx, arg!, scopeOption === undefined ? undefined : scope);
+          return catalogRemove(ctx, arg!, scopeOption === undefined ? undefined : scope, parsed.options.has("force"));
         case "extension add":
           return extensionAdd(ctx, arg!, scope, parsed.options.has("force"));
         case "extension list":
@@ -145,7 +145,7 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
         case "extension disable":
           return extensionEnable(ctx, arg!, scope, operation.name === "enable");
         default:
-          return extensionRemove(ctx, arg!, scopeOption === undefined ? undefined : scope, parsed.options.has("preserve-data"));
+          return extensionRemove(ctx, arg!, scopeOption === undefined ? undefined : scope, parsed.options.has("preserve-data"), parsed.options.has("force"));
       }
     }
     case "extension validate": {

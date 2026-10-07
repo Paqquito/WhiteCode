@@ -117,7 +117,7 @@ export function catalogUpdate(ctx: ExtensionAdminContext, only: string | undefin
 }
 
 /** `catalog remove <name> [--scope]`; the extensions installed from it are listed for removal (EF-05). */
-export function catalogRemove(ctx: ExtensionAdminContext, name: string, scope: WritableScope | undefined): number {
+export async function catalogRemove(ctx: ExtensionAdminContext, name: string, scope: WritableScope | undefined, force: boolean): Promise<number> {
   const scopes = ctx.settings.valuesByScope("extensions.catalogs").filter((v) => (v.value as Record<string, unknown>)[name] !== undefined).map((v) => v.origin);
   if (scopes.length === 0) {
     ctx.err(`Catalogue inconnu : ${name}.`);
@@ -126,6 +126,11 @@ export function catalogRemove(ctx: ExtensionAdminContext, name: string, scope: W
   if (scopes.includes("managed")) {
     ctx.err("Ce catalogue est ajouté par votre organisation : il ne peut pas être retiré.");
     return FAILED;
+  }
+  // SPEC-MOD-012 EF-03, CA-03: a destructive operation is confirmed; without a terminal, only `--force` allows it.
+  if (!(force || (await ctx.confirm(`Retirer le catalogue ${name} ?`)))) {
+    ctx.err("Opération non confirmée : relancez avec --force pour retirer le catalogue sans terminal.");
+    return CONSENT;
   }
   for (const s of scope ? [scope] : (scopes as WritableScope[])) if (ctx.files[s]) setValueInSettingsFile(ctx.files[s], ["extensions", "catalogs", name], undefined, ctx.platform);
   rmSync(join(catalogsDir(ctx.configDir), name), { recursive: true, force: true });
@@ -281,7 +286,7 @@ export function extensionEnable(ctx: ExtensionAdminContext, ref: string, scope: 
 }
 
 /** `extension remove <name> [--scope] [--preserve-data]`: deactivated, then the copy removed when no scope of this project uses it. */
-export function extensionRemove(ctx: ExtensionAdminContext, ref: string, scope: WritableScope | undefined, preserveData: boolean): number {
+export async function extensionRemove(ctx: ExtensionAdminContext, ref: string, scope: WritableScope | undefined, preserveData: boolean, force: boolean): Promise<number> {
   const key = installedKey(ctx, ref);
   if (typeof key !== "string") {
     ctx.err(key.error);
@@ -291,6 +296,11 @@ export function extensionRemove(ctx: ExtensionAdminContext, ref: string, scope: 
   if (byScope.some((v) => v.origin === "managed")) {
     ctx.err(`L'activation de ${key} est imposée par votre organisation : elle ne peut pas être désinstallée.`);
     return FAILED;
+  }
+  // SPEC-MOD-012 EF-03, CA-03: a destructive operation is confirmed; without a terminal, only `--force` allows it.
+  if (!(force || (await ctx.confirm(`Désinstaller ${key} ?`)))) {
+    ctx.err("Opération non confirmée : relancez avec --force pour désinstaller sans terminal.");
+    return CONSENT;
   }
   const targets = scope ? [scope] : (byScope.map((v) => v.origin).filter((o) => o === "user" || o === "project" || o === "local") as WritableScope[]);
   for (const s of targets) setValueInSettingsFile(ctx.files[s], ["extensions", "enabled", key], undefined, ctx.platform);

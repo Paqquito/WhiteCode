@@ -69,6 +69,8 @@ export interface StdioOptions {
   readonly onNotification?: (method: string, params: unknown) => void;
   /** The connection ended without being closed by the product (FA-01). */
   readonly onLost?: (reason: string) => void;
+  /** The session stops while the connection is being set up: the process is stopped (SPEC-MOD-010 EF-06, CA-05). */
+  readonly signal?: AbortSignal;
 }
 
 interface Pending {
@@ -106,11 +108,14 @@ export class StdioConnection {
   /** Steps 1 and 2: the process, then the MCP session negotiated within the connection time limit. */
   static async open(o: StdioOptions): Promise<StdioConnection> {
     const c = new StdioConnection(o);
+    const onAbort = () => void c.close(0);
+    o.signal?.addEventListener("abort", onAbort, { once: true });
     try {
+      if (o.signal?.aborted) throw new ConnectionError(`Connecteur ${o.name} : démarrage annulé.`);
       const init = (await c.request(
         "initialize",
         { protocolVersion: PROTOCOL_VERSIONS[0], capabilities: {}, clientInfo: o.clientInfo },
-        { timeoutMs: o.connectTimeoutMs },
+        { timeoutMs: o.connectTimeoutMs, signal: o.signal },
       )) as { protocolVersion?: string; serverInfo?: { name?: string; version?: string }; capabilities?: Record<string, unknown> };
       if (!init || typeof init.protocolVersion !== "string" || !(PROTOCOL_VERSIONS as readonly string[]).includes(init.protocolVersion)) {
         throw new ConnectionError(`Connecteur ${o.name} : version du protocole non prise en charge (${String(init?.protocolVersion)}).`);
@@ -119,8 +124,10 @@ export class StdioConnection {
       c.serverInfo = init.serverInfo ?? {};
       c.capabilities = init.capabilities ?? {};
       c.notify("notifications/initialized", {});
+      o.signal?.removeEventListener("abort", onAbort);
       return c;
     } catch (e) {
+      o.signal?.removeEventListener("abort", onAbort);
       await c.close(0);
       let error: Error = e instanceof Error ? e : new Error(String(e));
       if (e instanceof RequestTimeout) error = new ConnectionError(`Connecteur ${o.name} : pas de réponse à l'initialisation.`); // ERR-02
