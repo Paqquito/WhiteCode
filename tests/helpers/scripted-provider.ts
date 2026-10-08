@@ -44,7 +44,13 @@ export class ScriptedProvider implements ModelProvider {
     if (step.text) yield { type: "text_delta", text: step.text };
     const calls: ToolCall[] = (step.toolCalls ?? []).map((c) => ({ callId: c.id ?? `call_${++counter}`, name: c.name, input: c.input }));
     for (const call of calls) yield { type: "tool_call", call };
-    if (step.delayMs) await new Promise((r) => setTimeout(r, step.delayMs));
+    // A provider honours the abort signal (ModelProvider): the delay ends at an interruption.
+    if (step.delayMs) {
+      await new Promise<void>((r) => {
+        const timer = setTimeout(r, step.delayMs);
+        signal.addEventListener("abort", () => (clearTimeout(timer), r()), { once: true });
+      });
+    }
     if (signal.aborted) throw new ProviderError("aborted", "aborted");
     if (step.error) throw new ProviderError(step.error.kind, `simulated ${step.error.kind}`, step.error.status, step.error.retryAfterMs);
     const native = [

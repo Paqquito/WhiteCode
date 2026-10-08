@@ -105,7 +105,7 @@ describe("SPEC-MOD-002 non-interactive mode", () => {
     expect(JSON.parse(r.stdout)).toMatchObject({ haltReason: "iteration_limit", iterations: 3 });
   });
 
-  test("SPEC-MOD-002/CA-05 — an external stop signal records the state and exits with 130", async () => {
+  test("SPEC-MOD-002/CA-05 — SPEC-MOT-009/CA-04 — an external stop signal records the state and exits with 130", async () => {
     const ws = workspace();
     const controller = new AbortController();
     setTimeout(() => controller.abort(), 50);

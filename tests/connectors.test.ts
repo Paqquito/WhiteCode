@@ -96,7 +96,7 @@ describe("SPEC-MCP-001 configuration of the connectors", () => {
 });
 
 describe("SPEC-MCP-002 stdio transport", () => {
-  test("SPEC-MCP-002/CA-01 — SPEC-MCP-009/CA-01 — SPEC-MCP-009/CA-02 — a valid stdio server publishing search: cnx_docs_search exists; an allow rule on cnx_docs: allowed without request", async () => {
+  test("SPEC-MCP-002/CA-01 — SPEC-MCP-009/CA-01 — SPEC-MCP-009/CA-02 — SPEC-OUT-027/CA-01 — SPEC-OUT-027/CA-02 — a valid stdio server publishing search: cnx_docs_search exists; an allow rule on cnx_docs: allowed without request", async () => {
     const ws = workspace();
     userConnectors(ws, { docs: fake(ws, "docs", { tools: tools("search") }) });
     const p = new ScriptedProvider([{ toolCalls: [{ name: "cnx_docs_search", input: { q: "hooks" } }] }, { text: "done" }]);
@@ -198,7 +198,7 @@ describe("SPEC-MCP-009 connector tools", () => {
 });
 
 describe("SPEC-MCP-020 large outputs", () => {
-  test("SPEC-MCP-020/CA-01 — a JSON result of 5 MB: the model receives a structured preview and a path", async () => {
+  test("SPEC-MCP-020/CA-01 — SPEC-OUT-027/CA-03 — a JSON result of 5 MB: the model receives a structured preview and a path", async () => {
     const ws = workspace();
     const rows = Array.from({ length: 50_000 }, (_, i) => ({ id: i, title: `Item ${i} of the big list`, tags: ["a", "b"], body: "x".repeat(60) }));
     userConnectors(ws, { docs: fake(ws, "docs", { tools: tools("dump"), responses: { dump: { json: { total: rows.length, rows } } } }) });

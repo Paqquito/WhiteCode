@@ -45,7 +45,10 @@ import { HookRuntime } from "../hooks/runtime";
 import type { Identity } from "../identity/identity";
 import { isRule, parseRule, ruleMatches, type Rule, type RuleDecision, type RuleScope } from "../permissions/rules";
 import { insideAllowed, isProtectedPath, protectedLocations, realTargetPath } from "../permissions/paths";
-import { isModeAvailable, ModeError, ModeState, resolveInitialMode, unavailableReason, type ModeAvailability } from "../permissions/modes";
+import { projectInventory } from "../config/trust-inventory";
+import { askTrust } from "../interactive/trust-dialog";
+import { USER_CONNECTORS_FILE } from "../connectors/session";
+import { nextMode, isModeAvailable, ModeError, ModeState, resolveInitialMode, unavailableReason, type ModeAvailability } from "../permissions/modes";
 import type { Authorities } from "../permissions/resolver";
 import { ControlSession, type ControlEnd, type ControlOperations } from "../control/session";
 import { ControlError } from "../control/protocol";
@@ -373,6 +376,30 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   if (Object.keys(imposed).length > 0) {
     env = new EnvironmentView(identity.get("ENV_PREFIX"), { ...deps.environment, ...imposed });
     loaded = loadAll(env);
+  }
+  // SPEC-PER-016 § 5.3: the first interactive launch in a folder whose project holds active elements asks for trust,
+  // before anything of the project is loaded (EF-01); the answer is kept for the folder (EF-02). A folder without active
+  // elements is not asked about (gap E-104).
+  const willBeInteractive =
+    streams.terminal !== undefined && streams.stdinIsTTY && streams.stdoutIsTTY && opt("non-interactive") !== true && opt("control-channel") !== true &&
+    opt("control-listen") === undefined && opt("control-connect") === undefined && opt("restore-files") === undefined && !serve;
+  if (willBeInteractive && loaded.trust.source === "none") {
+    const state = readUserState(loaded.locations.userStateFile);
+    const root = realPathOrSelf(loaded.locations.projectRoot);
+    const same = (p: string) => comparablePath(p, system.platform) === comparablePath(root, system.platform);
+    const projectDir = join(loaded.locations.projectRoot, identity.get("PROJECT_DIR"));
+    const inventory = (state.restrictedProjects ?? []).some(same)
+      ? []
+      : projectInventory({ projectDir, settingsFiles: [loaded.locations.projectSettingsFile, loaded.locations.localSettingsFile], connectorsFile: join(projectDir, USER_CONNECTORS_FILE) });
+    if (inventory.length > 0) {
+      const broad = dirname(root) === root || same(realPathOrSelf(system.home)); // FA-03
+      const answer = await askTrust(streams.terminal!, root, inventory, broad);
+      if (answer === "quit") return ExitCode.Success;
+      if (answer === "trust") {
+        updateUserState(loaded.locations.userStateFile, { trustedProjects: [...(state.trustedProjects ?? []), root] }, system.platform);
+        loaded = loadAll(env);
+      } else updateUserState(loaded.locations.userStateFile, { restrictedProjects: [...(state.restrictedProjects ?? []), root] }, system.platform);
+    }
   }
   const { locations, firstPass, settings, trust } = loaded;
   phase("environnement, options et configuration");
@@ -1141,7 +1168,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const previousList = [...(reopened?.chain ?? [])].reverse().find((r) => r.type === "system" && r.data["event"] === "todo_list");
   if (previousList) taskList.restore(previousList.data["tasks"] as Task[]);
   taskList.markRead(MAIN_AGENT);
-  taskList.onChange((tasks) => transcript?.append("system", { event: "todo_list", tasks }));
+  taskList.onChange((tasks) => {
+    transcript?.append("system", { event: "todo_list", tasks });
+    app?.refresh();
+  });
   // SPEC-SES-006: content of the changed files, by fingerprint, in the folder of the session (in memory without persistence).
   const fileHistory = new FileHistory({
     blobs: new BlobStore(transcript ? join(transcript.sessionDir, "file-history") : undefined),
@@ -1431,6 +1461,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
 
   // SPEC-MOD-006: the control channel, its decision authority and its context for the model.
   const controlContext: Reminder[] = [];
+  // SPEC-MOT-009 EF-03: an interrupted turn is announced to the model at the next request.
+  const interruptionNotes: Reminder[] = [];
   const controlRules: Rule[] = [];
   const control =
     controlled && stream
@@ -1476,6 +1508,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       todoReminderProducer(taskList, settings.get<number>("context.reminders.todoInterval")),
       { type: "shell_observation", produce: () => shellObservations.splice(0) },
       { type: "host_context", produce: () => controlContext.splice(0) },
+      { type: "turn_interrupted", produce: () => interruptionNotes.splice(0) },
       connectorReminders,
     ],
     settings.get<number>("context.reminders.maxTokens"),
@@ -1531,6 +1564,14 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     maxCount: settings.get<number>("ui.attachments.maxCount"),
     maxTotalBytes: settings.get<number>("ui.attachments.maxTotalBytes"),
   });
+  // A message typed in the input area: doubled trigger characters give their literal character (FA-06 of SPEC-IHM-007),
+  // the files it references are read now (SPEC-IHM-010 § 5.4). For the messages taken at the safe point of a turn (SPEC-MOT-008).
+  const typedParts = (typed: string): ContentPart[] => {
+    const attached = attach(typed, attachmentOptions(), []);
+    for (const n of attached.notices) app?.notice("warning", n);
+    return [{ type: "text", text: literalTriggers(typed).text }, ...attached.parts.map((p) => ({ type: "text" as const, text: p }))];
+  };
+  let unrestrictedAccepted: () => Promise<boolean> = async () => true;
   // SPEC-IHM-014 § 5.4: the key bindings of the session, the invalid ones reported without stopping the others (EF-04).
   let keymap = new Keymap();
   // SPEC-MOD-001: the interactive application, also the human authority of the permission decisions (SPEC-IHM-027).
@@ -1588,6 +1629,18 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         }
       : undefined;
     if (transcript) stateWriter = new InputStateWriter(inputStatePath(transcript.sessionDir), settings.get<boolean>("ui.input.persistDraft"));
+    // SPEC-PER-017 § 5.1, § 5.3 step 3: the first use of `unrestricted` on the machine needs its warning accepted; the
+    // acceptance is kept. In an automated run, the explicit launch options stand for it (gap E-104).
+    unrestrictedAccepted = async () => {
+      if (readUserState(locations.userStateFile).unrestrictedAccepted === true || !app) return true;
+      const ok = await app.confirm(
+        "Mode unrestricted : les actions s'exécutent sans confirmation, sauf celles que la politique fait toujours confirmer. Un modèle peut se tromper ou être manipulé par le contenu qu'il lit ; réservez ce mode à un environnement isolé, sans accès réseau sensible. Activer ce mode ?",
+        "activer",
+        "refuser",
+      );
+      if (ok) updateUserState(locations.userStateFile, { unrestrictedAccepted: true }, system.platform);
+      return ok;
+    };
     app = new InteractiveApp({
       terminal: terminal!,
       capabilities,
@@ -1607,7 +1660,15 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         dialogGuardMs: DIALOG_GUARD_MS,
       },
       status: () => ({ mode: modeState.mode, model: minimal ? `${resolvedModel.id} · session minimale` : resolvedModel.id }),
-      cycleMode: () => void modeState.cycle(),
+      // SPEC-PER-003 EF-03, SPEC-PER-017 § 5.3 step 3: `unrestricted` is entered the first time only after its warning is accepted.
+      cycleMode: () =>
+        void (async () => {
+          const next = nextMode(modeState.mode, availability);
+          if (next === "unrestricted" && !(await unrestrictedAccepted())) return modeState.set(nextMode(next, availability));
+          modeState.set(next);
+          app?.refresh();
+        })(),
+      tasks: () => taskList.tasks.filter((t) => t.owner === MAIN_AGENT),
       describeCall: (name, input) => {
         try {
           return registry.get(name)?.summary(input as never) ?? "";
@@ -1652,6 +1713,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       refreshConnectorTools();
     },
     fallback,
+    takeQueued: () => (app ? app.takeForSafePoint().flatMap(typedParts) : []),
     onUserMessage: (recordId) => {
       if (recordId !== undefined) fileHistory.checkpoint(recordId);
     },
@@ -1802,6 +1864,14 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     }
     const result = await runTurn(loopDeps, content, signal);
     skillAllows.length = 0; // EF-02 of SPEC-EXT-020: the grants of a skill end with its turn
+    if (result.stopCause === "interrupted") {
+      const partial = result.finalText.trim();
+      interruptionNotes.push({
+        type: "turn_interrupted",
+        text: `The user interrupted the previous turn before it ended${partial ? `; your answer was cut after: «${partial.slice(-500)}»` : ""}. Actions of that turn may be incomplete: check their effects before relying on them.`,
+        priority: 3,
+      });
+    }
     results.push(result);
     // SPEC-SES-008 FA-01, EF-03: the title is the beginning of the first message.
     if (transcript && results.length === 1 && !(reopened && sessionTitle(reopened.records) !== undefined)) {
@@ -1875,6 +1945,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     // FA-06 of SPEC-MOD-001: the history of a reopened session is shown again, condensed by default.
     const replay = settings.get<string>("ui.replayOnResume");
     interactiveApp.start();
+    // SPEC-PER-003 EF-03: a launch in `unrestricted` asks for the warning first; refused, the session starts in `ask`.
+    if (modeState.mode === "unrestricted" && !(await unrestrictedAccepted())) {
+      modeState.set("ask");
+      interactiveApp.refresh();
+    }
     holder.cleanups.push(() => interactiveApp.stop());
     // SPEC-MOD-010 § 5.4, EF-04: the deferred maintenance (here, the pruning of the history) after the display.
     phase("affichage");

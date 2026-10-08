@@ -124,7 +124,7 @@ describe("SPEC-HOK-003 command hooks", () => {
     expect(p).toMatchObject({ schemaVersion: 1, event: "prompt_submitted", prompt: "x" });
   });
 
-  test("SPEC-HOK-003/CA-02 — SPEC-HOK-003/CA-03 — a hook ending with code 1: the tool runs and the failure is reported; a blocking answer: the tool does not run", async () => {
+  test("SPEC-MOT-002/CA-07 — SPEC-HOK-003/CA-02 — SPEC-HOK-003/CA-03 — a hook ending with code 1: the tool runs and the failure is reported; a blocking answer: the tool does not run", async () => {
     const ws = workspace();
     const a = ws.write("project/a.txt", "alpha\n");
     const failing = hook(ws, "failing", "process.exit(1);");

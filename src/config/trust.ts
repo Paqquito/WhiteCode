@@ -16,6 +16,10 @@ export interface TrustDecision {
 
 export interface UserState {
   readonly trustedProjects?: readonly string[];
+  /** Folders kept in restricted mode by the answer of the user (SPEC-PER-016 § 5.3 step 4, EF-02). */
+  readonly restrictedProjects?: readonly string[];
+  /** The warning of the `unrestricted` mode was accepted on this machine (SPEC-PER-017 § 5.3 step 3). */
+  readonly unrestrictedAccepted?: boolean;
   /** SPEC-API-008 step 1: day of the last notice about each deprecated model. */
   readonly modelNotices?: Readonly<Record<string, string>>;
   /** Choices by project (connectors of the `local` scope, approvals of project connectors), by comparable path. */

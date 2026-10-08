@@ -126,7 +126,7 @@ describe("SPEC-MOD-001 interactive mode", () => {
     await quit(again);
   });
 
-  test("TECH — SPEC-MOD-001/FA-04, EF-05 — the exit needs two presses; Ctrl+C first clears the input", async () => {
+  test("SPEC-MOT-009/CA-03 — SPEC-MOD-001/FA-04, EF-05 — the exit needs two presses; Ctrl+C first clears the input", async () => {
     const ws = workspace();
     const run = interactive([], ws, { provider: new ScriptedProvider([]) });
     await run.idle();

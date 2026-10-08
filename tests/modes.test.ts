@@ -149,7 +149,7 @@ describe("SPEC-PER-001 modes and persisted answers", () => {
     expect(readFileSync(second, "utf8")).toBe("new");
   });
 
-  test("E-045 — auto_edit: writes inside the working folder are allowed, the product configuration is always asked", async () => {
+  test("SPEC-PER-010/CA-02 — E-045 — auto_edit: writes inside the working folder are allowed, the product configuration is always asked", async () => {
     const ws = workspace();
     const inside = join(ws.project, "src", "ok.txt");
     const protectedFile = join(ws.project, identity.get("PROJECT_DIR"), "config.json");

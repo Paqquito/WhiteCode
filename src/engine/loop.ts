@@ -1,6 +1,6 @@
 // Implements: SPEC-MOT-001 (§ 5.3 steps 1 to 10, FA-01 to FA-03, EF-01 to EF-10, RG-01 to RG-04, CA-01 to CA-06, CA-10), SPEC-MOD-005 (FA-01 to FA-03, FA-06, EF-02, EF-03, EF-08, EF-10),
 //             SPEC-API-003 (§ 5.1, § 5.3, FA-01, FA-02, EF-01 to EF-06, ERR-01 to ERR-03, RG-01, CA-01 to CA-04), SPEC-API-002 (FA-01, CA-02)
-// Supports: SPEC-MOT-007 (reminders before each request), decision D-12 (append-only history), gaps E-021 (retries around the SDK), E-022, E-056 (retry after a partial response), E-072 (empty final response), SPEC-SES-001 (EF-01)
+// Supports: SPEC-MOT-008 (§ 5.3 step 3, EF-02, EF-03: messages typed during the work, at the safe point), SPEC-MOT-007 (reminders before each request), decision D-12 (append-only history), gaps E-021 (retries around the SDK), E-022, E-056 (retry after a partial response), E-072 (empty final response), SPEC-SES-001 (EF-01)
 
 import type { HookBus } from "../extension-points/hooks";
 import type { ApiEffort, ModelPricing, ResolvedModel } from "../providers/catalog";
@@ -45,6 +45,8 @@ export interface LoopDeps {
   readonly maxStopHookContinuations: number;
   readonly emit: EventSink;
   readonly clock?: () => number;
+  /** Messages typed during the turn, taken at the safe point after the results of the tools (SPEC-MOT-008). */
+  readonly takeQueued?: () => ReadonlyArray<ContentPart>;
   /** Operator note to append before the next request (mode change reminder, SPEC-PER-003 CA-06). */
   readonly pendingNote?: () => string | undefined;
   /** A user message was recorded, with its record identifier when the session is persisted (SPEC-SES-006 EF-02). */
@@ -66,6 +68,7 @@ const CONTINUE_AFTER_TRUNCATION =
 
 /** Gap E-072 (correction D-10): sent once when a final response holds no text for the user. */
 const ASK_FOR_ANSWER = "Your last response contained no answer for the user. Give your answer now.";
+const QUEUED_DURING_WORK = "The user sent the message above while you were working. Take it into account from now on.";
 
 /** Error classes that are retried (§ 5.1): transient failures, rate limit, overload. */
 const RETRYABLE = new Set(["connection", "timeout", "idle_timeout", "server", "overloaded", "rate_limit"]);
@@ -349,7 +352,20 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
     if (execution.stopTurnRequested) return finish("interrupted", "Tour arrêté par l'utilisateur.");
     // FA-01 of SPEC-MOT-046, CA-10 of SPEC-MOT-001: a second loop without interface stops the turn.
     if (execution.unproductiveLoop) return finish("unproductive_loop", "Boucle improductive : le modèle répète le même appel malgré le rappel.");
-    if (assistant.toolCalls.length > 0) continue; // back to step 4
+    if (assistant.toolCalls.length > 0) {
+      // SPEC-MOT-008 step 3: the safe point. The messages typed during the work follow the results of the tools, never
+      // between a call and its result (EF-03), in the order they were typed (EF-02), with a reminder (SPEC-MOT-007).
+      const queued = turnSignal.aborted ? [] : (deps.takeQueued?.() ?? []);
+      if (queued.length > 0) {
+        conv.appendUser(queued);
+        persist("user", { content: queued, queued: true });
+        deps.emit({ type: "user_message", content: queued });
+        const note = formatReminder(QUEUED_DURING_WORK);
+        conv.appendNote(note);
+        persist("system", { event: "note", type: "queued_messages", text: note });
+      }
+      continue; // back to step 4
+    }
 
     if (stopReason === "max_tokens") {
       // FA-02: automatic continuation, without prefilling the assistant message (portable to every provider).

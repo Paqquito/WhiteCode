@@ -94,6 +94,8 @@ export interface AppOptions {
   /** Mode, model and other facts of the status line. */
   readonly status: () => { readonly mode: string; readonly model: string };
   readonly cycleMode?: () => void;
+  /** The task list of the main agent, shown above the input area (SPEC-OUT-021 § 10). */
+  readonly tasks?: () => ReadonlyArray<{ readonly subject: string; readonly status: string; readonly progressLabel?: string }>;
   /** Summary of a tool call for the flow. */
   readonly describeCall: (name: string, input: unknown) => string;
   readonly restored?: InputState;
@@ -354,6 +356,24 @@ export class InteractiveApp {
       this.#waiting = resolve;
       this.#redraw();
     });
+  }
+
+  /**
+   * SPEC-MOT-008 § 5.1: at the safe point of a turn, the queued messages leave the queue together, in order; the
+   * commands and the shell lines stay, to run at the end of the turn (FA-01, FA-04).
+   */
+  takeForSafePoint(): string[] {
+    const taken = this.#queue.filter((m) => !/^\s*[/!]/.test(m));
+    if (taken.length === 0) return [];
+    this.#queue.splice(0, this.#queue.length, ...this.#queue.filter((m) => /^\s*[/!]/.test(m)));
+    this.#saveState();
+    this.#redraw();
+    return taken;
+  }
+
+  /** Something shown outside the turn changed (the task list): the live area is drawn again. */
+  refresh(): void {
+    this.#redraw();
   }
 
   /** Next message of the queue, removed from it (SPEC-IHM-011 § 5.2: one per turn, in order). */
@@ -1046,6 +1066,19 @@ export class InteractiveApp {
     const approval = this.#approvals[0];
     if (approval) panels.push(this.#dialogView(approval));
     if (this.#confirm) panels.push(this.#confirmView(this.#confirm));
+    // SPEC-OUT-021 § 10: the task list above the input area, emptied once every task is done (§ 5.3 step 3).
+    const tasks = this.#o.tasks?.() ?? [];
+    if (tasks.length > 0 && tasks.some((t) => t.status !== "completed")) {
+      const mark = (s: string) => (this.#view.unicode ? (s === "completed" ? "☑" : s === "in_progress" ? "◼" : "☐") : s === "completed" ? "[x]" : s === "in_progress" ? "[~]" : "[ ]");
+      panels.push(
+        box(
+          tasks.map((t) =>
+            text([{ text: `${mark(t.status)} `, style: t.status === "in_progress" ? { bold: true } : { dim: true } }, { text: (t.status === "in_progress" && t.progressLabel) || t.subject, style: t.status === "completed" ? { dim: true, strike: true } : t.status === "in_progress" ? { bold: true } : {} }], { overflow: "clip" }),
+          ),
+          { padding: { left: 2 } },
+        ),
+      );
+    }
     if (this.#queue.length > 0) {
       // SPEC-IHM-011 § 5.3: a compact view of the queue, one line per message.
       panels.push(
