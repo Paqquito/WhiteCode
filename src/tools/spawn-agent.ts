@@ -12,6 +12,7 @@ export interface SpawnAgentInput {
   readonly role?: string;
   readonly model?: string;
   readonly resume?: string;
+  readonly detached?: boolean;
 }
 
 export interface SpawnAgentDeps {
@@ -44,6 +45,7 @@ export function createSpawnAgentTool(deps: SpawnAgentDeps): Tool<SpawnAgentInput
         role: { type: "string", description: "Agent to use, among those listed. Default: general." },
         model: { type: "string", description: "Model alias for this agent (large, medium, small). Default: the one of the agent, otherwise yours." },
         resume: { type: "string", description: "Id of an agent of this session to continue with a new prompt." },
+        detached: { type: "boolean", description: "Run the agent in the background: its task id comes back at once and its report reaches you as a notification." },
       },
       required: ["description", "prompt"],
       additionalProperties: false,
@@ -64,6 +66,21 @@ export function createSpawnAgentTool(deps: SpawnAgentDeps): Tool<SpawnAgentInput
       const definition = input.resume === undefined ? agents.get(input.role ?? "general") : undefined;
       if (input.resume === undefined && !definition) {
         return textOutcome(`Unknown agent type: ${input.role}. Available: ${[...agents.keys()].join(", ")}.`, true, "invalid_input"); // ERR-01
+      }
+      // SPEC-AGT-018: in the background, the agent runs as a task of the session; its report comes as a notification (CA-03 of SPEC-OUT-016).
+      if (input.detached === true || (input.detached === undefined && definition?.detached === true)) {
+        if (!ctx.background) return textOutcome("Background tasks are not available in this session.", true, "unavailable");
+        const task = ctx.background.start("agent", input.description, async (signal, write) => {
+          await enter();
+          try {
+            const report = await deps.launch(input, definition, signal);
+            write(report.text);
+            return { status: report.isError ? (signal.aborted ? "stopped" : "failed") : "completed", summary: report.text };
+          } finally {
+            leave();
+          }
+        });
+        return textOutcome(`Agent started in the background as task ${task.id}. Its report will reach you as a notification; background_output (task_id ${task.id}) tells whether it still runs.`);
       }
       await enter();
       try {

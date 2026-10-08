@@ -1,6 +1,7 @@
 // Implements: SPEC-OUT-001 (§ 5.1 tool contract, EF-01, EF-06 normalised errors, RG-01, RG-02)
 
 import type { TaskList } from "../engine/task-list";
+import type { BackgroundTasks } from "../engine/background";
 import type { ContentPart } from "../providers/types";
 import type { ProtectedLocations } from "../permissions/paths";
 import type { PlatformName } from "../platform/system";
@@ -74,6 +75,8 @@ export interface ToolContext extends ToolEnvironment {
   /** Task list of the context (SPEC-OUT-020), and the agent the tools act for (default: the main agent). */
   readonly taskList?: TaskList;
   readonly agentName?: string;
+  /** Background tasks of the session (SPEC-AGT-016). */
+  readonly background?: BackgroundTasks;
 }
 
 /** Difference shown with an approval request (SPEC-OUT-003 EF-06), or an early refusal found before asking. */
@@ -90,6 +93,8 @@ export interface ToolOutcome {
 
 export interface Tool<I = Record<string, unknown>> {
   readonly name: string;
+  /** Name under which the rules decide its calls, when it is not its own (`monitor_process` is decided as `run_shell`). */
+  readonly permissionName?: string;
   readonly inputSchema: Record<string, unknown>;
   /** Description for the model, from the text referential (stable within a session, EF-08). */
   description(env: ToolEnvironment): string;

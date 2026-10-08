@@ -13,7 +13,10 @@ export interface Task {
   readonly id: string;
   readonly subject: string;
   readonly progressLabel?: string;
+  /** Detail of a task created by `work_item_create` (SPEC-OUT-020). */
+  readonly description?: string;
   readonly status: TaskStatus;
+  /** Agent owning the task; empty: a free task that an agent may claim (SPEC-OUT-020 § 5.3 step 4). */
   readonly owner: string;
   readonly blocks: readonly string[];
   readonly blockedBy: readonly string[];
@@ -107,6 +110,71 @@ export class TaskList {
     this.markRead(owner);
     const running = next.filter((t) => t.status === "in_progress").length;
     return { ok: true, tasks: this.#tasks, ...(running > 1 ? { warning: `${running} tasks are in progress: keep exactly one task in progress at a time.` } : {}) }; // FA-01
+  }
+
+  /** SPEC-OUT-020 `work_item_create`: a new task, free unless an owner is given. */
+  create(subject: string, o: { readonly owner?: string; readonly description?: string; readonly progressLabel?: string } = {}): Task {
+    const task: Task = { id: String(this.#next++), subject, ...(o.description ? { description: o.description } : {}), ...(o.progressLabel ? { progressLabel: o.progressLabel } : {}), status: "pending", owner: o.owner ?? "", blocks: [], blockedBy: [] };
+    this.#tasks.push(task);
+    this.#changed();
+    return task;
+  }
+
+  get(id: string): Task | undefined {
+    return this.#tasks.find((t) => t.id === id);
+  }
+
+  /**
+   * SPEC-OUT-020 `work_item_update`. A claim (a new owner) takes a free task only, and never a blocked one (FA-01): the
+   * first owner recorded wins (FA-02); a circular dependency is refused (EF-02). One change at a time (EF-01).
+   */
+  update(
+    id: string,
+    patch: { readonly status?: TaskStatus | "deleted"; readonly owner?: string; readonly subject?: string; readonly description?: string; readonly blocks?: readonly string[]; readonly blockedBy?: readonly string[] },
+  ): { readonly ok: true; readonly task?: Task } | { readonly ok: false; readonly reason: string } {
+    const at = this.#tasks.findIndex((t) => t.id === id);
+    if (at === -1) return { ok: false, reason: `Unknown task: ${id}.` };
+    const task = this.#tasks[at]!;
+    if (patch.status === "deleted") {
+      this.#tasks = this.#tasks.filter((t) => t.id !== id).map((t) => ({ ...t, blocks: t.blocks.filter((d) => d !== id), blockedBy: t.blockedBy.filter((d) => d !== id) }));
+      this.#changed();
+      return { ok: true };
+    }
+    if (patch.owner !== undefined && patch.owner !== task.owner) {
+      if (task.owner !== "") return { ok: false, reason: `Task ${id} is already owned by ${task.owner}.` };
+      const open = task.blockedBy.filter((d) => this.get(d)?.status !== "completed");
+      if (open.length > 0) return { ok: false, reason: `Task ${id} is blocked by ${open.map((d) => `#${d}`).join(", ")}: it cannot be claimed before they are completed.` };
+    }
+    for (const d of [...(patch.blocks ?? []), ...(patch.blockedBy ?? [])]) if (!this.get(d) || d === id) return { ok: false, reason: `Invalid dependency: ${d}.` };
+    const blockedBy = patch.blockedBy ?? task.blockedBy;
+    const blocks = patch.blocks ?? task.blocks;
+    // EF-02: following "blocked by" from the task never comes back to it.
+    const graph = new Map(this.#tasks.map((t) => [t.id, t.id === id ? [...blockedBy] : [...t.blockedBy]]));
+    for (const b of blocks) graph.set(b, [...(graph.get(b) ?? []).filter((x) => x !== id), id]);
+    const reaches = (from: string, seen = new Set<string>()): boolean => (graph.get(from) ?? []).some((n) => n === id || (!seen.has(n) && (seen.add(n), reaches(n, seen))));
+    if (reaches(id)) return { ok: false, reason: `Circular dependency: task ${id} would wait for itself.` };
+    const next: Task = {
+      ...task,
+      ...(patch.subject !== undefined ? { subject: patch.subject } : {}),
+      ...(patch.description !== undefined ? { description: patch.description } : {}),
+      ...(patch.status !== undefined ? { status: patch.status } : {}),
+      ...(patch.owner !== undefined ? { owner: patch.owner } : {}),
+      blocks: [...blocks],
+      blockedBy: [...blockedBy],
+    };
+    this.#tasks = this.#tasks.map((t) => {
+      if (t.id === id) return next;
+      // The reverse side of the dependencies stays consistent.
+      const b = new Set(t.blocks);
+      const bb = new Set(t.blockedBy);
+      if (blockedBy.includes(t.id)) b.add(id);
+      else b.delete(id);
+      if (blocks.includes(t.id)) bb.add(id);
+      else bb.delete(id);
+      return { ...t, blocks: [...b], blockedBy: [...bb] };
+    });
+    this.#changed();
+    return { ok: true, task: next };
   }
 
   #changed(): void {

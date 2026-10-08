@@ -8,3 +8,4 @@ Runs a command in a non-interactive shell and returns its combined output and ex
 - Prefer the dedicated tools for files: `read_file`, `find_files`, `search_content`, `edit_file`, `write_file`. Keep the shell for the project's own commands (build, tests, version control).
 - Quote paths that contain spaces. Chain dependent commands with `&&`.
 - Give a short `description` of what the command does.
+- Set `detached` to true for a command that keeps running (a development server, a watcher, a long build): it becomes a background task, you get its id at once and keep working; you are notified when it ends, and background_output reads its output.

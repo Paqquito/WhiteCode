@@ -89,6 +89,8 @@ import { createUseSkillTool } from "../tools/use-skill";
 import { createSpawnAgentTool, type SpawnAgentInput } from "../tools/spawn-agent";
 import { loadAgents, READING_TOOLS, BUILT_IN_AGENTS, type AgentDefinition, type AgentLocation } from "../agents/definitions";
 import { restrictedView, type ToolLookup } from "../tools/registry";
+import { BackgroundTasks } from "../engine/background";
+import { backgroundOutputTool, backgroundStopTool, createWorkItemTools, monitorProcessTool } from "../tools/background-tools";
 import type { HookBus } from "../extension-points/hooks";
 import { closingFields, combineResults, exitCodeFor, renderResult, type ResultFormat } from "./output";
 import { EventStream } from "./stream-output";
@@ -929,6 +931,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const spawnTool = (depth: number, caller: ToolLookup) =>
     createSpawnAgentTool({ agents: agentCatalog, maxParallel: settings.get<number>("agents.maxParallel"), launch: (input, def, signal) => runSubagent(input, def, signal, depth, caller) }) as never;
   if (maxAgentDepth >= 1 && agentsInToolset) registry.addStatic(spawnTool(0, registry));
+  // SPEC-OUT-020, SPEC-OUT-022: the tools of the work items and of the background tasks, named in --toolset like the others.
+  const inToolset = (name: string) => toolsetNames === undefined || toolsetNames.includes(name) || (toolsetNames.length === 1 && toolsetNames[0] === "default");
+  const taskTools = [...createWorkItemTools({ fire: (event, fields) => void hooks.fire(event, fields) }), backgroundOutputTool as never, backgroundStopTool as never, ...(posixShell || powerShell ? [monitorProcessTool as never] : [])];
+  for (const tool of taskTools) if (inToolset(tool.name)) registry.addStatic(tool);
 
   // Limits: the most restrictive defined source wins (SPEC-MOD-005 RG-01, gap E-017); default 50 in automated runs (E-018).
   const strictest = (key: string, option: number | undefined, label: string): number | undefined => {
@@ -1195,6 +1201,13 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   }
   // Private folder of the session: large results (SPEC-OUT-001 FA-01) and shell state (SPEC-PER-010 FA-01).
   const sessionWork = transcript?.sessionDir ?? join(system.tmp, `${identity.get("PRODUCT_SLUG")}-${sessionId}`);
+  // SPEC-AGT-016: the background tasks of the session, their output in its work folder.
+  const background = new BackgroundTasks({ dir: join(sessionWork, "tasks"), maxOutputBytes: settings.get<number>("tasks.maxOutputBytes"), monitorMaxLinesPerMinute: 2_000, monitorWindowMs: 500 });
+  // FA-02: at the end of the session the tasks stop, and the user is told which.
+  const stopBackground = async () => {
+    const stopped = await background.stopAll();
+    if (stopped.length > 0) err(`Tâches de fond arrêtées à la fin de la session : ${stopped.join(", ")}.`);
+  };
   // SPEC-OUT-020, SPEC-OUT-021: task list of the session, recorded on each change (§ 7.2) and restored with a reopened
   // session (SPEC-SES-002 step 4).
   const taskList = new TaskList();
@@ -1543,6 +1556,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       { type: "host_context", produce: () => controlContext.splice(0) },
       { type: "turn_interrupted", produce: () => interruptionNotes.splice(0) },
       connectorReminders,
+      background.reminders,
     ],
     settings.get<number>("context.reminders.maxTokens"),
     estimateTokens,
@@ -1808,6 +1822,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         modelImages: resolvedModel.capabilities.images,
         ripgrepPath,
         taskList,
+        background,
         extraReadableDirectories: [resultStore.dir],
         shell: shellRuntime,
       }),
@@ -2185,6 +2200,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     await hooks.fire("session_closed", { reason: "exit" });
     await hooks.close();
     await connectors?.close();
+    await stopBackground();
     await shellRuntime?.stopAll();
     transcript?.close();
     if (transcript?.warning) err(`avertissement : ${transcript.warning}`);
@@ -2356,6 +2372,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     await hooks.fire("session_closed", { reason: "exit" });
     await hooks.close();
     await connectors?.close();
+    await stopBackground();
     await shellRuntime?.stopAll();
     transcript?.close();
     return bySignal ? ExitCode.Interrupted : ExitCode.Success;
@@ -2473,6 +2490,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   await hooks.fire("session_closed", { reason: "exit" });
   await hooks.close(); // SPEC-HOK-007 FA-01: hooks run without waiting finish (or are stopped) before the session ends
   await connectors?.close(); // SPEC-MCP-002 EF-03: no server process outlives the session
+  await stopBackground();
   await shellRuntime?.stopAll(); // RG-03 of SPEC-OUT-008: no process outlives the session
   transcript?.close();
   if (transcript?.warning) err(`avertissement : ${transcript.warning}`);

@@ -254,7 +254,7 @@ export class ResponseExecution {
         subject = tool.ruleSubject(call.input as never, ctx);
         const target = subject;
         query = {
-          toolName: tool.name,
+          toolName: tool.permissionName ?? tool.name,
           subject,
           flags: tool.flags(call.input as never),
           contribution: tool.permissionContribution?.(call.input as never, ctx),

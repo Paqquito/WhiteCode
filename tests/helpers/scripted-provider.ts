@@ -30,9 +30,12 @@ export class ScriptedProvider implements ModelProvider {
   readonly id = "simulated";
   readonly requests: ModelRequest[] = [];
   readonly #script: ScriptStep[];
+  /** Responses of the sub-agents, when they run alongside the main agent (background agents). */
+  readonly #agents: ScriptStep[] | undefined;
 
-  constructor(script: ScriptStep[]) {
+  constructor(script: ScriptStep[], agents?: ScriptStep[]) {
     this.#script = [...script];
+    this.#agents = agents ? [...agents] : undefined;
   }
 
   async *stream(request: ModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {
@@ -41,7 +44,8 @@ export class ScriptedProvider implements ModelProvider {
     const previous = [...this.requests].reverse().find((r) => (r.purpose ?? "main") === (request.purpose === "subagent" ? "subagent" : "main") && r.agent === request.agent);
     if (previous && (previous.segment ?? 0) === (request.segment ?? 0)) assertPrefix(previous, request);
     this.requests.push(structuredClone(request));
-    const next = this.#script.shift() ?? { text: "done" };
+    const queue = request.purpose === "subagent" && this.#agents ? this.#agents : this.#script;
+    const next = queue.shift() ?? { text: "done" };
     const step = typeof next === "function" ? next(request) : next;
     if (step.hang) {
       await new Promise<void>((_, reject) => signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { kind: "aborted" })), { once: true }));

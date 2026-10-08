@@ -1,18 +1,23 @@
 // Implements: SPEC-OUT-008 (§ 5.3 points 1, 2 and 8, § 6, EF-01, EF-05, EF-07, EF-10, ERR-01 to ERR-03, RG-01, RG-02, CA-01 to CA-04, CA-06, CA-07), SPEC-OUT-009 (§ 5.3, EF-01, EF-04 to EF-07, FA-01, CA-01, CA-03 to CA-05)
-// Supports: decisions D-02 (no heuristic authorisation) and E-008, gap E-052 (background tasks and sandbox not delivered)
+// Supports: decisions D-02 (no heuristic authorisation) and E-008, gap E-052 (sandbox not delivered), SPEC-OUT-008 (FA-01, CA-05 `detached`), SPEC-AGT-017 (§ 5.3, EF-01)
 
 import descriptionPosix from "../../prompts/tools/run_shell.md" with { type: "text" };
 import descriptionPowerShell from "../../prompts/tools/run_powershell.md" with { type: "text" };
 import descriptionPowerShellLegacy from "../../prompts/tools/run_powershell_5_1.md" with { type: "text" };
 import { dangerousPowerShell } from "../permissions/powershell-danger";
 import { formatShellResult } from "./shell-runtime";
+import { startShellTask } from "./background-tools";
 import { textOutcome, type Tool, type ToolContext, type ToolOutcome } from "./types";
 
 export interface ShellInput {
   readonly command: string;
   readonly description?: string;
   readonly timeout?: number;
+  readonly detached?: boolean;
 }
+
+/** Time limit of a command run in the background: it runs until it ends or is stopped (SPEC-AGT-017). */
+const BACKGROUND_LIMIT_MS = 24 * 3_600_000;
 
 const schema = (what: string) => ({
   type: "object",
@@ -20,6 +25,7 @@ const schema = (what: string) => ({
     command: { type: "string", minLength: 1, description: `${what} to run.` },
     description: { type: "string", maxLength: 120, description: "Short description of what the command does, shown to the user." },
     timeout: { type: "integer", minimum: 1, description: "Time limit in milliseconds." },
+    detached: { type: "boolean", description: "Run in the background as a task; its id comes back at once." },
   },
   required: ["command"],
   additionalProperties: false,
@@ -45,6 +51,12 @@ function shellTool(name: "run_shell" | "run_powershell", run: (ctx: ToolContext,
     timeoutMs: (input, ctx) => timeoutOf(input, ctx),
     async execute(input, ctx) {
       if (!ctx.shell) return textOutcome("No shell is available in this session.", true, "unavailable");
+      // FA-01, CA-05: a background task, under the same permissions as in the foreground (EF-01 of SPEC-AGT-017).
+      if (input.detached === true) {
+        if (!ctx.background) return textOutcome("Background tasks are not available in this session.", true, "unavailable");
+        const id = startShellTask(ctx, "shell", input.command, input.description ?? input.command.slice(0, 80), BACKGROUND_LIMIT_MS, name === "run_powershell");
+        return textOutcome(`Started in the background as task ${id}. You will be notified when it ends; read its output with background_output (task_id ${id}) and stop it with background_stop.`);
+      }
       return run(ctx, input, timeoutOf(input, ctx));
     },
   };
