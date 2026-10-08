@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { shellCommand } from "../src/interactive/shell-mode";
 import { currentPlatform } from "../src/platform/system";
 import { cli, workspace, type Workspace } from "./helpers/env";
-import { productEnv } from "./helpers/hooks";
+import { hostEnv, productEnv } from "./helpers/hooks";
 import { interactive, KEY, sleep } from "./helpers/interactive";
 import { ScriptedProvider } from "./helpers/scripted-provider";
 
@@ -27,6 +27,27 @@ const quit = async (run: Run) => {
 };
 const history = (p: ScriptedProvider, i: number) => JSON.stringify(p.requests[i]?.history ?? []);
 const lastUser = (p: ScriptedProvider, i: number) => JSON.stringify(p.requests[i]?.history.filter((m) => m.role === "user").pop() ?? null);
+
+test("TECH — virtual terminal ignores the host TERM and permits an explicit dumb terminal", async () => {
+  const previous = hostEnv["TERM"];
+  hostEnv["TERM"] = "dumb";
+  try {
+    const ws = workspace();
+    expect(productEnv(ws, { TERM: "dumb" })["TERM"]).toBe("dumb");
+    const p = new ScriptedProvider([{ text: "reçu" }]);
+    const run = interactive([], ws, { env: productEnv(ws), provider: p });
+    await run.idle();
+    run.paste("!literal pasted text");
+    await run.waitFor((t) => t.includes("Texte collé : il sera envoyé comme texte"), "bracketed paste");
+    run.type(KEY.enter);
+    await run.waitFor((t) => t.includes("● reçu"), "unicode answer");
+    expect(lastUser(p, 0)).toContain("!literal pasted text");
+    await quit(run);
+  } finally {
+    if (previous === undefined) delete hostEnv["TERM"];
+    else hostEnv["TERM"] = previous;
+  }
+}, 30_000);
 
 describe("SPEC-IHM-012 shell mode", () => {
   test("SPEC-IHM-012/CA-01 — the mark at the start of the line: the indicator of the shell mode shows before any validation", async () => {

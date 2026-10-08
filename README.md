@@ -7,6 +7,7 @@ Ce dépôt réalise, en salle blanche, le produit décrit par les fiches de `spe
 - Catalogue de modèles de développement : `identity/dev.models.json` — **vide** : le dépôt ne nomme aucun fournisseur ni modèle par défaut (D-09).
 
 
+
 ## Prérequis
 
 Bun 1.4.2 ou plus récent.

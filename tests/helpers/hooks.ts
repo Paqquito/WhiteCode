@@ -17,7 +17,8 @@ export const PROJECT_DIR = ".pilote-dev";
 export function productEnv(ws: Workspace, extra: Record<string, string> = {}): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(hostEnv)) if (!k.startsWith(prefix) && !PUBLIC_SECRET_VARIABLES.includes(k)) out[k] = v;
-  return { ...out, HOME: ws.home, USERPROFILE: ws.home, ...extra };
+  // Tests emulate a capable terminal; the host runner's TERM must not disable Unicode or framed pastes.
+  return { ...out, TERM: "xterm-256color", HOME: ws.home, USERPROFILE: ws.home, ...extra };
 }
 
 /** A command running `file` with Bun, in the shell the hooks use. */
