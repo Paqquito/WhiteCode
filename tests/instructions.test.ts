@@ -202,7 +202,7 @@ describe("SPEC-MOT-005 project instructions files", () => {
     const ws = workspace();
     ws.write(`managed/${FILE}`, "MANAGED");
     ws.write(`project/${FILE}`, "P @missing.md @d1.md");
-    for (let i = 1; i <= 3; i++) ws.write(`project/d${i}.md`, `D${i} @d${i + 1}.md`);
+    for (let i = 1; i <= 3; i++) ws.write(`project/d${i}.md`, `LEVEL-D${i} @d${i + 1}.md`);
     ws.write("project/d4.md", "D4");
     ws.write(`project/${PROJECT_DIR}/guidelines/broken.md`, "---\npaths: [src/**\n---\nBROKEN RULE");
     ws.write(`project/${LOCAL_FILE}`, "x".repeat(200));
@@ -210,14 +210,14 @@ describe("SPEC-MOT-005 project instructions files", () => {
     const all = renderInstructions(l.load())!;
     const warnings = l.takeWarnings();
     expect(all).toContain("MANAGED"); // RG-06: the managed level cannot be excluded
-    expect(all).not.toContain("D3"); // excluded project file never read
+    expect(all).not.toContain("LEVEL-D3"); // excluded project file never read (a marker the random folder names cannot hold)
     expect(all).toContain("BROKEN RULE"); // ERR-05: loaded everywhere
     expect(warnings.some((w) => w.startsWith("En-tête de règle invalide"))).toBe(true);
     const l2 = loader(ws, { includeDepth: 2, fileWarnSize: 100 });
     const all2 = renderInstructions(l2.load())!;
     const w2 = l2.takeWarnings();
-    expect(all2).toContain("D2");
-    expect(all2).not.toContain("D3 ");
+    expect(all2).toContain("LEVEL-D2");
+    expect(all2).not.toContain("LEVEL-D3");
     expect(w2.some((w) => w.startsWith("Fichier inclus introuvable"))).toBe(true); // ERR-01
     expect(w2.some((w) => w.startsWith("Profondeur d'inclusion maximale atteinte"))).toBe(true); // ERR-03
     expect(w2.some((w) => w.startsWith("Fichier d'instructions volumineux"))).toBe(true); // EF-07

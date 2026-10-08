@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cli, workspace } from "./helpers/env";
 import { Host } from "./helpers/control";
-import { PROJECT_DIR, productEnv, record } from "./helpers/hooks";
+import { bunCommand, PROJECT_DIR, productEnv, record } from "./helpers/hooks";
 import { interactive, KEY, sleep } from "./helpers/interactive";
 import { ScriptedProvider } from "./helpers/scripted-provider";
 
@@ -77,8 +77,8 @@ describe("SPEC-MOT-009 interruption", () => {
   test("SPEC-MOT-009/CA-02 — SPEC-MOT-009/CA-05 — a long shell command interrupted: the process stops, the model sees « interrupted » and learns it at the next turn", async () => {
     const ws = workspace();
     const sleeper = ws.write("scripts/sleep.ts", "await Bun.sleep(20_000);\n").replace(/\\/g, "/");
-    const p = new ScriptedProvider([{ toolCalls: [{ name: "run_shell", input: { command: `bun "${sleeper}"` } }] }, { text: "suite" }]);
-    const h = new Host(ws, { provider: p, init: {}, argv: ["--allow-rule", "run_shell(bun *)"] });
+    const p = new ScriptedProvider([{ toolCalls: [{ name: "run_shell", input: { command: bunCommand(sleeper) } }] }, { text: "suite" }]);
+    const h = new Host(ws, { provider: p, init: {}, argv: ["--allow-rule", "run_shell"], env: productEnv(ws) });
     h.user("lance");
     await h.waitFor((m) => m.type === "tool_call");
     await sleep(500);
