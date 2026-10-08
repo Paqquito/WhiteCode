@@ -1,7 +1,7 @@
 // Implements: SPEC-MOD-002 (§ 5.1, § 5.2, FA-01, FA-02, FA-05, FA-06, EF-01 to EF-08, ERR-01 to ERR-04, CA-01 to CA-06, CA-08), SPEC-MOD-011 (§ 5.4 start-up, EF-03, EF-04, EF-07, ERR-04),
 //             SPEC-MOT-004 (§ 5.3 steps 1 to 4, EF-01, EF-02, ERR-01 to ERR-05, RG-01, RG-02, ENF-01, CA-03, CA-04),
 //             SPEC-SES-002 (§ 5.1, § 5.3 steps 4 to 6, FA-02, EF-01, EF-05, ERR-01, CA-01 to CA-05), SPEC-SES-003 (§ 5.3, EF-01, EF-02, ERR-01, ERR-02, CA-01, CA-02),
-//             SPEC-CFG-004 (ERR-01), SPEC-CFG-005 (steps 4 and 5, EF-02, EF-03), SPEC-CFG-008 (§ 5.3, EF-01, EF-02, ERR-01),
+//             SPEC-CFG-001 (CA-03, managed preference locks), SPEC-CFG-004 (ERR-01), SPEC-CFG-005 (steps 4 and 5, EF-02, EF-03), SPEC-CFG-008 (§ 5.3, EF-01, EF-02, ERR-01),
 //             SPEC-SES-004 (ERR-03, CA-01, CA-02), SPEC-SES-008 (FA-01, EF-03), SPEC-SES-012 (§ 5.3, EF-01, EF-03, ERR-01, ERR-02, CA-01, CA-02), SPEC-SES-015 (steps 2 to 4, FA-01),
 //             SPEC-MOD-001 (§ 5.1, EF-01, EF-04, ERR-01, FA-04 summary at exit, FA-06, CA-05), SPEC-MOD-006 (§ 5.1, § 5.4 steps 1 and 7, FA-03, § 11), SPEC-MOD-007 (§ 5.1, § 6, EF-01, EF-02, EF-08, ERR-02, ERR-03, CA-04, CA-06), SPEC-MOD-008 (§ 5.1, § 6, § 10, FA-02, FA-05, EF-02 to EF-07, RG-01 to RG-03, CA-01 to CA-06), SPEC-CMD-002 (§ 5.3, FA-01, ERR-01, CA-01)
 // Supports: SPEC-MOT-005 (loading per segment, files touched), SPEC-MOT-007 (reminder producers), SPEC-CFG-001, SPEC-CFG-007 (RG-02, FA-01), SPEC-OUT-008, SPEC-OUT-009 (EF-07), SPEC-PER-001 (CA-05), SPEC-PER-003, SPEC-PER-010, SPEC-MOD-003 (CA-02, CA-04, CA-05), SPEC-SES-001, SPEC-API-006, decisions D-03, D-05, D-09, D-10, D-13, gaps E-013, E-017, E-018, E-045, E-050, E-094
@@ -2632,19 +2632,22 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       case "preferences": {
         // SPEC-CMD-013: a setting of the user, its effective value and its source; changed after validation (EF-01),
         // never when it is locked by the organisation (EF-02, FA-01); applied at once when the setting allows it.
+        // SPEC-CFG-001 CA-03: control requests also refresh the lock before reading or writing a preference.
+        applySettingsChanges();
+        const lock = (key: string) => liveSettings.isManaged(key) ? " ; imposé par votre organisation, lecture seule" : "";
         const [key, ...rest] = args.trim().split(/\s+/).filter(Boolean);
         if (!key) {
           const keys = ["models.selected", "models.effort", "context.autoCompact.enabled", "permissions.initialMode", "ui.colorMode", "ui.sessionSummary", "sessions.retentionDays"];
-          const lines = keys.map((k) => `${k} = ${JSON.stringify(liveSettings.get(k))} (${liveSettings.origin(k)})`);
+          const lines = keys.map((k) => `${k} = ${JSON.stringify(liveSettings.get(k))} (${liveSettings.origin(k)}${lock(k)})`);
           return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
         }
         const def = SETTING_BY_KEY.get(key);
         if (!def) return { refused: `Réglage inconnu : ${key}.` };
         if (rest.length === 0) {
-          const note = `${key} = ${JSON.stringify(liveSettings.get(key))} (source : ${liveSettings.origin(key)})`;
+          const note = `${key} = ${JSON.stringify(liveSettings.get(key))} (source : ${liveSettings.origin(key)}${lock(key)})`;
           return { shown: text(note), note };
         }
-        if (liveSettings.origin(key) === "managed") return { refused: `Ce réglage est fixé par l'organisation : ${key} (lecture seule).` };
+        if (liveSettings.isManaged(key)) return { refused: `Ce réglage est fixé par l'organisation : ${key} (lecture seule).` };
         if (!def.scopes.includes("user")) return { refused: `Ce réglage ne se modifie pas en portée utilisateur : ${key}.` };
         const raw = rest.join(" ");
         let value: unknown;
