@@ -13,7 +13,7 @@ afterAll(() => servers.forEach((s) => s.stop(true)));
 
 const userFile = (ws: Workspace) => join(ws.configHome, "config.json");
 /** A `run_shell` call: in the `ask` mode (a run without interface defaults to `no_prompt`), it needs an answer (point c). */
-const shellCall = () => new ScriptedProvider([{ toolCalls: [{ name: "run_shell", input: { command: "echo hello-from-shell" } }] }, { text: "done" }]);
+const shellCall = () => new ScriptedProvider([{ toolCalls: [{ name: "run_shell", input: { command: "printf hello-from-shell" } }] }, { text: "done" }]);
 const toolResult = (p: ScriptedProvider) => JSON.stringify(p.requests[1]?.history ?? []);
 const run = (ws: Workspace, provider: ScriptedProvider, userConfig: Record<string, unknown>, args: string[] = []) =>
   cli(["--non-interactive", ...(args.includes("--approval-mode") ? [] : ["--approval-mode", "ask"]), ...args, "x"], ws, { provider, userConfig, env: productEnv(ws) });
@@ -32,7 +32,7 @@ describe("habilitated approval hooks", () => {
     const p = shellCall();
     const res = await run(ws, p, { hooks: { approval_needed: [declaration] }, permissions: { decisionHooks: [entry] } });
     expect(res.code).toBe(0);
-    expect(r.read()[0]).toMatchObject({ event: "approval_needed", toolId: "run_shell", toolArguments: { command: "echo hello-from-shell" } });
+    expect(r.read()[0]).toMatchObject({ event: "approval_needed", toolId: "run_shell", toolArguments: { command: "printf hello-from-shell" } });
     expect(toolResult(p)).toContain("hello-from-shell");
     expect(toolResult(p)).not.toContain("Not allowed in this run");
     expect(JSON.parse(readFileSync(userFile(ws), "utf8")).permissions.allowRules ?? []).toEqual([]);

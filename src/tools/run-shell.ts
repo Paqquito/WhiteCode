@@ -1,5 +1,5 @@
 // Implements: SPEC-OUT-008 (§ 5.3 points 1, 2 and 8, § 6, EF-01, EF-05, EF-07, EF-10, ERR-01 to ERR-03, RG-01, RG-02, CA-01 to CA-04, CA-06, CA-07), SPEC-OUT-009 (§ 5.3, EF-01, EF-04 to EF-07, FA-01, CA-01, CA-03 to CA-05)
-// Supports: decisions D-02 (no heuristic authorisation) and E-008, gap E-052 (sandbox not delivered), SPEC-OUT-008 (FA-01, CA-05 `detached`), SPEC-AGT-017 (§ 5.3, EF-01)
+// Supports: gap E-052 (sandbox not delivered), SPEC-OUT-008 (FA-01, CA-05 `detached`), SPEC-AGT-017 (§ 5.3, EF-01), SPEC-PER-007 to SPEC-PER-009 (tool check, gap E-109)
 
 import descriptionPosix from "../../prompts/tools/run_shell.md" with { type: "text" };
 import descriptionPowerShell from "../../prompts/tools/run_powershell.md" with { type: "text" };
@@ -7,6 +7,7 @@ import descriptionPowerShellLegacy from "../../prompts/tools/run_powershell_5_1.
 import { dangerousPowerShell } from "../permissions/powershell-danger";
 import { formatShellResult } from "./shell-runtime";
 import { startShellTask } from "./background-tools";
+import { analyseShellCommand, type ShellVerdict } from "../permissions/command-analysis";
 import { textOutcome, type Tool, type ToolContext, type ToolOutcome } from "./types";
 
 export interface ShellInput {
@@ -40,11 +41,41 @@ function validate(input: ShellInput, ctx: ToolContext): string | undefined {
   return undefined;
 }
 
-/** Common part of the two shell tools: never concurrency-safe, never allowed by the tool itself (D-02, E-008). */
+/**
+ * The tool check of a command (step 5 of SPEC-PER-001): read-only inside the allowed folders, dangerous, chosen at run
+ * time, or neither. The working folder is the one of the shell, where the command runs.
+ */
+function verdictOf(name: "run_shell" | "run_powershell", command: string, ctx: ToolContext | undefined): ShellVerdict {
+  const dialect = name === "run_shell" ? "posix" : "powershell";
+  if (dialect === "powershell") {
+    const danger = dangerousPowerShell(command); // SPEC-OUT-009 RG-01: the cmdlets that always ask
+    if (danger) return { kind: "dangerous", reason: danger };
+  }
+  // Without a context (the flags), the paths are not checked: only the nature of the command counts.
+  const analysis = ctx
+    ? { cwd: ctx.shell?.cwd ?? ctx.cwd, allowedDirectories: ctx.allowedDirectories, platform: ctx.platform }
+    : { cwd: "/", allowedDirectories: ["/"], platform: "linux" as const, ignorePaths: true };
+  return analyseShellCommand(command, dialect, analysis);
+}
+
+/** Common part of the two shell tools: a read-only command runs alongside other reads (SPEC-OUT-009 CA-02). */
 function shellTool(name: "run_shell" | "run_powershell", run: (ctx: ToolContext, input: ShellInput, timeout: number) => Promise<ToolOutcome>): Omit<Tool<ShellInput>, "description" | "isEnabled" | "inputSchema"> {
   return {
     name,
-    flags: () => ({ readOnly: false, concurrencySafe: false, destructive: true, requiresPermission: true, openWorld: true }),
+    flags: (input) =>
+      verdictOf(name, input.command, undefined).kind === "read_only"
+        ? { readOnly: true, concurrencySafe: true, destructive: false, requiresPermission: true, openWorld: false }
+        : { readOnly: false, concurrencySafe: false, destructive: true, requiresPermission: true, openWorld: true },
+    // SPEC-PER-008: read-only commands are allowed; SPEC-PER-009, SPEC-PER-007 FA-02: dangerous or dynamic ones always ask.
+    permissionContribution: (input, ctx) => {
+      const v = verdictOf(name, input.command, ctx);
+      return v.kind === "read_only" ? "allow" : v.kind === "other" ? undefined : "ask";
+    },
+    // EF-02 of SPEC-PER-009: the danger said in clear terms, and « No » proposed by default.
+    danger: (input) => {
+      const v = verdictOf(name, input.command, undefined);
+      return v.kind === "dangerous" || v.kind === "dynamic" ? v.reason : undefined;
+    },
     validate,
     ruleSubject: (input) => ({ kind: "command", command: input.command }),
     summary: (input) => input.description ?? `Run: ${input.command}`,
@@ -85,7 +116,4 @@ export const runPowerShellTool: Tool<ShellInput> = {
     env.shells?.powershell?.edition === "5.1"
       ? `${descriptionPowerShell.trim()}\n\nEdition: Windows PowerShell 5.1.\n${descriptionPowerShellLegacy.trim()}`
       : `${descriptionPowerShell.trim()}\n\nEdition: PowerShell 7 or later.`,
-  // EF-04, RG-01: dangerous cmdlets always ask, before any allow rule (step 5 of SPEC-PER-001), except in unrestricted mode.
-  permissionContribution: (input) => (dangerousPowerShell(input.command) ? "ask" : undefined),
-  danger: (input) => dangerousPowerShell(input.command),
 };

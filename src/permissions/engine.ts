@@ -5,6 +5,7 @@ import type { PermissionMode } from "../config/settings-schema";
 import type { PlatformName } from "../platform/system";
 import type { RuleSubject, ToolFlags } from "../tools/types";
 import { ruleMatches, suggestRule, type Rule } from "./rules";
+import { exactlyAllowed } from "./command-analysis";
 
 export type AskOrigin = "managed" | "explicit" | "tool_check" | "default";
 
@@ -70,6 +71,12 @@ export function decide(q: PermissionQuery, ctx: PermissionContext): Decision {
 
   // Step 5: tool-specific contribution.
   if (q.contribution === "allow") return { kind: "allow", step: 5, why: "tool check" };
+  // SPEC-PER-009 § 5.3 step 2: only an `allow` rule naming exactly the command lifts the confirmation of a danger.
+  if (q.contribution === "ask" && q.subject.kind === "command") {
+    const command = q.subject.command;
+    const exact = rules.find((r) => r.decision === "allow" && r.tool === q.toolName && r.pattern !== undefined && exactlyAllowed(command, [r.pattern]));
+    if (exact) return { kind: "allow", step: 5, why: `rule ${exact.raw} naming the command` };
+  }
   if (q.contribution === "ask") return { kind: "ask", step: 5, origin: "tool_check", reason: "Confirmation required by the tool check.", suggestions };
 
   // Step 6: authorisations.

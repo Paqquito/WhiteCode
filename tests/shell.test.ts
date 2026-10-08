@@ -248,11 +248,12 @@ describe("SPEC-PER-001 commands and modes", () => {
     expect(result.content[0]!.text).toContain("Action denied: Denied by the rule run_shell(git push *)");
   }, 60_000);
 
-  test("D-02 — without an allow rule a command is asked, auto_edit included, and denied in no_prompt", () => {
-    const q = { toolName: "run_shell", subject: { kind: "command" as const, command: "ls" }, flags, available: true, contribution: runShellTool.permissionContribution?.({ command: "ls" }, {} as ToolContext) };
+  test("D-02 — without an allow rule a command that is not read-only is asked, auto_edit included (read-only commands: SPEC-PER-008, E-109)", () => {
+    const ctx = { cwd: "/", allowedDirectories: ["/"], platform: "linux" } as unknown as ToolContext;
+    const q = { toolName: "run_shell", subject: { kind: "command" as const, command: "npm install" }, flags, available: true, contribution: runShellTool.permissionContribution?.({ command: "npm install" }, ctx) };
     expect(decide(q, { ...base, mode: "auto_edit", rules: [] })).toMatchObject({ kind: "ask", step: 8 });
-    expect(decide(q, { ...base, mode: "ask", rules: [rule("run_shell(ls)", "allow")] })).toMatchObject({ kind: "allow", step: 6 });
-    expect(runShellTool.flags({ command: "ls" }).concurrencySafe).toBe(false);
+    expect(decide(q, { ...base, mode: "ask", rules: [rule("run_shell(npm install)", "allow")] })).toMatchObject({ kind: "allow", step: 6 });
+    expect(runShellTool.flags({ command: "npm install" }).concurrencySafe).toBe(false);
   });
 });
 

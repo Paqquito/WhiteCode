@@ -107,16 +107,16 @@ describe("SPEC-EXT-020 invocation of skills", () => {
     expect(text).toContain(`root ${join(ws.configHome, "skills", "revue")}.`);
   });
 
-  test("SPEC-EXT-020/CA-02 — a skill with tools [run_shell(echo skill-ok)]: allowed without request while active; after the turn, a request again", async () => {
+  test("SPEC-EXT-020/CA-02 — a skill with tools [run_shell(printf skill-ok)]: allowed without request while active; after the turn, a request again", async () => {
     const ws = workspace();
-    userSkill(ws, "check", { description: "Runs the check.", tools: ["run_shell(echo skill-ok)"] }, "Run `echo skill-ok`.");
-    const shell = { toolCalls: [{ name: "run_shell", input: { command: "echo skill-ok" } }] };
+    userSkill(ws, "check", { description: "Runs the check.", tools: ["run_shell(printf skill-ok)"] }, "Run `printf skill-ok`.");
+    const shell = { toolCalls: [{ name: "run_shell", input: { command: "printf skill-ok" } }] };
     const p = new ScriptedProvider([{ toolCalls: [{ name: "use_skill", input: { name: "check" } }] }, shell, { text: "first done" }, shell, { text: "second done" }]);
     const stdin = [JSON.stringify({ type: "user", content: "run the check" }), JSON.stringify({ type: "user", content: "again" })].join("\n") + "\n";
     await run(ws, p, ["--approval-mode", "ask", "--request-format", "jsonl"], {}, stdin);
     expect(history(p, 2)).toContain('"text":"skill-ok"');
     expect(history(p, 2)).not.toContain("Not allowed in this run");
-    expect(history(p, 4).split("Not allowed in this run: run_shell(echo skill-ok)")).toHaveLength(2);
+    expect(history(p, 4).split("Not allowed in this run: run_shell(printf skill-ok)")).toHaveLength(2);
   });
 
   test("TECH — SPEC-EXT-020 § 5.3 step 1 — a deny rule use_skill(check) refuses the invocation", async () => {
