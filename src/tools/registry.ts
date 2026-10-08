@@ -41,7 +41,26 @@ export interface RegistryOptions {
   readonly extraTools?: readonly ExtraTool[];
 }
 
-export class ToolRegistry {
+/** What the executor needs of a registry: the registry of the session, or a view of it (sub-agents). */
+export interface ToolLookup {
+  get(name: string): Tool<never> | undefined;
+  list(): Tool<never>[];
+  validateInput(tool: Tool<never>, input: unknown): string[];
+}
+
+/**
+ * A view of a registry limited to the tools `allowed` accepts, with some tools replaced (SPEC-AGT-001 § 5.1, EF-01): a
+ * tool outside the view does not exist for its user (SPEC-MOT-001 CA-09). It follows the registry, connectors included.
+ */
+export function restrictedView(base: ToolLookup, allowed: (name: string) => boolean, replaced: ReadonlyMap<string, Tool<never>> = new Map()): ToolLookup {
+  return {
+    get: (name) => (allowed(name) ? (replaced.get(name) ?? base.get(name)) : undefined),
+    list: () => base.list().filter((t) => allowed(t.name)).map((t) => replaced.get(t.name) ?? t),
+    validateInput: (tool, input) => base.validateInput(tool, input),
+  };
+}
+
+export class ToolRegistry implements ToolLookup {
   readonly #tools: Map<string, Tool<never>>;
   readonly #validators = new Map<string, ReturnType<typeof compileRaw>>();
   /** Connector tools, which come and go during the session (SPEC-MCP-009), by qualified name. */

@@ -86,6 +86,10 @@ import { recognize } from "../commands/recognize";
 import { framed, loadSkill, splitArguments } from "../skills/invoke";
 import { loadSkills, modelSkills, skillsSection, skillsSignature, type Skill, type SkillLocation } from "../skills/registry";
 import { createUseSkillTool } from "../tools/use-skill";
+import { createSpawnAgentTool, type SpawnAgentInput } from "../tools/spawn-agent";
+import { loadAgents, READING_TOOLS, BUILT_IN_AGENTS, type AgentDefinition, type AgentLocation } from "../agents/definitions";
+import { restrictedView, type ToolLookup } from "../tools/registry";
+import type { HookBus } from "../extension-points/hooks";
 import { closingFields, combineResults, exitCodeFor, renderResult, type ResultFormat } from "./output";
 import { EventStream } from "./stream-output";
 import { purgeExpiredSessions } from "../session/maintenance";
@@ -756,7 +760,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
 
   // Tool registry (SPEC-OUT-001 § 5.3).
   const toolsetOption = opt("toolset");
-  const toolset = typeof toolsetOption === "string" ? (toolsetOption.trim() === "" ? [] : splitList(toolsetOption)) : undefined;
+  const toolsetNames = typeof toolsetOption === "string" ? (toolsetOption.trim() === "" ? [] : splitList(toolsetOption)) : undefined;
+  // `spawn_agent` is a tool of the session, added after the registry is built: it is listed like the others (SPEC-OUT-001).
+  const toolset = toolsetNames?.filter((n) => n !== "spawn_agent");
+  const agentsInToolset = toolsetNames === undefined || toolsetNames.includes("spawn_agent") || (toolsetNames.length === 1 && toolsetNames[0] === "default");
   let registry: ToolRegistry;
   try {
     registry = ToolRegistry.build(
@@ -894,8 +901,34 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       else err(`avertissement : compétence ${skill.name} : ${rule.message}`);
     }
   };
-  const useSkillTool = createUseSkillTool({ skills: () => skillSet, session: () => sessionId, activate: activateSkill }) as never;
+  const useSkillTool = createUseSkillTool({
+    skills: () => skillSet,
+    session: () => sessionId,
+    activate: activateSkill,
+    runInAgent: (skill, content, signal) => runSubagent({ description: `skill ${skill.name}`, prompt: content }, BUILT_IN_AGENTS[0]!, signal, 0, registry),
+  }) as never;
   if (modelSkills(skillSet).length > 0) registry.addStatic(useSkillTool);
+
+  // SPEC-AGT-005 § 5.3: the agents of the session: built-in, user, project (trusted, unless refused, RG-01) and managed,
+  // read again at each launch (EF-04). A warning is shown once.
+  const agentLocations: AgentLocation[] = [
+    { source: "user", dir: join(locations.configDir, "agents") },
+    ...(trust.trusted && settings.get<boolean>("agents.allowProjectAgents") ? [{ source: "project" as const, dir: join(locations.projectRoot, identity.get("PROJECT_DIR"), "agents") }] : []),
+    { source: "managed", dir: join(locations.managedDir, "agents") },
+  ];
+  const agentWarnings = new Set<string>();
+  const agentCatalog = () =>
+    loadAgents(agentLocations, settings.get<string[]>("agents.disabledBuiltIns"), (m) => {
+      if (agentWarnings.has(m)) return;
+      agentWarnings.add(m);
+      err(`avertissement : ${m}`);
+    });
+  agentCatalog();
+  const maxAgentDepth = settings.get<number>("agents.maxDepth");
+  // SPEC-OUT-016: one instance per depth, so that the delegation stops at `agents.maxDepth` (FA-03, EF-05).
+  const spawnTool = (depth: number, caller: ToolLookup) =>
+    createSpawnAgentTool({ agents: agentCatalog, maxParallel: settings.get<number>("agents.maxParallel"), launch: (input, def, signal) => runSubagent(input, def, signal, depth, caller) }) as never;
+  if (maxAgentDepth >= 1 && agentsInToolset) registry.addStatic(spawnTool(0, registry));
 
   // Limits: the most restrictive defined source wins (SPEC-MOD-005 RG-01, gap E-017); default 50 in automated runs (E-018).
   const strictest = (key: string, option: number | undefined, label: string): number | undefined => {
@@ -1782,6 +1815,131 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   };
 
   phase("session");
+  // SPEC-AGT-001, SPEC-OUT-016: a sub-agent, in its own context, with the tools, the model and the mode it may have.
+  // Agents of this session are kept for a resumption (FA-01; the side transcript on disk is not delivered, gap E-105).
+  const subagents = new Map<string, { readonly name: string; readonly deps: LoopDeps }>();
+  const labelled = (a: Authorities, requester: string): Authorities => ({
+    ...a,
+    ...(a.human ? { human: { request: (r, s) => a.human!.request({ ...r, requester }, s), ...(a.human.loopDetected ? { loopDetected: (i, s) => a.human!.loopDetected!(i, s) } : {}) } } : {}),
+    ...(a.controlHost ? { controlHost: { decide: (r, s) => a.controlHost!.decide({ ...r, requester }, s) } } : {}),
+    ...(a.delegate ? { delegate: { decide: (r, s) => a.delegate!.decide({ ...r, requester }, s) } } : {}),
+    ...(a.habilitatedHook ? { habilitatedHook: { decide: (r, s) => a.habilitatedHook!.decide({ ...r, requester }, s) } } : {}),
+  });
+  const runSubagent = async (input: SpawnAgentInput, definition: AgentDefinition | undefined, signal: AbortSignal, depth: number, caller: ToolLookup): Promise<{ text: string; isError: boolean }> => {
+    let agent: { readonly name: string; readonly deps: LoopDeps };
+    let id: string;
+    if (input.resume !== undefined) {
+      const found = subagents.get(input.resume);
+      if (!found) return { text: `Unknown agent id: ${input.resume}. Agents of this session: ${[...subagents.keys()].join(", ") || "none"}.`, isError: true };
+      agent = found;
+      id = input.resume;
+    } else {
+      const def = definition!;
+      // § 5.1: the parameter, then the definition, then `agents.defaultModel`, then the model of the caller; a model not
+      // allowed gives way to the caller's, with a warning (ERR-02).
+      const wanted = input.model ?? (def.model && def.model !== "inherit" ? def.model : undefined) ?? settings.get<string | undefined>("agents.defaultModel");
+      let model: ResolvedModel = resolvedModel;
+      if (wanted && wanted !== "inherit") {
+        const r = deps.catalog.resolve(wanted, providerId, identity, resolveOptions);
+        if (!isResolveFailure(r) && allowedByList(r, wanted) && r.capabilities.toolCalling) model = { ...r, capabilities: effectiveCapabilities(r.capabilities, providerId).capabilities };
+        else emit({ type: "warning", message: `Modèle de l'agent ${def.name} non autorisé : modèle hérité.` });
+      }
+      // EF-02: the mode of the caller, or the one of the definition when it is not more permissive.
+      const mode = def.approvalMode && !morePermissive(def.approvalMode, modeState.mode) ? def.approvalMode : modeState.mode;
+      // EF-01: the tools of the definition (or all) among those of the caller, minus the excluded ones; delegation only
+      // below the maximal depth; a planning agent only reads (EF-06 of SPEC-OUT-016).
+      const replaced = new Map<string, never>();
+      const allowed = (name: string) =>
+        caller.get(name) !== undefined &&
+        (!def.tools || def.tools.includes(name)) &&
+        !def.excludedTools.includes(name) &&
+        (name !== "spawn_agent" || depth + 1 < maxAgentDepth) &&
+        (mode !== "planning" || READING_TOOLS.has(name));
+      const view = restrictedView(caller, allowed, replaced);
+      replaced.set("spawn_agent", spawnTool(depth + 1, view));
+      const built = buildSystemInstructions({
+        projectInstructions: settings.get<boolean>("agents.loadProjectInstructions") ? loadProjectInstructions() : undefined,
+        customInstructions: { addition: def.instructions },
+        identity,
+        variant: "subagent",
+        nonInteractive,
+        model,
+        cwd,
+        additionalDirectories: [],
+        platform: system.platform,
+        arch: system.arch,
+        osRelease: system.release,
+        shellTool: shellToolLine(registry, toolEnv),
+        date: now(),
+        promptFamily: settings.get<string>("context.promptFamily"),
+        budgetTokens: settings.get<number>("context.systemInstructionsBudget"),
+      });
+      id = `agent-${randomUUID().slice(0, 8)}`;
+      const agentId = id;
+      // The hooks of the session apply to its actions; its end is `subagent_finished`, never `turn_completed` (§ 5.3 step 5).
+      const agentHooks: HookBus = {
+        promptSubmitted: async () => ({}),
+        beforeTool: (call) => hooks.beforeTool(call),
+        afterTool: (call, isError, output) => hooks.afterTool(call, isError, output),
+        approvalRefused: (call, reason) => hooks.approvalRefused(call, reason),
+        turnCompleted: async (finalText) => {
+          const r = await hooks.fire("subagent_finished", { agentType: def.name, agentId, result: finalText });
+          return r?.decision === "continue" && r.reasons.length > 0 ? { continueWith: r.reasons.join("\n") } : {}; // FA-02
+        },
+        turnFailed: async () => {},
+        beforeCompaction: async () => ({}),
+        afterCompaction: async () => {},
+      };
+      agent = {
+        name: def.name,
+        deps: {
+          ...loopDeps,
+          model,
+          pricing: model === resolvedModel ? pricing : undefined,
+          maxOutputTokens: model === resolvedModel ? maxOutputTokens : model.maxOutputTokens,
+          conversation: new Conversation(built.blocks, view.list().map((t) => ({ name: t.name, description: t.description(toolEnv), inputSchema: t.inputSchema }))),
+          hooks: agentHooks,
+          transcript: undefined,
+          reminders: undefined,
+          context: undefined,
+          pendingNote: undefined,
+          takeQueued: undefined,
+          onUserMessage: undefined,
+          afterToolResults: undefined,
+          beforeRequest: undefined,
+          fallback: undefined,
+          ...(def.maxIterations !== undefined ? { maxIterations: def.maxIterations } : {}),
+          agentId,
+          // Its events stay its own; warnings reach the session.
+          emit: (e) => {
+            if (e.type === "warning" || e.type === "retry") emit(e);
+          },
+          executor: {
+            ...loopDeps.executor,
+            registry: view,
+            authorities: labelled(loopDeps.executor.authorities, def.name), // EF-04
+            loopGuard: new LoopGuard(settings.get<number>("engine.loopGuard.threshold"), settings.get<boolean>("engine.loopGuard.enabled")),
+            permissionContext: () => ({ ...loopDeps.executor.permissionContext(), mode }),
+          },
+        },
+      };
+      subagents.set(id, agent);
+      void hooks.fire("subagent_launched", { agentType: def.name, agentId: id, description: input.description });
+      debug.log("agents", "launched", { agent: def.name, id, depth: depth + 1, model: model.id, mode });
+    }
+    // FA-03 of SPEC-AGT-001: the startup instruction of the definition comes before the prompt of the caller.
+    const startup = input.resume === undefined ? definition?.startupInstruction : undefined;
+    const result = await runTurn(agent.deps, startup ? `${startup}\n\n${input.prompt}` : input.prompt, signal);
+    debug.log("agents", "finished", { id, cause: result.stopCause, ms: result.durationMs });
+    const report = result.finalText.trim();
+    if (result.stopCause === "interrupted") return { text: `The sub-agent ${id} was interrupted before its report.`, isError: true };
+    if (result.stopCause !== "completed" && report === "") return { text: `The sub-agent failed: ${result.message ?? result.stopCause}.`, isError: true }; // ERR-02
+    const tokens = result.usage.inputTokens + result.usage.outputTokens;
+    // EF-02: the report only, with its statistics and the id that resumes it.
+    const stats = `[agent ${id} (${agent.name}) · ${Math.round(result.durationMs / 1000)} s · ${result.iterations} iteration${result.iterations > 1 ? "s" : ""} · ${tokens} tokens]`;
+    return { text: `${report || "(The sub-agent ended without a final text.)"}\n\n${stats}`, isError: false };
+  };
+
   // SPEC-MOD-010 EF-05, CA-06: the journal of the start-up, shown with `engine.startup.verboseLog`.
   const reportPhases = () => {
     debug.log("startup", "phases", Object.fromEntries(phases));

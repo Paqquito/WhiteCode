@@ -36,8 +36,8 @@ export function loadSkill(set: SkillSet, name: string, args: string, caller: Cal
   // EF-01, ERR-01, CA-04.
   if (!user && skill.invocation === "user") return { ok: false, kind: "forbidden", message: `This skill cannot be invoked this way: ${name} is reserved to the user.` };
   if (user && skill.invocation === "model") return { ok: false, kind: "forbidden", message: `Cette compétence ne peut pas être invoquée ainsi : ${name} est réservée au modèle.` };
-  if (skill.context === "agent")
-    return { ok: false, kind: "unavailable", message: user ? `La compétence ${name} s'exécute dans un sous-agent, non disponible dans cette version.` : `The skill ${name} runs in a sub-agent, which this version cannot start.` };
+  // SPEC-OUT-037 § 5.3 step 4: a skill run in a sub-agent is started by the model (`use_skill`); from a command, not in this version.
+  if (skill.context === "agent" && user) return { ok: false, kind: "unavailable", message: `La compétence ${name} s'exécute dans un sous-agent : demandez-la au modèle, la commande ne la lance pas dans cette version.` };
   let body: string;
   try {
     body = splitHeader(readFileSync(skill.file, "utf8")).body.trim();

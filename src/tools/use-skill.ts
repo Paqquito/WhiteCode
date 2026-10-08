@@ -16,6 +16,8 @@ export interface UseSkillDeps {
   readonly session: () => string;
   /** Applies the `tools` of the skill until the end of the turn (EF-02). */
   readonly activate: (skill: Skill) => void;
+  /** Runs a skill declared `context: agent` in a sub-agent; only its report comes back (SPEC-OUT-037 CA-02). */
+  readonly runInAgent?: (skill: Skill, content: string, signal: AbortSignal) => Promise<{ readonly text: string; readonly isError: boolean }>;
 }
 
 export function createUseSkillTool(deps: UseSkillDeps): Tool<UseSkillInput> {
@@ -39,9 +41,14 @@ export function createUseSkillTool(deps: UseSkillDeps): Tool<UseSkillInput> {
     permissionContribution: () => "allow",
     summary: (input) => `Use the skill ${input.name}${input.arguments ? ` (${input.arguments.slice(0, 80)})` : ""}`,
 
-    async execute(input) {
+    async execute(input, ctx) {
       const loaded = loadSkill(deps.skills(), input.name, input.arguments ?? "", "model", { session: deps.session() });
       if (!loaded.ok) return textOutcome(loaded.message, true, loaded.kind === "forbidden" ? "permission_denied" : loaded.kind === "arguments" ? "invalid_input" : "unavailable");
+      if (loaded.skill.context === "agent") {
+        if (!deps.runInAgent) return textOutcome(`The skill ${input.name} runs in a sub-agent, which cannot be started here.`, true, "unavailable");
+        const report = await deps.runInAgent(loaded.skill, framed(loaded.skill, loaded.content, "use_skill"), ctx.signal);
+        return textOutcome(report.text, report.isError, report.isError ? "execution" : undefined);
+      }
       deps.activate(loaded.skill);
       return textOutcome(framed(loaded.skill, loaded.content, "use_skill"));
     },

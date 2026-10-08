@@ -72,7 +72,9 @@ export interface ModelRequest {
   /** Segment of the conversation (D-12): within a segment, each main request extends the previous main request. */
   readonly segment?: number;
   /** A side request (summary of a compaction) branches off the segment; it is not a step of the main sequence. */
-  readonly purpose?: "main" | "compaction";
+  readonly purpose?: "main" | "compaction" | "subagent";
+  /** The sub-agent sending a request of purpose `subagent`: its own sequence of requests (SPEC-AGT-001). */
+  readonly agent?: string;
   /** Service-side clearing of old tool results, for a model with the `contextEditing` capability (SPEC-MOT-014). */
   readonly contextEditing?: ContextEditingStrategy;
 }

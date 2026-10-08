@@ -9,7 +9,7 @@ import { decide, type Decision, type PermissionContext, type PermissionQuery } f
 import { insideAllowed } from "../permissions/paths";
 import { resolveAsk, type Authorities } from "../permissions/resolver";
 import type { StopReason, ToolCall, ToolResultPart } from "../providers/types";
-import type { ToolRegistry } from "../tools/registry";
+import type { ToolLookup } from "../tools/registry";
 import { textOutcome, type RuleSubject, type Tool, type ToolContext, type ToolOutcome } from "../tools/types";
 import type { EventSink } from "./events";
 import type { FileChange } from "../shared/diff";
@@ -20,7 +20,7 @@ import { boundText } from "../tools/output-bounds";
 export interface ExecutorDeps {
   /** File history of the session (SPEC-SES-006): called around the tools that change files. */
   readonly fileHistory?: { beforeWrite(paths: readonly string[]): string | undefined; afterWrite(paths: readonly string[]): void };
-  readonly registry: ToolRegistry;
+  readonly registry: ToolLookup;
   readonly hooks: HookBus;
   readonly authorities: Authorities;
   /** Permission context read when each call is evaluated (the mode may change during a turn, RG-03 of SPEC-MOT-001). */

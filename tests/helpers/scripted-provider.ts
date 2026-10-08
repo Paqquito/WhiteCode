@@ -19,6 +19,9 @@ export interface ScriptedResponse {
   readonly error?: { readonly kind: ProviderErrorKind; readonly retryAfterMs?: number; readonly status?: number };
 }
 
+/** A response, or a function of the request that gives it (a value known only during the run, such as an id). */
+export type ScriptStep = ScriptedResponse | ((request: ModelRequest) => ScriptedResponse);
+
 export class PrefixViolation extends Error {}
 
 let counter = 0;
@@ -26,18 +29,20 @@ let counter = 0;
 export class ScriptedProvider implements ModelProvider {
   readonly id = "simulated";
   readonly requests: ModelRequest[] = [];
-  readonly #script: ScriptedResponse[];
+  readonly #script: ScriptStep[];
 
-  constructor(script: ScriptedResponse[]) {
+  constructor(script: ScriptStep[]) {
     this.#script = [...script];
   }
 
   async *stream(request: ModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {
     // Main requests of a segment extend each other; a new segment starts afresh; a side request (compaction) is only checked against the main one.
-    const previous = [...this.requests].reverse().find((r) => (r.purpose ?? "main") === "main");
+    // A sub-agent has its own sequence of requests.
+    const previous = [...this.requests].reverse().find((r) => (r.purpose ?? "main") === (request.purpose === "subagent" ? "subagent" : "main") && r.agent === request.agent);
     if (previous && (previous.segment ?? 0) === (request.segment ?? 0)) assertPrefix(previous, request);
     this.requests.push(structuredClone(request));
-    const step = this.#script.shift() ?? { text: "done" };
+    const next = this.#script.shift() ?? { text: "done" };
+    const step = typeof next === "function" ? next(request) : next;
     if (step.hang) {
       await new Promise<void>((_, reject) => signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { kind: "aborted" })), { once: true }));
     }

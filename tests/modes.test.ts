@@ -248,9 +248,9 @@ describe("SPEC-OUT-001 registry", () => {
     const all = new ScriptedProvider([{ text: "ok" }]);
     await cli(["--non-interactive", "x"], workspace(), { provider: all });
     const names = all.requests[0]!.tools.map((t) => t.name);
-    expect(names).toEqual(expect.arrayContaining(["edit_file", "find_files", "read_file", "search_content", "update_notebook_cell", "update_todo_list", "write_file"]));
+    expect(names).toEqual(expect.arrayContaining(["edit_file", "find_files", "read_file", "search_content", "spawn_agent", "update_notebook_cell", "update_todo_list", "write_file"]));
     // Shell tools depend on the shells detected on the machine.
-    expect(names.filter((n) => !["edit_file", "find_files", "read_file", "search_content", "update_notebook_cell", "update_todo_list", "write_file"].includes(n)).every((n) => n === "run_shell" || n === "run_powershell")).toBe(true);
+    expect(names.filter((n) => !["edit_file", "find_files", "read_file", "search_content", "spawn_agent", "update_notebook_cell", "update_todo_list", "write_file"].includes(n)).every((n) => n === "run_shell" || n === "run_powershell")).toBe(true);
   });
 
   test("SPEC-OUT-001/CA-05 — a connector exposing read_file: the built-in tool is kept, the connector tool gets its prefix", () => {
