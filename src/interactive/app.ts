@@ -117,6 +117,8 @@ export interface AppOptions {
   /** Mode, model and other facts of the status line. */
   readonly status: () => { readonly mode: string; readonly model: string };
   readonly cycleMode?: () => void;
+  /** Background tasks still running, stopped by the exit (SPEC-CMD-023 CA-01). */
+  readonly backgroundTasks?: () => number;
   /** The task list of the main agent, shown above the input area (SPEC-OUT-021 § 10). */
   readonly tasks?: () => ReadonlyArray<{ readonly subject: string; readonly status: string; readonly progressLabel?: string }>;
   /** Summary of a tool call for the flow. */
@@ -783,6 +785,8 @@ export class InteractiveApp {
     const work: string[] = [];
     if (this.running && !o.byCommand) work.push("un tour est en cours");
     if (this.#queue.length > 0) work.push(`${this.#queue.length} message${this.#queue.length > 1 ? "s" : ""} en attente ne ${this.#queue.length > 1 ? "seront" : "sera"} pas envoyé${this.#queue.length > 1 ? "s" : ""}`);
+    const tasks = this.#o.backgroundTasks?.() ?? 0;
+    if (tasks > 0) work.push(`${tasks} tâche${tasks > 1 ? "s" : ""} de fond ${tasks > 1 ? "seront arrêtées" : "sera arrêtée"}`);
     if (work.length > 0 && this.#o.settings.exitConfirmation) {
       const yes = await this.confirm(`Travail en cours : ${work.join(" ; ")}. Quitter quand même ?`, "quitter", "rester");
       if (!yes) return;

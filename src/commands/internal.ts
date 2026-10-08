@@ -1,4 +1,5 @@
-// Implements: SPEC-CMD-001 (§ 5.3 rank 1, § 5.5 kinds, EF-13 widening attribute declared by each internal command), SPEC-CMD-023 (§ 5.2), SPEC-CMD-030 (§ 5.2), SPEC-IHM-008 (EF-06), SPEC-CMD-002 (§ 5.3)
+// Implements: SPEC-CMD-001 (§ 5.3 rank 1, § 5.5 kinds, EF-13 widening attribute declared by each internal command), SPEC-CMD-023 (§ 5.2), SPEC-CMD-030 (§ 5.2), SPEC-IHM-008 (EF-06), SPEC-CMD-002 (§ 5.3),
+//             SPEC-CMD-009, SPEC-CMD-006, SPEC-CMD-059, SPEC-CMD-058, SPEC-CMD-024 (§ 5.2: commands of the user)
 // The internal commands of this version. Each one declares its kind and whether it widens what the agent may do.
 
 import type { InternalCommand } from "./catalog";
@@ -11,5 +12,10 @@ export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
   { name: "edit-mode", description: "Choisit l'édition standard ou modale de la zone de saisie, le contenu conservé.", kind: "action", widening: false, usage: "standard|modal", interactiveOnly: true },
   { name: "history", description: "Efface l'historique des saisies (/history clear).", kind: "action", widening: false, usage: "clear", interactiveOnly: true },
   { name: "allow-dir", description: "Ajoute un dossier au périmètre de travail de la session.", kind: "action", widening: true, usage: "<chemin>" },
+  { name: "clear", description: "Commence une nouvelle conversation ; l'actuelle reste reprenable.", kind: "action", widening: false, interactiveOnly: true },
+  { name: "duplicate-session", description: "Copie la conversation dans une nouvelle session et y bascule (les fichiers ne sont pas dupliqués).", kind: "action", widening: false, usage: "[nom]", interactiveOnly: true },
+  { name: "reopen", description: "Reprend une autre session du projet à la place de la courante.", kind: "action", widening: false, usage: "[identifiant ou nom]", interactiveOnly: true },
+  { name: "retitle", description: "Donne un titre à la session.", kind: "action", widening: false, usage: "[titre]" },
+  { name: "save-transcript", description: "Enregistre la conversation dans un fichier texte, valeurs sensibles masquées.", kind: "action", widening: false, usage: "[fichier]" },
   { name: "shortcuts", description: "Affiche les raccourcis clavier effectifs ; reset rétablit ceux par défaut.", kind: "mixed", widening: false, usage: "[reset]", interactiveOnly: true },
 ];

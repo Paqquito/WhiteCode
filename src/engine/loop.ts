@@ -47,6 +47,8 @@ export interface LoopDeps {
   readonly clock?: () => number;
   /** Identifier of a sub-agent: its requests form their own sequence (SPEC-AGT-001). */
   readonly agentId?: string;
+  /** Identifier of the session, carried by the requests (never sent to the service). */
+  readonly conversationId?: string;
   /** Messages typed during the turn, taken at the safe point after the results of the tools (SPEC-MOT-008). */
   readonly takeQueued?: () => ReadonlyArray<ContentPart>;
   /** Operator note to append before the next request (mode change reminder, SPEC-PER-003 CA-06). */
@@ -233,6 +235,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
         effort: deps.effort,
         segment: conv.segment,
         ...(deps.agentId ? { purpose: "subagent" as const, agent: deps.agentId } : {}),
+        ...(deps.conversationId ? { conversationId: deps.conversationId } : {}),
       };
       const modelRequest = deps.context ? deps.context.decorate(base) : base;
       if (ledger) {

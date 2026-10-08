@@ -8,7 +8,7 @@
 // Composition root of a session: options → identity and settings → provider → engine → automated output, or the
 // interactive application (lot 5).
 
-import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ExitCode } from "../cli/exit-codes";
 import { helpText, versionText } from "../cli/help";
@@ -64,7 +64,8 @@ import { AnthropicProvider } from "../providers/anthropic";
 import { effectiveCapabilities, isDeliveredProvider } from "../providers/adapters";
 import { OpenAICompatibleProvider } from "../providers/openai-compatible";
 import { isResolveFailure, type ApiEffort, type ModelCatalog, type ResolvedModel } from "../providers/catalog";
-import type { ContentPart, ImagePart, ModelProvider, ToolCall, ToolResultPart } from "../providers/types";
+import type { ContentPart, HistoryMessage, ImagePart, ModelProvider, ToolCall, ToolResultPart } from "../providers/types";
+import { maskSecrets } from "../shared/secrets";
 import { absolute, comparablePath, findExecutable, realPathOrSelf, type SystemInfo } from "../platform/system";
 import type { StandardStreams } from "../platform/io";
 import { projectKey, TranscriptWriter, type TranscriptRecord } from "../session/transcript";
@@ -230,8 +231,21 @@ function ruleAnchor(origin: Scope | "env", projectRoot: string, cwd: string): st
 
 /** Runs the command line; returns the exit code (SPEC-MOD-002 § 7.3). Never exits the process itself. */
 export async function runCli(argv: readonly string[], deps: RunDependencies): Promise<number> {
+  // A session that asks to be replaced (`/clear`, `/duplicate-session`, `/reopen`) ends cleanly, then the next one is
+  // composed with its options, in the same process (plan of lot 8, § 2).
+  let args = argv;
+  let title: string | undefined;
+  for (;;) {
+    const holder: RunHolder = { cleanups: [], ...(title ? { pendingTitle: title } : {}) };
+    const code = await runOnce(args, deps, holder);
+    if (!holder.restart) return code;
+    args = holder.restart;
+    title = holder.restartTitle;
+  }
+}
+
+async function runOnce(argv: readonly string[], deps: RunDependencies, holder: RunHolder): Promise<number> {
   const { streams, identity } = deps;
-  const holder: RunHolder = { cleanups: [] };
   // Once the interactive interface holds the terminal, the messages of the product go through it (SPEC-IHM-001 RG-03).
   const err = (text: string) => (holder.errSink ? holder.errSink(text) : streams.writeErr(text.endsWith("\n") ? text : `${text}\n`));
   try {
@@ -270,6 +284,12 @@ interface RunHolder {
   /** Awaited before the other clean-ups, in reverse order (a connection that ends normally, SPEC-MOD-007 § 5.2 step 7). */
   finalizers?: Array<() => Promise<void>>;
   errSink?: (text: string) => void;
+  /** The options of the session that replaces this one (`/clear`, `/duplicate-session`, `/reopen`). */
+  restart?: string[];
+  /** The title of the next session (`/duplicate-session <nom>`). */
+  restartTitle?: string;
+  /** Title given by the previous session to this one. */
+  pendingTitle?: string;
 }
 
 /** `connector-server start` (SPEC-MOD-008): the options of the operation, before the session is composed. */
@@ -1320,6 +1340,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     transcript?.append("session_meta", { formatVersion: 1, ...sessionMeta, ...(reopened ? { parentSession: reopened.info.id, parentRecord: reopened.chain[reopened.chain.length - 1]?.id ?? null } : {}) });
     for (const r of reopened?.chain ?? []) if (r.type !== "session_meta") transcript?.append(r.type, r.data);
   }
+  // SPEC-CMD-006 § 5.3 step 2: the name given to a copy by the session it comes from.
+  let manualTitle = holder.pendingTitle !== undefined;
+  if (holder.pendingTitle) transcript?.append("system", { event: "title", title: holder.pendingTitle, source: "manual" });
   // SPEC-SES-015 step 2: results given to the calls left without one are recorded after the branch, never in place.
   for (const repair of reopened?.history.repairs ?? []) transcript?.append("tool_result", { callId: repair.callId, isError: repair.isError, content: repair.content, synthetic: true });
 
@@ -1874,6 +1897,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           app?.refresh();
         })(),
       tasks: () => taskList.tasks.filter((t) => t.owner === MAIN_AGENT),
+      backgroundTasks: () => background.running.length,
       describeCall: (name, input) => {
         try {
           return registry.get(name)?.summary(input as never) ?? "";
@@ -1919,6 +1943,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     },
     fallback,
     takeQueued: () => (app ? app.takeForSafePoint().flatMap(typedParts) : []),
+    conversationId: sessionId,
     onUserMessage: (recordId) => {
       if (recordId !== undefined) fileHistory.checkpoint(recordId);
     },
@@ -2281,11 +2306,24 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     }
     results.push(result);
     // SPEC-SES-008 FA-01, EF-03: the title is the beginning of the first message.
-    if (transcript && results.length === 1 && !(reopened && sessionTitle(reopened.records) !== undefined)) {
+    // SPEC-CMD-058 EF-01, CA-01: a manual title is never replaced by the automatic one.
+    if (transcript && results.length === 1 && !manualTitle && !(reopened && sessionTitle(reopened.records) !== undefined)) {
       const title = titleFrom(content);
       if (title) transcript.append("system", { event: "title", title, source: "first_message" });
     }
     return { result };
+  };
+  // The options of the session that replaces this one: those of the launch, without the choice of the session, and the
+  // mode and the model of this one when they are kept (SPEC-CMD-009 § 5.1).
+  const carryArgs = (keepModeAndModel: boolean): string[] => {
+    const skip = new Set(["reopen", "reopen-last", "reopen-at", "reopen-as-copy", "assign-session-id", "restore-files", "dry-run", "allow-external-overwrite", ...(keepModeAndModel ? ["approval-mode", "model"] : [])]);
+    const out: string[] = [];
+    for (const [name, value] of parsed.options) {
+      if (skip.has(name)) continue;
+      for (const v of Array.isArray(value) ? value : [value]) out.push(v === true ? `--${name}` : `--${name}=${String(v)}`);
+    }
+    if (keepModeAndModel) out.push(`--approval-mode=${modeState.mode}`, `--model=${resolvedModel.id}`);
+    return out;
   };
   // The internal commands of this version (SPEC-CMD-001 rank 1): help, exit, key bindings.
   const runInternalCommand = async (command: InternalCommand, args: string): Promise<RequestOutcome> => {
@@ -2304,6 +2342,75 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         if (wanted !== "standard" && wanted !== "modal") return { refused: "Usage : /edit-mode standard|modal." };
         app?.setModal(wanted === "modal");
         return { shown: text(wanted === "modal" ? "Édition modale activée." : "Édition standard rétablie.") };
+      }
+      case "clear":
+      case "duplicate-session":
+      case "reopen": {
+        // SPEC-CMD-009, SPEC-CMD-006, SPEC-CMD-059: this session ends (it stays reopenable, EF-01), the next one starts.
+        const running = background.running.length;
+        if (running > 0 && app && !(await app.confirm(`${running} tâche${running > 1 ? "s" : ""} de fond ${running > 1 ? "seront arrêtées" : "sera arrêtée"} avec cette session. Continuer ?`, "continuer", "annuler"))) {
+          return { silent: true };
+        }
+        if (command.name === "clear") {
+          holder.restart = carryArgs(true);
+          return { exit: true };
+        }
+        if (command.name === "duplicate-session") {
+          if (!transcript) return { refused: "Cette session n'est pas enregistrée : elle ne peut pas être copiée." };
+          // EF-03: the conversation is copied, not the files of the project.
+          app?.notice("info", "La conversation est copiée dans une nouvelle session ; les fichiers du projet ne sont pas dupliqués.");
+          const current = sessionTitle(readTranscript(transcript.path).records) ?? sessionId.slice(0, 8);
+          holder.restart = [...carryArgs(true), `--reopen=${sessionId}`, "--reopen-as-copy"];
+          holder.restartTitle = args.trim() || `${current} (copie)`;
+          return { exit: true };
+        }
+        let target: SessionInfo | undefined;
+        try {
+          if (args.trim() !== "") target = designateSession(locations.sessionsDir, projectReal, args.trim());
+          else {
+            // § 5.3 steps 1 and 2: the sessions of the project, the most recent first.
+            const others = projectSessions(locations.sessionsDir, projectReal).filter((s) => s.id !== sessionId).slice(0, 9);
+            if (others.length === 0) return { refused: "Aucune autre session dans ce projet." };
+            const label = (s: SessionInfo) => `${sessionTitle(readTranscript(s.path).records) ?? s.id.slice(0, 8)} — ${new Date(s.modifiedMs).toLocaleString("fr-FR")}`;
+            const choice = await app!.choose("Quelle session reprendre ?", others.map((s) => ({ label: label(s) })), { other: false });
+            if (choice.kind !== "options") return { silent: true };
+            target = others.find((s) => label(s) === choice.labels[0]);
+          }
+        } catch (e) {
+          return { refused: (e as Error).message };
+        }
+        if (!target) return { silent: true };
+        if (target.id === sessionId) return { refused: "C'est la session en cours." };
+        if (comparablePath(target.project, system.platform) !== comparablePath(projectReal, system.platform)) return { refused: `Cette session appartient à un autre projet (${target.project}) : relancez le produit dans ce dossier.` }; // FA-01
+        holder.restart = [...carryArgs(false), `--reopen=${target.id}`];
+        return { exit: true };
+      }
+      case "retitle": {
+        // SPEC-CMD-058 § 5.3: the title given, or one to edit, recorded at once and never replaced automatically.
+        let title = args.trim();
+        if (title === "" && app) title = (await app.editText("Titre de la session (Entrée pour valider) :", sessionTitle(transcript ? readTranscript(transcript.path).records : []) ?? ""))?.trim() ?? "";
+        if (title === "") return { refused: "Usage : /retitle <titre>." };
+        if (!transcript) return { refused: "Cette session n'est pas enregistrée : elle ne peut pas recevoir de titre." };
+        transcript.append("system", { event: "title", title, source: "manual" });
+        manualTitle = true;
+        terminal?.write(`\u001b]0;${title.replace(/[\u0000-\u001f\u007f]/g, " ")}\u0007`); // the title of the window
+        return { shown: text(`Titre de la session : ${title}.`), note: `Titre de la session : ${title}.` };
+      }
+      case "save-transcript": {
+        // SPEC-CMD-024: messages, calls summarised, results shortened, secrets masked (EF-01).
+        const current = transcript ? sessionTitle(readTranscript(transcript.path).records) : undefined;
+        const name = args.trim() || `${(current ?? `session-${sessionId.slice(0, 8)}`).replace(/[^\p{L}\p{N}._-]+/gu, "-").slice(0, 60)}.txt`;
+        const path = absolute(name, cwd);
+        if (existsSync(path)) {
+          // EF-02: never overwritten without a confirmation.
+          if (!app || !(await app.confirm(`Le fichier ${path} existe déjà. Le remplacer ?`, "remplacer", "annuler"))) return { refused: `Fichier existant, non remplacé : ${path}.` };
+        }
+        try {
+          writeFileSync(path, maskSecrets(exportConversation(conversation.messages, (n, i) => registry.get(n)?.summary(i as never) ?? n)));
+        } catch (e) {
+          return { refused: `La conversation n'a pas pu être enregistrée : ${(e as Error).message}` };
+        }
+        return { shown: text(`Conversation enregistrée dans ${path}.`), note: `Conversation enregistrée dans ${path}.` };
       }
       case "allow-dir": {
         // SPEC-CMD-002 § 5.3: validated, added for the session, the model informed by a reminder (gap E-101).
@@ -2962,6 +3069,26 @@ function serveCapabilities(option: string | undefined, configured: readonly stri
   const ignored = configured.filter((c) => !kept.includes(c));
   if (ignored.length > 0) err(`avertissement : mcp.serve.capabilities : ${ignored.join(", ")} ignoré${ignored.length > 1 ? "s" : ""} (l'écriture et l'exécution se demandent par --capabilities au lancement).`);
   return [...new Set(kept)];
+}
+
+/** SPEC-CMD-024 § 5.1: the conversation as text: messages, calls summarised, results shortened. */
+function exportConversation(messages: readonly HistoryMessage[], summary: (name: string, input: unknown) => string): string {
+  const out: string[] = [];
+  const shorten = (t: string) => (t.length > 2_000 ? `${t.slice(0, 2_000)}\n[… ${t.length - 2_000} caractères omis]` : t);
+  for (const m of messages) {
+    if (m.role === "user") {
+      for (const p of m.parts) {
+        if (p.type === "text" && !p.text.startsWith("<system-reminder>")) out.push(`> ${p.text.replace(/\n/g, "\n> ")}`);
+        else if (p.type === "tool_result") out.push(`  ⎿ ${shorten(p.content.map((c) => (c.type === "text" ? c.text : "[image]")).join("\n")).replace(/\n/g, "\n    ")}`);
+        else if (p.type === "image") out.push("> [image]");
+      }
+    } else if (m.role === "assistant") {
+      if (m.text.trim()) out.push(m.text.trim());
+      for (const c of m.toolCalls) out.push(`● ${c.name} : ${summary(c.name, c.input)}`);
+    }
+    out.push("");
+  }
+  return `${out.join("\n").trim()}\n`;
 }
 
 /** Alias of each tier, for the allow list (SPEC-API-007). */

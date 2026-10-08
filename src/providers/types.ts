@@ -75,6 +75,8 @@ export interface ModelRequest {
   readonly purpose?: "main" | "compaction" | "subagent" | "side";
   /** The sub-agent sending a request of purpose `subagent`: its own sequence of requests (SPEC-AGT-001). */
   readonly agent?: string;
+  /** The session the request belongs to: a session that replaces another (`/clear`) starts a new sequence. Never sent. */
+  readonly conversationId?: string;
   /** Service-side clearing of old tool results, for a model with the `contextEditing` capability (SPEC-MOT-014). */
   readonly contextEditing?: ContextEditingStrategy;
 }

@@ -41,7 +41,7 @@ export class ScriptedProvider implements ModelProvider {
   async *stream(request: ModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {
     // Main requests of a segment extend each other; a new segment starts afresh; a side request (compaction) is only checked against the main one.
     // A sub-agent has its own sequence of requests.
-    const previous = [...this.requests].reverse().find((r) => (r.purpose ?? "main") === (request.purpose === "subagent" ? "subagent" : "main") && r.agent === request.agent);
+    const previous = [...this.requests].reverse().find((r) => (r.purpose ?? "main") === (request.purpose === "subagent" ? "subagent" : "main") && r.agent === request.agent && r.conversationId === request.conversationId);
     // A side request (the analysis of a web page) belongs to no sequence.
     if (previous && request.purpose !== "side" && (previous.segment ?? 0) === (request.segment ?? 0)) assertPrefix(previous, request);
     this.requests.push(structuredClone(request));
