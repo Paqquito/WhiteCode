@@ -30,6 +30,8 @@ export interface AgentDefinition {
   readonly startupInstruction?: string;
   readonly color?: string;
   readonly detached: boolean;
+  /** Hosts its web reading is limited to (SPEC-AGT-002 EF-03: the official documentation only). */
+  readonly webHosts?: readonly string[];
 }
 
 /** Fields of § 5.1; those this version does not use yet are accepted without effect (gap E-105). */
@@ -52,8 +54,9 @@ export const BUILT_IN_AGENTS: readonly AgentDefinition[] = [
     description: "Answers questions about the features, configuration, hooks, connectors and integration kit of this product.",
     source: "built-in",
     instructions: usageGuideInstructions.trim(),
-    tools: ["read_file", "find_files", "search_content"],
+    tools: ["read_file", "find_files", "search_content", "fetch_url"],
     excludedTools: [],
+    webHosts: ["$SERVICE_DOCS"],
     model: "small",
     detached: false,
   },

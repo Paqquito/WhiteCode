@@ -2,6 +2,7 @@
 
 import type { TaskList } from "../engine/task-list";
 import type { BackgroundTasks } from "../engine/background";
+import type { WebAccess } from "./fetch-url";
 import type { ContentPart } from "../providers/types";
 import type { ProtectedLocations } from "../permissions/paths";
 import type { PlatformName } from "../platform/system";
@@ -77,6 +78,8 @@ export interface ToolContext extends ToolEnvironment {
   readonly agentName?: string;
   /** Background tasks of the session (SPEC-AGT-016). */
   readonly background?: BackgroundTasks;
+  /** Reading web pages (SPEC-OUT-012). */
+  readonly web?: WebAccess;
 }
 
 /** Difference shown with an approval request (SPEC-OUT-003 EF-06), or an early refusal found before asking. */

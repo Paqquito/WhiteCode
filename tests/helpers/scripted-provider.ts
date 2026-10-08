@@ -42,7 +42,8 @@ export class ScriptedProvider implements ModelProvider {
     // Main requests of a segment extend each other; a new segment starts afresh; a side request (compaction) is only checked against the main one.
     // A sub-agent has its own sequence of requests.
     const previous = [...this.requests].reverse().find((r) => (r.purpose ?? "main") === (request.purpose === "subagent" ? "subagent" : "main") && r.agent === request.agent);
-    if (previous && (previous.segment ?? 0) === (request.segment ?? 0)) assertPrefix(previous, request);
+    // A side request (the analysis of a web page) belongs to no sequence.
+    if (previous && request.purpose !== "side" && (previous.segment ?? 0) === (request.segment ?? 0)) assertPrefix(previous, request);
     this.requests.push(structuredClone(request));
     const queue = request.purpose === "subagent" && this.#agents ? this.#agents : this.#script;
     const next = queue.shift() ?? { text: "done" };
