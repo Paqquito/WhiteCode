@@ -113,6 +113,19 @@ export class ConnectorManager {
     return [...this.#entries.values()].map((e) => ({ name: e.d.name, scope: e.d.scope, source: e.d.source, state: e.state, error: e.error, stderr: e.conn?.stderrTail() ?? e.stderr, tools: e.live.size }));
   }
 
+  /** SPEC-CMD-041 § 5.3 step 3: a new connection, the attempts counted afresh; the state once it is settled. */
+  async reconnect(name: string): Promise<ConnectorStatus | undefined> {
+    const e = this.#entries.get(name);
+    if (!e || this.#closed) return undefined;
+    clearTimeout(e.timer);
+    await e.conn?.close(0);
+    e.conn = undefined;
+    e.attempts = this.#o.maxReconnects; // a failure of this explicit attempt is final
+    e.settled = new Promise<void>((r) => (e.settle = r));
+    await this.#connect(e);
+    return this.status().find((s) => s.name === name);
+  }
+
   /** Every tool published so far, connected or not (a call to a disconnected one fails explicitly, FA-01). */
   tools(): Tool<never>[] {
     return [...this.#entries.values()].flatMap((e) => [...e.tools.values()]);

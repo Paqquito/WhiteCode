@@ -9,18 +9,20 @@
 // interactive application (lot 5).
 
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { ExitCode } from "../cli/exit-codes";
 import { helpText, versionText } from "../cli/help";
 import { CliUsageError, dangerOptions, parseCommandLine, splitList, undeliveredOptions } from "../cli/parser";
 import { EnvironmentView, PUBLIC_SECRET_VARIABLES } from "../config/environment";
-import { readSettingsFile, validateSettingValue, type ScopeSource } from "../config/settings";
+import { readSettingsFile, validateSettingValue, type ScopeSource, type Settings } from "../config/settings";
 import { isHotKey, SettingsReloader } from "../config/reload";
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import { loadConfiguration, scopeSources } from "../config/load";
 import { looksLikeSubcommand, runSubcommand } from "../admin/subcommands";
 import { SETTING_BY_KEY, type PermissionMode, type Scope } from "../config/settings-schema";
-import { appendRuleToSettingsFile, setValueInSettingsFile } from "../config/settings-writer";
+import { appendRuleToSettingsFile, readValueInSettingsFile, setValueInSettingsFile } from "../config/settings-writer";
+import { broadAllowWarning, describeMasking, maskedRules, scopeName } from "../permissions/rule-review";
+import { HOOK_EVENTS } from "../hooks/events";
 import { readUserState, updateUserState } from "../config/trust";
 import { FallbackPolicy } from "../engine/fallback";
 import { buildSystemInstructions, estimateTokens, RequiredSectionUnavailable } from "../engine/system-instructions";
@@ -71,7 +73,10 @@ import type { StandardStreams } from "../platform/io";
 import { projectKey, TranscriptWriter, type TranscriptRecord } from "../session/transcript";
 import { activeChain, assistantRecord, designateSession, projectSessions, protocolOf, readTranscript, rebuildHistory, SessionError, sessionTitle, withResults, type RebuiltHistory, type SessionInfo } from "../session/sessions";
 import { PresenceRegistry } from "../session/presence";
-import { BlobStore, FileHistory, type SnapshotRecord } from "../session/file-history";
+import { BlobStore, FileHistory, observe, type SnapshotRecord } from "../session/file-history";
+import { changesByTurn } from "../session/turn-changes";
+import { runToCompletion } from "../platform/process";
+import { unifiedDiff } from "../shared/diff";
 import { applyPlan, computePlan, renderPlan, RestoreError } from "../session/restore";
 import { createDebugLog, DISABLED_DEBUG_LOG, type DebugLog } from "../shared/debug-log";
 import { ToolRegistry, UnknownToolsetEntryError } from "../tools/registry";
@@ -84,6 +89,7 @@ import { connectorSources, projectChoice, projectStateKey, type ProjectState } f
 import { createDiscoverToolsTool } from "../tools/discover-tools";
 import { loadExtensions } from "../extensions/load";
 import { activeInstalled } from "../extensions/active";
+import { catalogList, extensionAdd, extensionList, scopeOf, type ExtensionAdminContext } from "../extensions/admin";
 import { recognize } from "../commands/recognize";
 import { framed, loadSkill, splitArguments } from "../skills/invoke";
 import { loadSkills, modelSkills, skillsSection, skillsSignature, type Skill, type SkillLocation } from "../skills/registry";
@@ -798,6 +804,18 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
 
   // Rules by scope (SPEC-PER-002 § 5.5).
   const rules: Rule[] = collectRules(settings, locations.projectRoot, cwd, err);
+  // SPEC-PER-012: the rules that can never apply, reported when the rules are loaded or changed (once each).
+  const ruleSource = (r: Rule) => (r.scope === "session" ? "session" : liveSettings.sourcesOf(r.scope, `permissions.${r.decision}Rules`).join(" + ") || scopeName(r.scope));
+  const reportedMaskings = new Set<string>();
+  const reportMasked = () => {
+    for (const m of maskedRules(rules)) {
+      const report = describeMasking(m, ruleSource);
+      if (reportedMaskings.has(report)) continue;
+      reportedMaskings.add(report);
+      err(`avertissement [règles] : ${report}`);
+    }
+  };
+  reportMasked();
 
   // Shells of the session (SPEC-OUT-008 EF-01, SPEC-OUT-009 § 5.3 point 1, EF-07).
   const hostVariables: Record<string, string> = {};
@@ -842,26 +860,28 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     throw new RunError("Option --extension-dir refusée : seules les extensions gérées sont admises (extensions.managedOnly).", ExitCode.UsageOrConfiguration); // FA-01
   for (const d of sessionExtensions) if (!existsSync(d)) throw new RunError(`Dossier d'extension introuvable : ${d}.`, ExitCode.UsageOrConfiguration); // ERR-01
   // SPEC-EXT-003: the installed extensions active in this project (managed > local > project > user).
-  const installedExtensions = minimal
-    ? { active: [], report: [], imposedProblems: [] }
-    : await activeInstalled({
-    settings,
-    configDir: locations.configDir,
-    product: { name: identity.get("PRODUCT"), version: identity.version, cli: identity.get("PRODUCT_CLI") },
-    runner: { env: env.childEnvironment(), timeoutMs: 300_000 },
-    cwd,
-    userSettingsFile: locations.userSettingsFile,
-    platform: system.platform,
-  });
+  const activation = (s: Settings) =>
+    activeInstalled({
+      settings: s,
+      configDir: locations.configDir,
+      product: { name: identity.get("PRODUCT"), version: identity.version, cli: identity.get("PRODUCT_CLI") },
+      runner: { env: env.childEnvironment(), timeoutMs: 300_000 },
+      cwd,
+      userSettingsFile: locations.userSettingsFile,
+      platform: system.platform,
+    });
+  let installedExtensions = minimal ? { active: [], report: [], imposedProblems: [] } : await activation(settings);
   for (const line of installedExtensions.imposedProblems) err(`avertissement : ${line}`); // FA-01 of SPEC-EXT-009: never hidden
   for (const line of installedExtensions.report) err(`avertissement : ${line}`);
   // SPEC-EXT-009 § 5.3 step 3, EF-03: with `extensions.managedOnly`, only the managed customisations and the managed
   // extensions count; the others are left out and reported.
   const managedOnlyCustomisation = settings.get<boolean>("extensions.managedOnly");
-  const extensions = loadExtensions(
-    [...installedExtensions.active, ...sessionExtensions.map((root) => ({ root, origin: "session" as const }))],
-    { options: settings.get<Record<string, unknown>>("extensions.options"), dataDir: (name) => join(locations.configDir, "extension-data", name) },
-  );
+  const contributions = (active: typeof installedExtensions.active, s: Settings) =>
+    loadExtensions([...active, ...sessionExtensions.map((root) => ({ root, origin: "session" as const }))], {
+      options: s.get<Record<string, unknown>>("extensions.options"),
+      dataDir: (name) => join(locations.configDir, "extension-data", name),
+    });
+  let extensions = contributions(installedExtensions.active, settings);
   for (const s of extensions.summaries) if (s.origin === "session") err(s.text); // SPEC-EXT-014 step 3
   for (const line of extensions.report) err(line);
   phase("extensions et compétences");
@@ -1384,8 +1404,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     app?.refresh();
   });
   // SPEC-SES-006: content of the changed files, by fingerprint, in the folder of the session (in memory without persistence).
+  const fileBlobs = new BlobStore(transcript ? join(transcript.sessionDir, "file-history") : undefined);
   const fileHistory = new FileHistory({
-    blobs: new BlobStore(transcript ? join(transcript.sessionDir, "file-history") : undefined),
+    blobs: fileBlobs,
     maxFileSize: settings.get<number>("sessions.snapshotMaxFileSize"),
     record: (data) => transcript?.append("file_snapshot", data as unknown as Record<string, unknown>),
     warn: (message) => err(`avertissement : ${message}`),
@@ -1789,6 +1810,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     const cold = reload.changed.filter((k) => !isHotKey(k));
     if (hot.length > 0) {
       rules.splice(0, rules.length, ...collectRules(liveSettings, locations.projectRoot, cwd, err));
+      reportMasked();
       debug.log("config", "settings applied during the session", { keys: hot });
     }
     if (cold.length > 0) err(`Paramètres modifiés : ${cold.join(", ")} ; ils prendront effet à la prochaine session.`); // EF-03, CA-02
@@ -2489,6 +2511,287 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         applySettingsChanges(); // applied at once for the hot settings
         const note = `${key} = ${JSON.stringify(value)} enregistré${isHotKey(key) ? ", appliqué immédiatement" : " ; il prendra effet à la prochaine session"}.`;
         return { shown: text(note), note };
+      }
+      case "access-rules": {
+        // SPEC-CMD-047: the rules by decision and scope with their source (EF-01), the masked ones (step 2, CA-01);
+        // a rule added after validation (EF-02, ERR-01) to the chosen scope, applied at once (EF-03).
+        const scopeFiles: Record<string, string> = { user: locations.userSettingsFile, project: locations.projectSettingsFile, local: locations.localSettingsFile };
+        const words = args.trim();
+        if (words === "") {
+          const lines: string[] = [];
+          for (const decision of ["allow", "ask", "deny"] as const) {
+            const list = rules.filter((r) => r.decision === decision);
+            lines.push(`${decision} :`, ...(list.length === 0 ? ["  aucune"] : list.map((r) => `  ${r.raw} — portée ${scopeName(r.scope)} (${ruleSource(r)})${r.scope === "project" ? ", visible par l'équipe" : ""}${r.scope === "managed" ? ", lecture seule" : ""}`)));
+          }
+          const masked = maskedRules(rules);
+          if (masked.length > 0) lines.push("Règles masquées :", ...masked.map((m) => `  ${describeMasking(m, ruleSource)}`));
+          return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
+        }
+        const verb = words.split(/\s+/, 1)[0]!;
+        let rest = words.slice(verb.length).trim();
+        const scopes: Record<string, "user" | "project" | "local"> = { user: "user", utilisateur: "user", project: "project", projet: "project", local: "local", locale: "local" };
+        const scopeMatch = rest.match(/\s(user|utilisateur|project|projet|local|locale)$/);
+        const scope = scopeMatch ? scopes[scopeMatch[1]!]! : undefined;
+        if (scopeMatch) rest = rest.slice(0, -scopeMatch[0].length).trim();
+        if (verb === "remove") {
+          const found = rules.filter((r) => r.raw === rest.replace(/\s+/g, " ") || r.raw === rest);
+          const writable = found.filter((r) => (scope ? r.scope === scope : r.scope in scopeFiles));
+          if (writable.length === 0) {
+            const locked = found.find((r) => !(r.scope in scopeFiles));
+            if (locked) return { refused: `Règle en lecture seule : ${locked.raw} (portée ${scopeName(locked.scope)}, ${ruleSource(locked)}).` }; // FA-01
+            return { refused: `Règle introuvable : ${rest}.` };
+          }
+          for (const r of writable) {
+            const key = ["permissions", `${r.decision}Rules`];
+            const list = readValueInSettingsFile(scopeFiles[r.scope]!, key);
+            if (Array.isArray(list)) setValueInSettingsFile(scopeFiles[r.scope]!, key, list.filter((x) => x !== r.raw), system.platform);
+          }
+          applySettingsChanges();
+          const note = `Règle retirée : ${rest}.`;
+          return { shown: text(note), note };
+        }
+        if (verb !== "allow" && verb !== "ask" && verb !== "deny") return { refused: "Usage : /access-rules [allow|ask|deny|remove <règle> [user|project|local]]." };
+        const target = scope ?? "local";
+        const parsed = parseRule(rest, verb, target, ruleAnchor(target, locations.projectRoot, cwd));
+        if (!isRule(parsed)) return { refused: `Règle invalide : ${parsed.message.replace(/\.$/, "")}.` }; // ERR-01
+        try {
+          appendRuleToSettingsFile(scopeFiles[target]!, `permissions.${verb}Rules`, parsed.raw, system.platform);
+        } catch (e) {
+          return { refused: `La règle n'a pas pu être enregistrée : ${(e as Error).message}` };
+        }
+        applySettingsChanges();
+        const lines = [`Règle ajoutée : ${verb} ${parsed.raw} (portée ${scopeName(target)}).`];
+        if (target === "project") lines.push("Elle est visible par l'équipe (paramètres partagés du projet)."); // RG-01
+        const broad = broadAllowWarning(parsed);
+        if (broad) lines.push(`Avertissement : ${broad}`); // CA-02
+        const masking = maskedRules(rules).find((m) => m.masked.raw === parsed.raw && m.masked.decision === verb);
+        if (masking) lines.push(describeMasking(masking, ruleSource));
+        return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
+      }
+      case "event-hooks": {
+        // SPEC-CMD-031: the hooks by event with their source (EF-01); managed and extension ones are read-only (EF-02, CA-01).
+        const scopeFiles: Record<string, string> = { user: locations.userSettingsFile, project: locations.projectSettingsFile, local: locations.localSettingsFile };
+        const snapshot = hooks.snapshot;
+        const words = args.trim();
+        const editable = (d: (typeof snapshot.declarations)[number]) => d.scope in scopeFiles;
+        if (words === "") {
+          const lines: string[] = [];
+          if (opt("no-hooks") === true || liveSettings.get<boolean>("hooksConfig.disabled")) lines.push("Les crochets sont désactivés pour cette session.");
+          const byEvent = new Map<string, typeof snapshot.declarations>();
+          for (const d of snapshot.declarations) byEvent.set(d.event, [...(byEvent.get(d.event) ?? []), d]);
+          if (byEvent.size === 0) lines.push("Aucun crochet.");
+          for (const [event, list] of byEvent) {
+            lines.push(`${event} (${list.length}) :`);
+            for (const d of list) {
+              const action = d.actions.map((a) => (a.type === "command" ? `commande « ${a.command} »` : `requête vers ${a.url}`)).join(", ");
+              lines.push(`  ${d.label}${d.match ? ` [${d.match}]` : ""} — ${action} — ${d.file}${editable(d) ? "" : " (non modifiable)"}`);
+            }
+          }
+          for (const i of snapshot.ignored) lines.push(`Ignoré : ${i.label} — ${i.reason}`);
+          return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
+        }
+        const [verb, ...rest] = words.split(/\s+/);
+        if (verb === "remove") {
+          const label = rest.join(" ");
+          const d = snapshot.declarations.find((x) => x.label === label);
+          if (!d) return { refused: `Crochet introuvable : ${label}.` };
+          if (!editable(d)) return { refused: `Ce crochet n'est pas modifiable : ${d.label}, source ${d.file}.` }; // CA-01
+          const list = readValueInSettingsFile(scopeFiles[d.scope]!, ["hooks", d.event]);
+          if (!Array.isArray(list)) return { refused: `Crochet introuvable dans ${d.file}.` };
+          const index = list.findIndex((x, i) => (d.id !== undefined ? (x as Record<string, unknown>)?.["id"] === d.id : d.label.endsWith(`/#${i + 1}`)));
+          if (index < 0) return { refused: `Crochet introuvable dans ${d.file}.` };
+          setValueInSettingsFile(scopeFiles[d.scope]!, ["hooks", d.event], list.filter((_, i) => i !== index), system.platform);
+          applySettingsChanges();
+          const note = `Crochet supprimé : ${d.label}.`;
+          return { shown: text(note), note };
+        }
+        if (verb === "add") {
+          // RG-01: validated against the schema; the risk of running code is recalled.
+          const [event, ...command] = rest;
+          if (!event || command.length === 0) return { refused: "Usage : /event-hooks add <événement> <commande>." };
+          if (!(event in HOOK_EVENTS)) return { refused: `Événement de crochet inconnu : ${event}.` };
+          const list = readValueInSettingsFile(locations.userSettingsFile, ["hooks", event]);
+          setValueInSettingsFile(locations.userSettingsFile, ["hooks", event], [...(Array.isArray(list) ? list : []), { actions: [{ type: "command", command: command.join(" ") }] }], system.platform);
+          applySettingsChanges();
+          const note = `Crochet ajouté à ${event} (portée utilisateur). Un crochet exécute du code à chaque événement : vérifiez la commande.`;
+          return { shown: text(note), note };
+        }
+        return { refused: "Usage : /event-hooks [add <événement> <commande> | remove <crochet>]." };
+      }
+      case "connectors": {
+        // SPEC-CMD-041: the state of each connector, up to date at opening (EF-01), its detail, a reconnection (CA-01).
+        const states: Record<string, string> = { connected: "connecté", connecting: "connexion en cours", pending: "en attente", error: "en échec", unavailable: "indisponible" };
+        const list = connectors?.status() ?? [];
+        const line = (s: (typeof list)[number]) => `${s.name} (${s.scope}) : ${states[s.state] ?? s.state}${s.error ? ` — ${maskSecrets(s.error)}` : ""}${s.state === "connected" ? `, ${s.tools} outil${s.tools > 1 ? "s" : ""}` : ""}`;
+        const [verb, name] = args.trim().split(/\s+/);
+        if (!verb) {
+          const lines = list.length === 0 ? ["Aucun connecteur."] : list.map(line);
+          return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
+        }
+        if (verb === "reconnect") {
+          if (!name || !list.some((s) => s.name === name)) return { refused: `Connecteur inconnu : ${name ?? ""}.` };
+          const after = await connectors!.reconnect(name);
+          const note = after ? line(after) : `Connecteur ${name} : reconnexion impossible.`;
+          return { shown: text(note), note };
+        }
+        const s = list.find((x) => x.name === verb);
+        if (!s) return { refused: `Connecteur inconnu : ${verb}.` };
+        const lines = [line(s), `Source : ${s.source}`, ...(s.stderr.length > 0 ? ["Dernières lignes d'erreur :", ...s.stderr.slice(-5).map((l) => `  ${maskSecrets(l)}`)] : [])];
+        return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
+      }
+      case "turn-changes": {
+        // SPEC-CMD-021: the view by turn from the history of the files (EF-01, CA-01); the view of the repository is the
+        // difference not recorded (FA-01: outside a repository, the view by turn only). Read-only (RG-01).
+        if (args.trim() === "dépôt" || args.trim() === "depot") {
+          const git = findExecutable("git");
+          const r = git ? runToCompletion(git, ["--no-optional-locks", "diff", "--no-color", "--no-ext-diff"], { cwd, env: env.childEnvironment({ GIT_TERMINAL_PROMPT: "0" }), timeoutMs: 10_000 }) : undefined;
+          if (!r || r.code !== 0) return { refused: "Hors d'un dépôt : seule la vue par tour est disponible." };
+          const note = r.stdout.trim() === "" ? "Aucune différence non enregistrée." : r.stdout.trimEnd();
+          return { shown: box(note.split("\n").map((l) => text(l))), note };
+        }
+        if (!transcript) return { refused: "Vue par tour indisponible : la session n'est pas enregistrée." };
+        const turns = changesByTurn(expandRestoreEvents(readTranscript(transcript.path).records), fileBlobs, settings.get<number>("sessions.snapshotMaxFileSize"));
+        const label = { created: "créé", modified: "modifié", deleted: "supprimé" } as const;
+        const lines = turns.length === 0 ? ["Aucun tour."] : [];
+        turns.forEach((t, i) => {
+          lines.push(`Tour ${i + 1} — « ${t.message.replace(/\s+/g, " ").slice(0, 60)} »`);
+          if (t.files.length === 0) lines.push("  aucune modification de fichier");
+          for (const f of t.files) {
+            lines.push(`  ${label[f.kind]} : ${relative(projectReal, f.path) || f.path}`);
+            if (f.diff === undefined) lines.push("    (contenu indisponible)");
+            else lines.push(...f.diff.split("\n").map((l) => `    ${l}`));
+          }
+        });
+        return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
+      }
+      case "restore": {
+        // SPEC-CMD-061 with the plan of SPEC-SES-006 § 5.7: a point, a preview whose confirmation is the consent for this
+        // plan (EF-01), a confirmation of its own for the external conflicts, whatever the mode (FA-01, CA-02), a plan
+        // computed again before applying and a new preview when it changed (CA-03).
+        if (!transcript || !app) return { refused: "Restauration indisponible : la session n'est pas enregistrée." };
+        const words = args.trim().split(/\s+/).filter(Boolean);
+        if (words.some((w) => w === "conversation" || w === "tout")) return { refused: "Seule la portée « code » est disponible dans cette version." };
+        const maxFileSize = settings.get<number>("sessions.snapshotMaxFileSize");
+        const records = () => expandRestoreEvents(readTranscript(transcript.path).records);
+        const turns = changesByTurn(records(), fileBlobs, maxFileSize);
+        if (turns.length === 0) return { refused: "Aucun message à reprendre." };
+        const wanted = words.find((w) => /^\d+$/.test(w));
+        let index: number;
+        if (wanted !== undefined) index = Number(wanted) - 1;
+        else {
+          // Step 1: the messages, with the files changed since each one.
+          const options = turns.map((t, i) => {
+            const since = [...new Set(turns.slice(i).flatMap((x) => x.files.map((f) => relative(projectReal, f.path) || f.path)))];
+            return { label: `${i + 1}. ${t.message.replace(/\s+/g, " ").slice(0, 50)}`, description: since.length > 0 ? `modifiés depuis : ${since.join(", ")}` : "aucun fichier modifié depuis" };
+          });
+          const answer = await app.choose("Rétablir les fichiers dans leur état d'avant quel message ?", options);
+          if (answer.kind !== "options") return { refused: "Restauration abandonnée." };
+          index = options.findIndex((o) => o.label === answer.labels[0]);
+        }
+        const point = turns[index]?.point;
+        if (point === undefined) return { refused: `Message introuvable : ${wanted}.` };
+        const rulesNow = liveSettings.get<boolean>("permissions.managedRulesOnly") ? rules.filter((r) => r.scope === "managed") : rules;
+        const denied = (path: string): string | undefined => {
+          if (!insideAllowed(path, [projectReal], system.platform)) return "hors du dossier de travail";
+          if (isProtectedPath(path, protectedPaths, system.platform)) return "emplacement protégé";
+          const rule = rulesNow.find((r) => r.decision === "deny" && WRITE_TOOLS.includes(r.tool) && ruleMatches(r, r.tool, { kind: "paths", access: "write", paths: [path] }, { cwd, home: system.home, platform: system.platform }));
+          return rule ? `refusé par la règle ${rule.raw}` : undefined;
+        };
+        const plan = () => computePlan({ session: sessionId, records: records(), point, root: projectReal, blobs: fileBlobs, maxFileSize, denied, platform: system.platform });
+        const lines = (t: string) => t.trimEnd().split("\n");
+        let current = plan();
+        for (;;) {
+          const preview = renderPlan(current);
+          if (current.operations.length + current.conflicts.length === 0) return { shown: box(lines(preview).map((l) => text(l))), note: preview.trimEnd() };
+          app.commit(box(lines(preview).map((l) => text(l))));
+          if (!(await app.confirm("Restaurer les fichiers selon ce plan ?", "restaurer", "annuler"))) return { refused: "Restauration abandonnée." };
+          if (current.conflicts.length > 0) {
+            // FA-01: the files and their differences (what is on disk, what the restoration writes), a consent of its own.
+            const diffs = current.conflicts.flatMap((f) => {
+              const now = observe(f.path, maxFileSize).bytes?.toString("utf8") ?? "";
+              const target = f.target.kind === "file" ? (fileBlobs.get(f.target.hash)?.toString("utf8") ?? "") : "";
+              return [`${relative(projectReal, f.path) || f.path} (modifié hors de l'agent) :`, ...unifiedDiff(now, target, relative(projectReal, f.path) || f.path).split("\n").map((l) => `  ${l}`)];
+            });
+            app.commit(box(diffs.map((l) => text(l))));
+            const question = `${current.conflicts.length} fichier${current.conflicts.length > 1 ? "s modifiés" : " modifié"} hors de l'agent ser${current.conflicts.length > 1 ? "ont" : "a"} écrasé${current.conflicts.length > 1 ? "s" : ""}. Confirmer pour ces conflits ?`;
+            if (!(await app.confirm(question, "écraser", "annuler"))) return { refused: "Restauration abandonnée : conflits non confirmés." };
+          }
+          // Step 4: the preconditions computed again; a plan that changed is shown again instead of being applied.
+          const again = plan();
+          if (again.fingerprint === current.fingerprint) break;
+          app.notice("warning", "Les fichiers ont changé depuis l'aperçu : voici le nouveau plan.");
+          current = again;
+        }
+        const snapshots: SnapshotRecord[] = [];
+        const outcome = applyPlan(current, { blobs: fileBlobs, maxFileSize, record: (s) => snapshots.push(s), platform: system.platform });
+        transcript.append("system", { event: "files_restored", point, fingerprint: current.fingerprint, restored: outcome.restored, failed: outcome.failed, snapshots });
+        const report = renderPlan(current, outcome);
+        return { shown: box(lines(report).map((l) => text(l))), note: report.trimEnd() };
+      }
+      case "extensions": {
+        // SPEC-CMD-049: the views installed, to discover, catalogues and errors; an installation presents the extension,
+        // its contributions and the executable code, and waits for the agreement of the user (EF-01, CA-01).
+        const lines: string[] = [];
+        const push = (t: string) => lines.push(...t.split("\n"));
+        const [verb, ref, scopeWord] = args.trim().split(/\s+/).filter(Boolean);
+        const ctx: ExtensionAdminContext = {
+          configDir: locations.configDir,
+          cwd,
+          platform: system.platform,
+          product: { name: identity.get("PRODUCT"), version: identity.version, cli: identity.get("PRODUCT_CLI") },
+          settings: liveSettings,
+          files: { user: locations.userSettingsFile, project: locations.projectSettingsFile, local: locations.localSettingsFile },
+          runner: { env: env.childEnvironment(), timeoutMs: 300_000 },
+          out: push,
+          err: push,
+          write: (_document, render) => push(render()),
+          confirm: async (question) => {
+            if (!app) return false;
+            app.commit(box(lines.splice(0).map((l) => text(l))));
+            return app.confirm(question, "installer", "annuler");
+          },
+        };
+        if (!verb || verb === "installées") extensionList(ctx, false);
+        else if (verb === "découvrir") extensionList(ctx, true);
+        else if (verb === "catalogues") catalogList(ctx);
+        else if (verb === "erreurs") {
+          const problems = [...installedExtensions.imposedProblems, ...installedExtensions.report, ...extensions.report];
+          lines.push(...(problems.length > 0 ? problems : ["Aucune erreur d'extension."]));
+        } else if (verb === "install") {
+          if (!ref) return { refused: "Usage : /extensions install <extension>@<catalogue> [user|project|local]." };
+          if (!app) return { refused: "L'installation demande l'accord de l'utilisateur dans l'interface." }; // EF-01
+          const scope = scopeOf(scopeWord);
+          if (!scope) return { refused: `Portée inconnue : ${scopeWord}.` };
+          const code = await extensionAdd(ctx, ref, scope, false);
+          if (code !== 0) return { refused: lines.join("\n") || "Installation impossible." }; // ERR-01, FA-01
+          lines.push("Elle sera chargée après /reload-extensions."); // step 3
+        } else return { refused: "Usage : /extensions [installées|découvrir|catalogues|erreurs|install <réf> [portée]]." };
+        return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
+      }
+      case "reload-extensions": {
+        // SPEC-CMD-054 § 5.3: the changes computed, the skills, commands and hooks reloaded, a report. A command typed
+        // during a turn waits for its end (EF-01); the problem of one extension leaves the others loaded (EF-02).
+        if (minimal) return { refused: "Session minimale : les extensions ne sont pas chargées." };
+        applySettingsChanges(); // step 1: the activations written since, by this session or another one
+        installedExtensions = await activation(liveSettings);
+        const next = contributions(installedExtensions.active, liveSettings);
+        const before = new Set(extensions.loaded.map((l) => l.id));
+        const after = new Set(next.loaded.map((l) => l.id));
+        const added = [...after].filter((id) => !before.has(id));
+        const removed = [...before].filter((id) => !after.has(id));
+        const connectorNames = (c: typeof extensions) => c.connectorSources.map((s) => s.source).sort().join("\n");
+        const connectorsChanged = connectorNames(next) !== connectorNames(extensions);
+        extensions = next;
+        skillLocations.splice(0, skillLocations.length, ...skillLocations.filter((l) => l.scope !== "extension"), ...next.skillLocations);
+        refreshSkills();
+        hooks.replaceSnapshot(hookSnapshot(liveSettings));
+        const lines = [
+          `Extensions rechargées : ${after.size} active${after.size > 1 ? "s" : ""}.`,
+          `Ajoutées : ${added.join(", ") || "aucune"} ; retirées : ${removed.join(", ") || "aucune"}.`,
+          ...(connectorsChanged ? ["Les connecteurs des extensions changés seront démarrés à la prochaine session."] : []),
+          ...[...installedExtensions.imposedProblems, ...installedExtensions.report, ...next.report].map((p) => `Erreur : ${p}`),
+        ];
+        return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
       }
       case "edit-mode": {
         // SPEC-IHM-013 EF-03, CA-06: switched during the input, the content kept, for this session.

@@ -66,6 +66,11 @@ export class HookRuntime implements HookBus {
     this.#snapshot = options.snapshot;
   }
 
+  /** The declarations in force (SPEC-CMD-031: the view of the hooks). */
+  get snapshot(): HookSnapshot {
+    return this.#snapshot;
+  }
+
   /** A new snapshot after a change of the settings (SPEC-HOK-002 FA-01, SPEC-CFG-005). */
   replaceSnapshot(snapshot: HookSnapshot): void {
     this.#snapshot = snapshot;

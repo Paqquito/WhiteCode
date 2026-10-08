@@ -181,11 +181,12 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "hooksConfig.maxAsync", schema: int(1, 64), default: 8, scopes: [U, G], owner: "SPEC-HOK-007" },
   { key: "hooksConfig.asyncKillOnExit", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-HOK-007" },
   // SPEC-EXT-009, SPEC-EXT-015: extensions (lot 4).
-  { key: "extensions.options", schema: Type.Record(Type.String(), Type.Unknown()), default: {}, scopes: [U, P, L, G], owner: "SPEC-EXT-015" },
+  // Hot: taken into account by /reload-extensions within the session (SPEC-CMD-054).
+  { key: "extensions.options", schema: Type.Record(Type.String(), Type.Unknown()), default: {}, scopes: [U, P, L, G], owner: "SPEC-EXT-015", hot: true },
   { key: "extensions.managedOnly", schema: bool(), default: false, scopes: [G], owner: "SPEC-EXT-009" },
   // Activations and catalogues merge key by key, the strongest scope last (SPEC-EXT-003 § 5.1: managed > local > project > user).
-  { key: "extensions.enabled", schema: Type.Record(Type.String(), Type.Boolean()), default: {}, scopes: [U, P, L, G], owner: "SPEC-EXT-002" },
-  { key: "extensions.catalogs", schema: Type.Record(Type.String(), Type.Unknown()), default: {}, scopes: [U, P, L, G], owner: "SPEC-EXT-004" },
+  { key: "extensions.enabled", schema: Type.Record(Type.String(), Type.Boolean()), default: {}, scopes: [U, P, L, G], owner: "SPEC-EXT-002", hot: true },
+  { key: "extensions.catalogs", schema: Type.Record(Type.String(), Type.Unknown()), default: {}, scopes: [U, P, L, G], owner: "SPEC-EXT-004", hot: true },
   { key: "extensions.strictCatalogs", schema: strList(), scopes: [G], owner: "SPEC-EXT-009" },
   { key: "extensions.blockedCatalogs", schema: strList(), default: [], scopes: [G], owner: "SPEC-EXT-009" },
   { key: "extensions.blocked", schema: strList(), default: [], scopes: [G], owner: "SPEC-EXT-009" },

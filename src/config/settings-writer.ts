@@ -22,6 +22,13 @@ export function appendRuleToSettingsFile(path: string, key: RuleListKey, rule: s
   writeAtomic(path, Buffer.from(applyEdits(text, edits), "utf8"), platform);
 }
 
+/** The value at `keyPath` in the settings file `path`, as written, or undefined. */
+export function readValueInSettingsFile(path: string, keyPath: readonly string[]): unknown {
+  let value: unknown = parseJsonc(readSettingsFile(path) ?? "{}");
+  for (const k of keyPath) value = typeof value === "object" && value !== null ? (value as Record<string, unknown>)[k] : undefined;
+  return value;
+}
+
 /** Sets `value` at `keyPath` in the settings file `path`, keeping its comments and layout (SPEC-API-008 step 2, SPEC-CFG-009). */
 export function setValueInSettingsFile(path: string, keyPath: readonly string[], value: unknown, platform: PlatformName): void {
   const text = readSettingsFile(path) ?? "{}\n";

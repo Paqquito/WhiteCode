@@ -27,5 +27,12 @@ export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
   { name: "planning", description: "Passe en mode planification ; avec une description, l'envoie au modèle.", kind: "mixed", widening: false, usage: "[description]" },
   { name: "condense", description: "Résume la conversation pour libérer le contexte, selon les consignes données.", kind: "action", widening: false, usage: "[consignes]" },
   { name: "preferences", description: "Affiche ou modifie un réglage de l'utilisateur.", kind: "action", widening: true, usage: "[clé [valeur]]" },
+  { name: "access-rules", description: "Affiche les règles d'accès par décision et par portée, les règles masquées ; ajoute ou retire une règle.", kind: "action", widening: true, usage: "[allow|ask|deny|remove <règle> [user|project|local]]" },
+  { name: "event-hooks", description: "Affiche les crochets par événement avec leur source ; ajoute ou supprime un crochet.", kind: "action", widening: true, usage: "[add <événement> <commande> | remove <crochet>]" },
+  { name: "connectors", description: "Affiche les connecteurs et leur état ; reconnecte un connecteur.", kind: "action", widening: false, usage: "[<nom> | reconnect <nom>]" },
+  { name: "turn-changes", description: "Affiche les modifications de fichiers de chaque tour ; « dépôt » : les différences non enregistrées du dépôt.", kind: "display", widening: false, usage: "[dépôt]" },
+  { name: "restore", description: "Rétablit les fichiers dans leur état d'avant un message, après aperçu et confirmation.", kind: "action", widening: false, usage: "[numéro du message] [code]", interactiveOnly: true },
+  { name: "extensions", description: "Gère les extensions : installées, découvrir, catalogues, erreurs ; install <réf> après présentation et accord.", kind: "action", widening: true, usage: "[installées|découvrir|catalogues|erreurs|install <réf> [user|project|local]]" },
+  { name: "reload-extensions", description: "Recharge les extensions : compétences, commandes et crochets ajoutés ou retirés, avec un rapport.", kind: "action", widening: true },
   { name: "shortcuts", description: "Affiche les raccourcis clavier effectifs ; reset rétablit ceux par défaut.", kind: "mixed", widening: false, usage: "[reset]", interactiveOnly: true },
 ];
