@@ -36,7 +36,9 @@ export type EngineEvent =
   | { readonly type: "micro_compacted"; readonly removed: number; readonly reason: "threshold" | "idle" }
   /** Unproductive loop detected (SPEC-MOT-046 § 7.2). */
   | { readonly type: "loop_detected"; readonly callId: string; readonly toolName: string; readonly count: number }
-  | { readonly type: "turn_completed"; readonly result: TurnResult };
+  | { readonly type: "turn_completed"; readonly result: TurnResult }
+  /** The consumption of one request, by model (SPEC-CMD-016: the cost detailed by model). */
+  | { readonly type: "usage"; readonly model: string; readonly usage: Usage; readonly cost?: number };
 
 export interface UsageTotals extends Usage {}
 

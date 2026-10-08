@@ -1598,6 +1598,16 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     stream?.engine(event);
     app?.onEngineEvent(event);
     control?.engineEvent(event);
+    if (event.type === "usage") {
+      const u = usageByModel.get(event.model) ?? { requests: 0, input: 0, output: 0, cost: 0, costKnown: true };
+      usageByModel.set(event.model, {
+        requests: u.requests + 1,
+        input: u.input + event.usage.inputTokens + event.usage.cacheReadTokens + event.usage.cacheWriteTokens,
+        output: u.output + event.usage.outputTokens,
+        cost: u.cost + (event.cost ?? 0),
+        costKnown: u.costKnown && event.cost !== undefined,
+      });
+    }
     if (event.type === "warning" && !app) err(`avertissement : ${event.message}`);
     if (progress && event.type === "tool_call" && !app) err(`… ${event.name}`);
     if (event.type === "permission" && event.decision === "deny") debug.log("permissions", "denied", { callId: event.callId, step: event.step });
@@ -1676,6 +1686,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const controlContext: Reminder[] = [];
   // SPEC-MOT-009 EF-03: an interrupted turn is announced to the model at the next request.
   const interruptionNotes: Reminder[] = [];
+  // SPEC-CMD-016: the consumption by model, sub-agents and side requests included.
+  const usageByModel = new Map<string, { requests: number; input: number; output: number; cost: number; costKnown: boolean }>();
   // SPEC-MOT-006 step 5: the files changed outside the agent since they were read.
   const changeNotes: Reminder[] = [];
   const changeNotified = new Map<string, string>();
@@ -2161,7 +2173,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           agentId,
           // Its events stay its own; warnings reach the session.
           emit: (e) => {
-            if (e.type === "warning" || e.type === "retry") emit(e);
+            if (e.type === "warning" || e.type === "retry" || e.type === "usage") emit(e);
           },
           executor: {
             ...loopDeps.executor,
@@ -2412,6 +2424,62 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         }
         return { shown: text(`Conversation enregistrée dans ${path}.`), note: `Conversation enregistrée dans ${path}.` };
       }
+      case "status": {
+        // SPEC-CMD-067: the state of the session, without any secret (EF-01); a connector in error is listed as such (CA-01).
+        const states: Record<string, string> = { connected: "connecté", connecting: "connexion en cours", pending: "en attente", error: "en échec", unavailable: "indisponible" };
+        const lines = [
+          `${identity.get("PRODUCT")} ${identity.version}`,
+          `Session : ${sessionId}${transcript ? "" : " (non enregistrée)"}`,
+          `Dossier : ${projectReal}`,
+          `Fournisseur : ${providerId} · modèle : ${resolvedModel.id}`,
+          `Mode de permission : ${modeState.mode}`,
+          `Confiance du projet : ${trust.trusted ? "accordée" : "non accordée"}`,
+          "Connecteurs :",
+          ...((connectors?.status() ?? []).length === 0
+            ? ["  aucun"]
+            : connectors!.status().map((s) => `  ${s.name} (${s.scope}) : ${states[s.state] ?? s.state}${s.error ? ` — ${maskSecrets(s.error)}` : ""}${s.state === "connected" ? `, ${s.tools} outil${s.tools > 1 ? "s" : ""}` : ""}`)),
+        ];
+        return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
+      }
+      case "context-usage": {
+        // SPEC-CMD-014, SPEC-MOT-010 CA-03: the categories, whose sum is the total shown.
+        const parts = meter.breakdown(conversation.system, conversation.tools, conversation.messages);
+        const names: Record<string, string> = { system: "Instructions système", tools: "Outils", messages: "Messages", attachments: "Pièces jointes" };
+        const total = Object.values(parts).reduce((a, b) => a + b, 0);
+        const window = meter.effectiveWindow;
+        const row = (label: string, n: number) => `${label.padEnd(22)} ${String(n).padStart(9)}  ${((100 * n) / window).toFixed(1).padStart(5)} %`;
+        const lines = ["Catégorie                  Jetons  Fenêtre", ...Object.entries(parts).map(([k, n]) => row(names[k] ?? k, n)), row("Total", total), `Fenêtre effective : ${window} jetons (estimation locale).`];
+        return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
+      }
+      case "spending": {
+        // SPEC-CMD-016: by model (CA-01), as estimates (EF-01); a model without price in tokens.
+        const lines = ["Consommation de la session (estimations) :"];
+        if (usageByModel.size === 0) lines.push("  aucune requête pour l'instant.");
+        for (const [model, u] of usageByModel) {
+          const amount = u.costKnown ? `≈ ${u.cost.toFixed(4)} ${ledger.snapshot.currency}` : "tarif inconnu";
+          lines.push(`  ${model} : ${u.requests} requête${u.requests > 1 ? "s" : ""}, ${u.input} jetons en entrée, ${u.output} en sortie — ${amount}`);
+        }
+        const snap = ledger.snapshot;
+        if (!snap.unknownCost) lines.push(`Total : ≈ ${snap.confirmed.toFixed(4)} ${snap.currency}.`);
+        return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
+      }
+      case "background-tasks": {
+        // SPEC-CMD-070 CA-01: the active tasks are listed, with their state.
+        const tasks = background.tasks;
+        const lines = tasks.length === 0 ? ["Aucune tâche de fond."] : tasks.map((t) => `${t.id}  ${t.status === "running" ? "en cours" : t.status}  ${t.description}${t.status === "running" ? ` (${Math.round((Date.now() - t.startedAt) / 1000)} s)` : ""}`);
+        return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
+      }
+      case "skill-list": {
+        // SPEC-CMD-065 CA-01: by source.
+        const scopes: Record<string, string> = { managed: "organisation", user: "utilisateur", project: "projet", extension: "extension" };
+        const byScope = new Map<string, string[]>();
+        for (const s of skillSet.skills.values()) {
+          const key = s.extension ? `extension ${s.extension}` : (scopes[s.scope] ?? s.scope);
+          byScope.set(key, [...(byScope.get(key) ?? []), `  ${s.name} — ${s.description}${s.tools.length > 0 ? ` (outils : ${s.tools.join(", ")})` : ""}`]);
+        }
+        const lines = byScope.size === 0 ? ["Aucune compétence disponible."] : [...byScope].flatMap(([k, v]) => [`${k[0]!.toUpperCase()}${k.slice(1)} :`, ...v]);
+        return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
+      }
       case "allow-dir": {
         // SPEC-CMD-002 § 5.3: validated, added for the session, the model informed by a reminder (gap E-101).
         const wanted = args.trim();
@@ -2557,6 +2625,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     return bySignal ? ExitCode.Interrupted : ExitCode.Success;
   }
 
+  let commandsShown = 0;
   // SPEC-MOD-004: the structured result of the run, or why there is none.
   let structured: { attempts: number; value?: unknown; surrounding?: string; errors: string[]; lastText: string } | undefined;
   if (!app) {
@@ -2808,7 +2877,15 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       else err(outcome.refused);
       continue;
     }
-    let result = outcome.result!;
+    if (!outcome.result) {
+      // A command that shows something (SPEC-CMD-014 CA-01: its text in an automated run).
+      const output = outcome.note ?? "";
+      if (stream) stream.emit("command_output", { output });
+      else if (output) streams.writeOut(output.endsWith("\n") ? output : `${output}\n`);
+      commandsShown++;
+      continue;
+    }
+    let result = outcome.result;
     // SPEC-MOD-004 steps 4 to 6: the result extracted and validated; FA-01: a bounded number of corrections (EF-03, EF-07).
     if (outputSchema && !("error" in outputSchema) && result.stopCause === "completed") {
       const strict = settings.get<boolean>("engine.output.schemaStrictExtraction");
@@ -2843,6 +2920,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     const haltReason = controlEnd.kind === "refused" ? "error" : controlEnd.kind === "broken" || bySignal ? "interrupted" : "completed";
     stream?.close({ result: "", haltReason, ...(controlEnd.kind === "refused" ? { message: controlEnd.message } : {}), exitCode, turns: 0, iterations: 0 });
     return exitCode;
+  }
+  if (results.length === 0 && commandsShown > 0) {
+    // Only commands: nothing for the model, a success.
+    stream?.close({ result: "", haltReason: "completed", exitCode: ExitCode.Success, turns: 0, iterations: 0 });
+    return ExitCode.Success;
   }
   if (results.length === 0) {
     if (controller.signal.aborted && bySignal) {

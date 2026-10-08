@@ -351,6 +351,7 @@ export class ControlSession {
           ops.turnEnded(outcome.result);
           this.channel.notify({ kind: "turn_completed", turn: this.results.length, haltReason: outcome.result.stopCause });
         } else if (outcome.refused !== undefined && !item.done) ops.inputError("invalid_command", outcome.refused);
+        else if (outcome.shown !== undefined && !item.done) ops.event("command_output", { output: outcome.shown });
         item.done?.(
           outcome.result
             ? { result: outcome.result.finalText, haltReason: outcome.result.stopCause }

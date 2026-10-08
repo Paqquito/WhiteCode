@@ -319,6 +319,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
       else ledger.settle(reservation, responseCost);
     }
     if (response.usageReported === false) usageUnknown = true;
+    deps.emit({ type: "usage", model: requestModel.id, usage: response.usage, ...(response.usageReported !== false && responseCost !== undefined ? { cost: responseCost } : {}) });
     const assistant = response.assistant;
     conv.appendAssistant(assistant); // verbatim, thinking blocks included (D-12)
     if (deps.context) {

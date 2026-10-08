@@ -17,5 +17,10 @@ export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
   { name: "reopen", description: "Reprend une autre session du projet à la place de la courante.", kind: "action", widening: false, usage: "[identifiant ou nom]", interactiveOnly: true },
   { name: "retitle", description: "Donne un titre à la session.", kind: "action", widening: false, usage: "[titre]" },
   { name: "save-transcript", description: "Enregistre la conversation dans un fichier texte, valeurs sensibles masquées.", kind: "action", widening: false, usage: "[fichier]" },
+  { name: "status", description: "Affiche l'état de la session : version, modèle, mode, dossier, connecteurs.", kind: "display", widening: false },
+  { name: "context-usage", description: "Affiche la répartition du contexte par catégorie.", kind: "display", widening: false },
+  { name: "spending", description: "Affiche la consommation et le coût estimé de la session, par modèle.", kind: "display", widening: false },
+  { name: "background-tasks", description: "Liste les tâches de fond de la session.", kind: "display", widening: false },
+  { name: "skill-list", description: "Liste les compétences disponibles, par source.", kind: "display", widening: false },
   { name: "shortcuts", description: "Affiche les raccourcis clavier effectifs ; reset rétablit ceux par défaut.", kind: "mixed", widening: false, usage: "[reset]", interactiveOnly: true },
 ];
