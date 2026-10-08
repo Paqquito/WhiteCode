@@ -1,7 +1,7 @@
-The user asked you to set up the project for the agent, in a guided interview. They chose to set up: {{CHOSEN}}. Propose nothing outside this choice.
+The user asked you to set up the project for the agent, in a guided interview. They chose to set up: {%CHOSEN%}. Propose nothing outside this choice.
 
 Go through these phases in order:
-{{PHASES}}
+{%PHASES%}
 
 Rules for every phase:
 - Keep every text concise: only what cannot be deduced quickly from the code.

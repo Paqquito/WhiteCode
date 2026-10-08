@@ -35,7 +35,8 @@ export interface SetupNames {
   readonly localSettings: string;
 }
 
-const fill = (template: string, values: Record<string, string>) => template.replace(/\{\{([A-Z_]+)\}\}/g, (all, name: string) => values[name] ?? all);
+/** `{%NAME%}`: a value given when the request is built (`{{…}}` stays reserved to the identity, resolved at build time). */
+export const fill = (template: string, values: Readonly<Record<string, string>>) => template.replace(/\{%([A-Z_]+)%\}/g, (all, name: string) => values[name] ?? all);
 
 /** § 5.3 (first version) or FA-01 (guided version, EF-03: only the phases of the chosen elements). */
 export function createInstructionsRequest(names: SetupNames, guided: boolean, choices: readonly SetupChoice[]): string {
