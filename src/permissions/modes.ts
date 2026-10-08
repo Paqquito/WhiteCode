@@ -24,7 +24,7 @@ export function isModeAvailable(mode: PermissionMode, a: ModeAvailability): bool
   }
 }
 
-function unavailableReason(mode: PermissionMode, a: ModeAvailability): string {
+export function unavailableReason(mode: PermissionMode, a: ModeAvailability): string {
   if (mode === "unrestricted" && a.disableUnrestricted) return "Ce mode est désactivé par votre administrateur.";
   if (mode === "unrestricted") return "Le mode unrestricted n'est accessible qu'avec l'option --allow-unrestricted-mode.";
   if (mode === "auto_approve" && a.disableAutoApprove) return "Ce mode est désactivé par votre administrateur.";

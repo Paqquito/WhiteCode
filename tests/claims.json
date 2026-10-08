@@ -1,5 +1,5 @@
 {
-  "increment": "lot 5, incrément 8",
+  "increment": "lot 6, incrément 1",
   "claims": {
     "SPEC-API-001": [
       "CA-01",
@@ -102,7 +102,11 @@
       "CA-06",
       "CA-07",
       "CA-08",
-      "CA-09"
+      "CA-09",
+      "CA-10"
+    ],
+    "SPEC-CMD-002": [
+      "CA-01"
     ],
     "SPEC-CMD-030": [
       "CA-01"
@@ -424,6 +428,23 @@
       "CA-13",
       "CA-17",
       "CA-19"
+    ],
+    "SPEC-MOD-006": [
+      "CA-01",
+      "CA-02",
+      "CA-03",
+      "CA-04",
+      "CA-05",
+      "CA-06",
+      "CA-07",
+      "CA-08",
+      "CA-09",
+      "CA-10",
+      "CA-11",
+      "CA-12",
+      "CA-13",
+      "CA-14",
+      "CA-15"
     ],
     "SPEC-MOD-009": [
       "CA-01",

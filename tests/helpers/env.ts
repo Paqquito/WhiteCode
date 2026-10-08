@@ -78,21 +78,28 @@ export interface CapturedStreams extends StandardStreams {
   readonly err: string[];
 }
 
-export function captureStreams(options: { stdin?: string; tty?: boolean } = {}): CapturedStreams {
+export function captureStreams(options: { stdin?: string; tty?: boolean; stdinSource?: AsyncIterable<string>; onOut?: (text: string) => void } = {}): CapturedStreams {
   const out: string[] = [];
   const err: string[] = [];
   return {
     out,
     err,
-    writeOut: (t) => void out.push(t),
+    writeOut: (t) => {
+      out.push(t);
+      options.onOut?.(t);
+    },
     writeErr: (t) => void err.push(t),
     readAllStdin: async () => options.stdin ?? "",
     stdinLines: async function* () {
+      if (options.stdinSource) {
+        yield* options.stdinSource;
+        return;
+      }
       const lines = (options.stdin ?? "").split(/\r?\n/);
       if (lines[lines.length - 1] === "") lines.pop();
       yield* lines;
     },
-    stdinIsTTY: options.tty ?? options.stdin === undefined,
+    stdinIsTTY: options.tty ?? (options.stdin === undefined && options.stdinSource === undefined),
     stdoutIsTTY: options.tty ?? false,
   };
 }
@@ -126,6 +133,10 @@ export async function cli(
     provider?: ModelProvider;
     env?: Record<string, string>;
     stdin?: string;
+    /** A live standard input, read line by line while the run goes on. */
+    stdinSource?: AsyncIterable<string>;
+    /** Called with each write to the standard output, as it happens. */
+    onOut?: (text: string) => void;
     tty?: boolean;
     signal?: AbortSignal;
     identity?: Identity;
@@ -138,7 +149,7 @@ export async function cli(
   if (options.userConfig !== null) {
     writeFileSync(join(ws.configHome, "config.json"), JSON.stringify(deepMerge(TEST_USER_CONFIG, options.userConfig ?? {})));
   }
-  const streams = captureStreams({ stdin: options.stdin, tty: options.tty });
+  const streams = captureStreams({ stdin: options.stdin, tty: options.tty, stdinSource: options.stdinSource, onOut: options.onOut });
   const env: Record<string, string> = {
     [`${identity.get("ENV_PREFIX")}CONFIG_HOME`]: ws.configHome,
     ...options.env,

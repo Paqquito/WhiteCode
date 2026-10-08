@@ -214,6 +214,10 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "engine.startup.deferredMaintenance", schema: bool(), default: true, scopes: [U], owner: "SPEC-MOD-010" },
   { key: "engine.startup.verboseLog", schema: bool(), default: false, scopes: [U], owner: "SPEC-MOD-010" },
   // SPEC-MOD-004: structured output (lot 5).
+  { key: "engine.control.enabled", schema: bool(), default: false, scopes: [U, P], owner: "SPEC-MOD-006" },
+  { key: "engine.control.responseTimeoutMs", schema: int(1_000, 600_000), default: 120_000, scopes: [U, P], owner: "SPEC-MOD-006" },
+  { key: "engine.control.maxInFlight", schema: int(1, 1_000), default: 32, scopes: [U], owner: "SPEC-MOD-006" },
+  { key: "engine.control.allowEscalation", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-MOD-006" },
   { key: "engine.output.schemaRetries", schema: int(0, 5), default: 2, scopes: [U, P], owner: "SPEC-MOD-004" },
   { key: "engine.output.schemaStrictExtraction", schema: bool(), default: false, scopes: [U, P], owner: "SPEC-MOD-004" },
   { key: "engine.output.schemaMaxDepth", schema: int(1, 100), default: 12, scopes: [U], owner: "SPEC-MOD-004" },

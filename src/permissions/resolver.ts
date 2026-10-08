@@ -1,4 +1,5 @@
 // Implements: SPEC-PER-001 (§ 5.3 handling of an `ask` decision, points a to d, resolution table, FA-01, FA-02, EF-10, EF-12, RG-05, RG-06)
+// Supports: SPEC-PER-028 (§ 5.2 point 1: the designated control host first), SPEC-MOD-006 (§ 5.4 step 5, RG-05)
 // Only designated or habilitated authorities decide; their mere presence is not enough (RG-06).
 
 import type { PermissionMode } from "../config/settings-schema";
@@ -48,6 +49,17 @@ export interface DecisionDelegate {
   decide(request: ApprovalRequest, signal: AbortSignal): Promise<"allow" | "deny" | undefined>;
 }
 
+/** Answer of a designated control host (SPEC-MOD-006 § 5.3): parameters replaced are evaluated again by the executor (EF-11). */
+export type HostDecision =
+  | { readonly decision: "allow" }
+  | { readonly decision: "allow_modified"; readonly input: Record<string, unknown> }
+  | { readonly decision: "deny"; readonly reason: string };
+
+/** Control host designated as the decision authority of the run; `undefined`: not consulted (not designated, demand not handled). */
+export interface ControlAuthority {
+  decide(request: ApprovalRequest, signal: AbortSignal): Promise<HostDecision | undefined>;
+}
+
 /** Habilitated `approval_needed` hook (§ 5.3 point c). */
 export interface ApprovalHook {
   decide(request: ApprovalRequest, signal: AbortSignal): Promise<"allow" | "deny" | undefined>;
@@ -60,14 +72,16 @@ export interface ApprovalClassifier {
 
 export interface Authorities {
   readonly human?: HumanApprovalChannel;
+  /** Designated control host (SPEC-MOD-006): in the place of the human interface, and first in `no_prompt` (SPEC-PER-028). */
+  readonly controlHost?: ControlAuthority;
   readonly delegate?: DecisionDelegate;
   readonly habilitatedHook?: ApprovalHook;
   readonly classifier?: ApprovalClassifier;
 }
 
 export type Resolution =
-  | { readonly decision: "allow"; readonly by: "human" | "delegate" | "hook" | "classifier"; readonly persist?: { scope: string; rule: string } }
-  | { readonly decision: "deny"; readonly by: "human" | "delegate" | "hook" | "classifier" | "none"; readonly reason: string; readonly stopTurn?: boolean };
+  | { readonly decision: "allow"; readonly by: "human" | "control_host" | "delegate" | "hook" | "classifier"; readonly persist?: { scope: string; rule: string }; readonly input?: Record<string, unknown> }
+  | { readonly decision: "deny"; readonly by: "human" | "control_host" | "delegate" | "hook" | "classifier" | "none"; readonly reason: string; readonly stopTurn?: boolean };
 
 /**
  * Refusal without any authority (decisions D-21 and D-22, correction D-9): the message names the action, says that nobody
@@ -89,8 +103,10 @@ export async function resolveAsk(
   authorities: Authorities,
   signal: AbortSignal,
 ): Promise<Resolution> {
-  // Point a: no_prompt, any origin: only a designated delegate; never a dialog nor a hook.
+  // Point a: no_prompt, any origin: only a designated delegate, the control host first (SPEC-PER-028 § 5.2); never a dialog nor a hook.
   if (mode === "no_prompt") {
+    const host = await askHost(request, authorities.controlHost, signal);
+    if (host) return host;
     if (authorities.delegate) {
       const d = await authorities.delegate.decide(request, signal);
       if (d === "allow") return { decision: "allow", by: "delegate" };
@@ -104,6 +120,8 @@ export async function resolveAsk(
     const verdict = authorities.classifier ? await authorities.classifier.decide(request, signal) : "unavailable";
     if (verdict === "allow") return { decision: "allow", by: "classifier" };
     if (verdict === "block") return { decision: "deny", by: "classifier", reason: "Blocked by the approval classifier." };
+    const host = await askHost({ ...request, reason: `${request.reason} (approval classifier unavailable)` }, authorities.controlHost, signal);
+    if (host) return host;
     if (authorities.human) return askHuman({ ...request, reason: `${request.reason} (approval classifier unavailable)` }, authorities.human, signal);
     return { decision: "deny", by: "none", reason: noAuthority(request, "The approval classifier is unavailable.") };
   }
@@ -114,6 +132,8 @@ export async function resolveAsk(
     if (h === "allow") return { decision: "allow", by: "hook" };
     if (h === "deny") return { decision: "deny", by: "hook", reason: "Denied by an approval hook." };
   }
+  const host = await askHost(request, authorities.controlHost, signal);
+  if (host) return host;
   if (authorities.human) return askHuman(request, authorities.human, signal);
   if (authorities.delegate) {
     const d = await authorities.delegate.decide(request, signal);
@@ -121,6 +141,16 @@ export async function resolveAsk(
     if (d === "deny") return { decision: "deny", by: "delegate", reason: "Denied by the designated delegate." };
   }
   return { decision: "deny", by: "none", reason: noAuthority(request, decision.reason) };
+}
+
+/** The designated control host; `undefined` when it is not consulted, so that the next authority answers (SPEC-MOD-006 FA-01). */
+async function askHost(request: ApprovalRequest, host: ControlAuthority | undefined, signal: AbortSignal): Promise<Resolution | undefined> {
+  if (!host) return undefined;
+  const d = await host.decide(request, signal);
+  if (!d) return undefined;
+  if (d.decision === "allow") return { decision: "allow", by: "control_host" };
+  if (d.decision === "allow_modified") return { decision: "allow", by: "control_host", input: d.input };
+  return { decision: "deny", by: "control_host", reason: d.reason };
 }
 
 async function askHuman(request: ApprovalRequest, human: HumanApprovalChannel, signal: AbortSignal): Promise<Resolution> {

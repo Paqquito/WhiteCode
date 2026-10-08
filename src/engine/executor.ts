@@ -1,5 +1,6 @@
 // Implements: SPEC-MOT-002 (§ 5.3, EF-01 to EF-07, FA-02 to FA-05, RG-01 to RG-04, ERR-01 to ERR-03, CA-01 to CA-06, CA-08), SPEC-OUT-001 (FA-01, EF-02, EF-05, EF-06, CA-03),
-//             SPEC-MOT-046 (§ 5.1 detection before the hook and the permission, § 5.3 points 2 to 5, FA-01 to FA-03, EF-01 to EF-04)
+//             SPEC-MOT-046 (§ 5.1 detection before the hook and the permission, § 5.3 points 2 to 5, FA-01 to FA-03, EF-01 to EF-04),
+//             SPEC-MOD-006 (FA-05, CA-03 parameters replaced by the control host evaluated again)
 // Supports: SPEC-HOK-010 (EF-03 input changed by a hook validated again, ERR-01, ERR-02), SPEC-SES-006 (backup before a write, EF-01), SPEC-PER-001 (decision then resolution of `ask`, CA-05 persisted answer), SPEC-PER-003 (CA-08 revalidation), SPEC-OUT-003 (EF-06 difference shown), gaps E-022, E-049
 
 import type { PermissionMode } from "../config/settings-schema";
@@ -37,6 +38,21 @@ export interface ExecutorDeps {
 }
 
 type Gate = "execute" | "refused" | "truncated" | "aborted";
+
+/** Successive replacements of the parameters by a control host before the call is refused (SPEC-MOD-006 FA-05). */
+const MAX_HOST_REVISIONS = 3;
+
+/** Canonical form of parameters, to bind an approval to exactly them (SPEC-PER-001 EF-10). */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonical((value as Record<string, unknown>)[k])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
 
 /** Time left to a tool with its own limit to stop its processes and report before the executor gives up. */
 const TOOL_STOP_MARGIN_MS = 5_000;
@@ -205,40 +221,67 @@ export class ResponseExecution {
         }
       }
 
-      // Hook first (step 2 of § 5.3): a changed input is the one shown, decided and executed (SPEC-HOK-010 EF-03, CA-03).
-      const hook = await this.#deps.hooks.beforeTool(call);
-      if (hook.stopTurn) this.#stopTurnRequested = true;
-      if (hook.conflict) return finish(textOutcome(`Blocked: ${hook.reason ?? "several hooks change this call in incompatible ways."}`, true, "permission_denied"), false); // SPEC-HOK-010 ERR-01
-      if (hook.modifiedInput) {
-        const changed = { ...(call.input as Record<string, unknown>), ...hook.modifiedInput };
-        const errors = this.#deps.registry.validateInput(tool, changed);
-        const business = errors.length === 0 ? tool.validate?.(changed as never, ctx) : undefined;
-        if (errors.length > 0 || business) {
-          return finish(textOutcome(`Blocked: the parameters changed by a hook are invalid: ${[...errors, ...(business ? [business] : [])].join("; ")}.`, true, "invalid_input"), false); // SPEC-HOK-010 ERR-02
+      // Hook, decision and resolution (steps 2 and 3 of § 5.3). Parameters replaced by a control host go through them
+      // again, as if they came from the model (SPEC-MOD-006 FA-05, SPEC-PER-001 EF-11); its approval covers exactly them.
+      let approvedByHost: string | undefined;
+      let replacedByHost = false;
+      let preview: Awaited<ReturnType<NonNullable<typeof tool.preview>>> | undefined;
+      let subject: RuleSubject;
+      let query: PermissionQuery;
+      let decision: Decision;
+      let pctx: ReturnType<ExecutorDeps["permissionContext"]>;
+      for (let round = 0; ; round++) {
+        // Hook first (step 2 of § 5.3): a changed input is the one shown, decided and executed (SPEC-HOK-010 EF-03, CA-03).
+        const hook = await this.#deps.hooks.beforeTool(call);
+        if (hook.stopTurn) this.#stopTurnRequested = true;
+        if (hook.conflict) return finish(textOutcome(`Blocked: ${hook.reason ?? "several hooks change this call in incompatible ways."}`, true, "permission_denied"), false); // SPEC-HOK-010 ERR-01
+        if (hook.modifiedInput) {
+          const changed = { ...(call.input as Record<string, unknown>), ...hook.modifiedInput };
+          const errors = this.#deps.registry.validateInput(tool, changed);
+          const business = errors.length === 0 ? tool.validate?.(changed as never, ctx) : undefined;
+          if (errors.length > 0 || business) {
+            return finish(textOutcome(`Blocked: the parameters changed by a hook are invalid: ${[...errors, ...(business ? [business] : [])].join("; ")}.`, true, "invalid_input"), false); // SPEC-HOK-010 ERR-02
+          }
+          call = { ...call, input: changed };
         }
-        call = { ...call, input: changed };
+
+        // Difference, or refusal found before asking (SPEC-OUT-003 EF-06).
+        preview = tool.preview ? await tool.preview(call.input as never, ctx) : undefined;
+        if (preview && "refusal" in preview) return finish(preview.refusal);
+
+        // Permission decision, then resolution of an `ask` (step 3 of § 5.3).
+        pctx = this.#deps.permissionContext();
+        subject = tool.ruleSubject(call.input as never, ctx);
+        const target = subject;
+        query = {
+          toolName: tool.name,
+          subject,
+          flags: tool.flags(call.input as never),
+          contribution: tool.permissionContribution?.(call.input as never, ctx),
+          hookDecision: hook.decision,
+          hookReason: hook.reason,
+          available: true,
+          fileWriteInsideAllowed: target.kind === "paths" && target.access === "write" && target.paths.every((p) => insideAllowed(p, ctx.allowedDirectories, ctx.platform)),
+        };
+        decision = decide(query, pctx);
+        // The host already approved these very parameters: a decision `ask` on them is its answer (RG-06 of SPEC-MOD-006).
+        if (decision.kind === "ask" && approvedByHost === canonical(call.input)) {
+          this.#deps.emit({ type: "permission", callId: call.callId, decision: "allow", reason: "approved by control_host (parameters replaced)", step: decision.step });
+          break;
+        }
+        const resolved = await this.#resolve(call, tool, decision, pctx.mode, preview && "diff" in preview ? preview : undefined, signal, subject);
+        if (!resolved.allowed) return finish(await this.#refuse(call, resolved.reason, decision.step), false);
+        if (!resolved.input) break;
+        if (round + 1 >= MAX_HOST_REVISIONS) return finish(await this.#refuse(call, "the control host replaced the parameters too many times.", decision.step), false);
+        const errors = this.#deps.registry.validateInput(tool, resolved.input);
+        const business = errors.length === 0 ? tool.validate?.(resolved.input as never, ctx) : undefined;
+        if (errors.length > 0 || business) {
+          return finish(textOutcome(`Blocked: the parameters given by the control host are invalid: ${[...errors, ...(business ? [business] : [])].join("; ")}.`, true, "invalid_input"), false);
+        }
+        call = { ...call, input: resolved.input };
+        approvedByHost = canonical(resolved.input);
+        replacedByHost = true;
       }
-
-      // Difference, or refusal found before asking (SPEC-OUT-003 EF-06).
-      const preview = tool.preview ? await tool.preview(call.input as never, ctx) : undefined;
-      if (preview && "refusal" in preview) return finish(preview.refusal);
-
-      // Permission decision, then resolution of an `ask` (step 3 of § 5.3).
-      const pctx = this.#deps.permissionContext();
-      const subject = tool.ruleSubject(call.input as never, ctx);
-      const query: PermissionQuery = {
-        toolName: tool.name,
-        subject,
-        flags: tool.flags(call.input as never),
-        contribution: tool.permissionContribution?.(call.input as never, ctx),
-        hookDecision: hook.decision,
-        hookReason: hook.reason,
-        available: true,
-        fileWriteInsideAllowed: subject.kind === "paths" && subject.access === "write" && subject.paths.every((p) => insideAllowed(p, ctx.allowedDirectories, ctx.platform)),
-      };
-      const decision = decide(query, pctx);
-      const resolved = await this.#resolve(call, tool, decision, pctx.mode, preview && "diff" in preview ? preview : undefined, signal, subject);
-      if (!resolved.allowed) return finish(await this.#refuse(call, resolved.reason, decision.step), false);
 
       // Scheduling (RG-01 to RG-03): a safe call waits for the last barrier; a barrier waits for every previous call.
       if (safe) await lastBarrier;
@@ -280,7 +323,9 @@ export class ResponseExecution {
         if (signal.aborted) return finish(textOutcome("Interrupted by the user.", true, "interrupted"));
         const after = await this.#deps.hooks.afterTool(call, outcome.isError, outcome.content.map((c) => (c.type === "text" ? c.text : `[${c.mediaType}]`)).join("\n"));
         if (after.stopTurn) this.#stopTurnRequested = true;
-        return finish(this.#storeIfLarge(call, outcome));
+        // The model learns that the call ran with other parameters than its own (SPEC-MOD-006 FA-05).
+        const told = replacedByHost ? { ...outcome, content: [{ type: "text" as const, text: `[The control host replaced the parameters of this call with: ${JSON.stringify(call.input)}]` }, ...outcome.content] } : outcome;
+        return finish(this.#storeIfLarge(call, told));
       } finally {
         release();
       }
@@ -313,7 +358,7 @@ export class ResponseExecution {
     shown: { readonly diff: string; readonly change?: FileChange } | undefined,
     signal: AbortSignal,
     subject: RuleSubject,
-  ): Promise<{ allowed: boolean; reason: string }> {
+  ): Promise<{ allowed: boolean; reason: string; input?: Record<string, unknown> }> {
     if (decision.kind === "allow") {
       this.#deps.emit({ type: "permission", callId: call.callId, decision: "allow", reason: decision.why, step: decision.step });
       return { allowed: true, reason: decision.why };
@@ -343,6 +388,8 @@ export class ResponseExecution {
       return { allowed: false, reason: resolution.reason };
     }
     if (resolution.persist) this.#deps.persistRule?.(resolution.persist.scope, resolution.persist.rule);
+    // Replaced parameters are not allowed yet: they are evaluated again first (FA-05 of SPEC-MOD-006).
+    if (resolution.input) return { allowed: true, reason: `parameters replaced by ${resolution.by}`, input: resolution.input };
     const reason = `approved by ${resolution.by}`;
     this.#deps.emit({ type: "permission", callId: call.callId, decision: "allow", reason, step: decision.step });
     return { allowed: true, reason };

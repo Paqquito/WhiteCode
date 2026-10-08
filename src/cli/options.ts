@@ -58,6 +58,7 @@ export const OPTIONS: readonly OptionDef[] = [
   { name: "result-format", value: "required", type: "enum", enumValues: ["text", "json", "jsonl"], group: "Entrées et sorties", description: "Format de sortie.", defaultText: "text", delivered: true, owner: "SPEC-MOD-003" },
   { name: "stream-profile", value: "required", type: "enum", enumValues: ["standard", "compact"], group: "Entrées et sorties", description: "Profil de présentation d'une sortie jsonl.", defaultText: "standard", delivered: false, owner: "SPEC-OBS-022" },
   { name: "output-schema", value: "required", type: "path-or-content", group: "Entrées et sorties", description: "Schéma JSON du résultat attendu (fichier ou contenu).", delivered: true, owner: "SPEC-MOD-004" },
+  { name: "control-channel", value: "none", group: "Entrées et sorties", description: "Ouvre le canal de contrôle d'un programme hôte (avec --request-format jsonl et --result-format jsonl).", delivered: true, owner: "SPEC-MOD-006" },
   { name: "emit-partial", value: "none", group: "Entrées et sorties", description: "Émet les fragments progressifs dans le flux.", delivered: false, owner: "SPEC-MOD-003" },
   { name: "emit-hook-events", value: "none", group: "Entrées et sorties", description: "Émet les événements de crochets dans le flux.", delivered: false, owner: "SPEC-MOD-003" },
   { name: "verbose", value: "none", group: "Entrées et sorties", description: "Diagnostic détaillé sur la sortie d'erreur.", delivered: true, owner: "SPEC-MOD-011" },
