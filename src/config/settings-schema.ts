@@ -112,7 +112,7 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "context.gitStatus.enabled", schema: bool(), default: true, scopes: [U, P, G], owner: "SPEC-MOT-003" },
   { key: "context.gitGuidance.enabled", schema: bool(), default: true, scopes: [U, P, G], owner: "SPEC-MOT-003" },
   { key: "context.promptFamily", schema: str(), default: "auto", scopes: [U, G], owner: "SPEC-MOT-045" },
-  { key: "context.autoCompact.enabled", schema: bool(), default: true, scopes: [U], owner: "SPEC-MOT-012" },
+  { key: "context.autoCompact.enabled", schema: bool(), default: true, scopes: [U], owner: "SPEC-MOT-012", hot: true },
   { key: "context.autoCompact.warnRatio", schema: num(0, 1), default: 0.8, scopes: [U], owner: "SPEC-MOT-012" },
   { key: "context.autoCompact.urgentRatio", schema: num(0, 1), default: 0.88, scopes: [U], owner: "SPEC-MOT-012" },
   { key: "context.autoCompact.triggerRatio", schema: num(0, 1), default: 0.9, scopes: [U], owner: "SPEC-MOT-012" },

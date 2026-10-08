@@ -103,6 +103,15 @@ function convert(def: SettingDef, value: unknown): unknown {
   }
 }
 
+/** SPEC-CMD-013 EF-01: why a value is refused for a key, or undefined when it is accepted. */
+export function validateSettingValue(key: string, raw: unknown): string | undefined {
+  const def = SETTING_BY_KEY.get(key);
+  if (!def) return "réglage inconnu";
+  if (!validatorFor(def)(raw)) return `type attendu ${typeName(def)}`;
+  if (convert(def, raw) === undefined) return "valeur hors limites";
+  return undefined;
+}
+
 export class Settings {
   readonly #values = new Map<string, unknown>();
   readonly #origins = new Map<string, Origin>();

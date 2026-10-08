@@ -22,5 +22,10 @@ export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
   { name: "spending", description: "Affiche la consommation et le coût estimé de la session, par modèle.", kind: "display", widening: false },
   { name: "background-tasks", description: "Liste les tâches de fond de la session.", kind: "display", widening: false },
   { name: "skill-list", description: "Liste les compétences disponibles, par source.", kind: "display", widening: false },
+  { name: "switch-model", description: "Change de modèle pour la suite de la session (défaut : l'enregistre pour les suivantes).", kind: "action", widening: false, usage: "<modèle> [défaut]" },
+  { name: "reasoning-level", description: "Règle le niveau de réflexion (low, medium, high ; max pour cette session seulement).", kind: "action", widening: false, usage: "<niveau>" },
+  { name: "planning", description: "Passe en mode planification ; avec une description, l'envoie au modèle.", kind: "mixed", widening: false, usage: "[description]" },
+  { name: "condense", description: "Résume la conversation pour libérer le contexte, selon les consignes données.", kind: "action", widening: false, usage: "[consignes]" },
+  { name: "preferences", description: "Affiche ou modifie un réglage de l'utilisateur.", kind: "action", widening: true, usage: "[clé [valeur]]" },
   { name: "shortcuts", description: "Affiche les raccourcis clavier effectifs ; reset rétablit ceux par défaut.", kind: "mixed", widening: false, usage: "[reset]", interactiveOnly: true },
 ];

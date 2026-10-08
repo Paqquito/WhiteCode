@@ -83,7 +83,8 @@ export interface MeterOptions {
 /** Occupation of the context of one agent (SPEC-MOT-010). */
 export class ContextMeter {
   readonly coefficients: EstimationCoefficients;
-  readonly effectiveWindow: number;
+  effectiveWindow: number;
+  #model: ResolvedModel;
   /** Provider count of the whole context after the last response, and the number of messages it covered. */
   #baseline: { tokens: number; messages: number; segment: number } | undefined;
   /** Tokens by model and category, for the consumption follow-up (EF-05). */
@@ -91,16 +92,27 @@ export class ContextMeter {
 
   constructor(readonly options: MeterOptions) {
     this.coefficients = { ...DEFAULT_COEFFICIENTS, ...options.coefficients };
-    const window = options.model.contextWindow;
-    // The reserve never takes more than half of the window.
-    this.effectiveWindow = Math.max(1, window - Math.min(options.outputReserveTokens, Math.floor(window / 2)));
+    this.#model = options.model;
+    this.effectiveWindow = ContextMeter.windowOf(options.model, options.outputReserveTokens);
     // ERR-01, CA-04: a model absent from every catalogue gets the prudent window, with a warning.
-    if (options.model.source === "none") options.warn?.(`Taille de contexte du modèle ${options.model.id} inconnue : ${window} jetons supposés.`);
+    if (options.model.source === "none") options.warn?.(`Taille de contexte du modèle ${options.model.id} inconnue : ${options.model.contextWindow} jetons supposés.`);
+  }
+
+  /** The reserve never takes more than half of the window. */
+  static windowOf(model: ResolvedModel, reserve: number): number {
+    const window = model.contextWindow;
+    return Math.max(1, window - Math.min(reserve, Math.floor(window / 2)));
+  }
+
+  /** The model changed during the session (SPEC-CMD-045 § 5.3 step 2): its window becomes the reference. */
+  setModel(model: ResolvedModel): void {
+    this.#model = model;
+    this.effectiveWindow = ContextMeter.windowOf(model, this.options.outputReserveTokens);
   }
 
   /** § 5.3 point 1: after each response, the provider counts become the reference (EF-01, CA-01). */
   recordResponse(usage: Usage, reported: boolean, historyLength: number, segment: number): void {
-    const key = this.options.model.id;
+    const key = this.#model.id;
     const c = this.consumption.get(key) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
     this.consumption.set(key, { input: c.input + usage.inputTokens, output: c.output + usage.outputTokens, cacheRead: c.cacheRead + usage.cacheReadTokens, cacheWrite: c.cacheWrite + usage.cacheWriteTokens });
     if (!reported) return;

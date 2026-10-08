@@ -14,12 +14,12 @@ import { ExitCode } from "../cli/exit-codes";
 import { helpText, versionText } from "../cli/help";
 import { CliUsageError, dangerOptions, parseCommandLine, splitList, undeliveredOptions } from "../cli/parser";
 import { EnvironmentView, PUBLIC_SECRET_VARIABLES } from "../config/environment";
-import { readSettingsFile, type ScopeSource } from "../config/settings";
+import { readSettingsFile, validateSettingValue, type ScopeSource } from "../config/settings";
 import { isHotKey, SettingsReloader } from "../config/reload";
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import { loadConfiguration, scopeSources } from "../config/load";
 import { looksLikeSubcommand, runSubcommand } from "../admin/subcommands";
-import type { PermissionMode, Scope } from "../config/settings-schema";
+import { SETTING_BY_KEY, type PermissionMode, type Scope } from "../config/settings-schema";
 import { appendRuleToSettingsFile, setValueInSettingsFile } from "../config/settings-writer";
 import { readUserState, updateUserState } from "../config/trust";
 import { FallbackPolicy } from "../engine/fallback";
@@ -1568,16 +1568,24 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     } else sessionAllows.push(rule);
   };
   // Effort (SPEC-MOT-025): configured level, or a session level such as `max` that is never persisted (EF-01).
+  // SPEC-CMD-045: the model of the session, which may change during it (EF-02: from the next request).
+  let currentModel: ResolvedModel = resolvedModel;
+  const pricings = new Map<string, ReturnType<typeof effectivePricing>>([[resolvedModel.id, pricing]]);
+  const pricingOf = (m: ResolvedModel) => {
+    if (!pricings.has(m.id)) pricings.set(m.id, effectivePricing(m, overrides, referenceCurrency, (x) => err(`avertissement : ${x}`)));
+    return pricings.get(m.id);
+  };
   let effort = mapEffort(settings.get<string>("models.effort") as ApiEffort, resolvedModel.capabilities.effort);
   const setEffort = (level: ApiEffort) => {
-    const applied = mapEffort(level, resolvedModel.capabilities.effort);
+    const applied = mapEffort(level, currentModel.capabilities.effort);
     if (applied !== level) {
-      err(applied ? `avertissement : le modèle ${resolvedModel.id} n'accepte pas le niveau d'effort ${level} : ${applied} est appliqué.` : `avertissement : le modèle ${resolvedModel.id} n'accepte pas de niveau d'effort.`);
+      err(applied ? `avertissement : le modèle ${currentModel.id} n'accepte pas le niveau d'effort ${level} : ${applied} est appliqué.` : `avertissement : le modèle ${currentModel.id} n'accepte pas de niveau d'effort.`);
     }
     effort = applied;
   };
   const responseLimit = env.ownInteger("RESPONSE_TOKEN_LIMIT");
-  const maxOutputTokens = responseLimit !== undefined ? Math.max(1, Math.min(responseLimit, resolvedModel.maxOutputTokens)) : resolvedModel.maxOutputTokens;
+  const outputLimitOf = (m: ResolvedModel) => (responseLimit !== undefined ? Math.max(1, Math.min(responseLimit, m.maxOutputTokens)) : m.maxOutputTokens);
+  const maxOutputTokens = outputLimitOf(resolvedModel);
   const loopGuard = new LoopGuard(settings.get<number>("engine.loopGuard.threshold"), settings.get<boolean>("engine.loopGuard.enabled"));
   const runStarted = Date.now();
   const limits = new RunLimits({
@@ -1633,7 +1641,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     meter,
     {
       autoCompact: {
-        enabled: settings.get<boolean>("context.autoCompact.enabled"),
+        // SPEC-CMD-013 CA-01: applied at once when the user changes it.
+        get enabled() {
+          return liveSettings.get<boolean>("context.autoCompact.enabled");
+        },
         warnRatio: settings.get<number>("context.autoCompact.warnRatio"),
         urgentRatio: settings.get<number>("context.autoCompact.urgentRatio"),
         triggerRatio: settings.get<number>("context.autoCompact.triggerRatio"),
@@ -1652,7 +1663,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     },
     {
       provider,
-      model: resolvedModel,
+      get model() {
+        return currentModel;
+      },
       conversation,
       hooks,
       emit,
@@ -1668,7 +1681,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       },
       summaryMaxTokens: Math.min(maxOutputTokens, settings.get<number>("engine.outputReserveTokens")),
       ledger,
-      pricing,
+      get pricing() {
+        return pricingOf(currentModel);
+      },
       rebuildSystem: () => buildInstructions().blocks,
       restoredElements: () => [
         ...restoreFiles(recentFiles, settings.get<number>("context.compaction.restoreFiles"), settings.get<number>("context.compaction.restoreTokens")),
@@ -1899,7 +1914,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         exitDoublePressMs: settings.get<number>("ui.exitDoublePressWindow"),
         dialogGuardMs: DIALOG_GUARD_MS,
       },
-      status: () => ({ mode: modeState.mode, model: minimal ? `${resolvedModel.id} · session minimale` : resolvedModel.id }),
+      status: () => ({ mode: modeState.mode, model: minimal ? `${currentModel.id} · session minimale` : currentModel.id }),
       // SPEC-PER-003 EF-03, SPEC-PER-017 § 5.3 step 3: `unrestricted` is entered the first time only after its warning is accepted.
       cycleMode: () =>
         void (async () => {
@@ -1962,11 +1977,15 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     reminders,
     afterToolResults: filesTouched,
     provider,
-    model: resolvedModel,
+    get model() {
+      return currentModel;
+    },
     conversation,
     hooks,
     transcript,
-    maxOutputTokens,
+    get maxOutputTokens() {
+      return outputLimitOf(currentModel);
+    },
     thinking: {
       enabled: settings.get<boolean>("thinking.enabled"),
       mode: settings.get<"adaptive" | "budget">("thinking.mode"),
@@ -1977,7 +1996,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       return effort;
     },
     limits,
-    pricing,
+    get pricing() {
+      return pricingOf(currentModel);
+    },
     retry: { maxRetries: settings.get<number>("api.maxRetries") },
     maxOutputContinuations: settings.get<number>("engine.maxOutputContinuations"),
     maxStopHookContinuations: settings.get<number>("engine.maxStopHookContinuations"),
@@ -2014,7 +2035,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         readState,
         protectedLocations: protectedPaths,
         readDenied,
-        modelImages: resolvedModel.capabilities.images,
+        modelImages: currentModel.capabilities.images,
         ripgrepPath,
         taskList,
         background,
@@ -2080,7 +2101,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       // § 5.1: the parameter, then the definition, then `agents.defaultModel`, then the model of the caller; a model not
       // allowed gives way to the caller's, with a warning (ERR-02).
       const wanted = input.model ?? (def.model && def.model !== "inherit" ? def.model : undefined) ?? settings.get<string | undefined>("agents.defaultModel");
-      let model: ResolvedModel = resolvedModel;
+      let model: ResolvedModel = currentModel;
       if (wanted && wanted !== "inherit") {
         const r = deps.catalog.resolve(wanted, providerId, identity, resolveOptions);
         if (!isResolveFailure(r) && allowedByList(r, wanted) && r.capabilities.toolCalling) model = { ...r, capabilities: effectiveCapabilities(r.capabilities, providerId).capabilities };
@@ -2156,8 +2177,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         deps: {
           ...loopDeps,
           model,
-          pricing: model === resolvedModel ? pricing : undefined,
-          maxOutputTokens: model === resolvedModel ? maxOutputTokens : model.maxOutputTokens,
+          pricing: pricingOf(model),
+          maxOutputTokens: outputLimitOf(model),
           conversation: new Conversation(built.blocks, view.list().map((t) => ({ name: t.name, description: t.description(toolEnv), inputSchema: t.inputSchema }))),
           hooks: agentHooks,
           transcript: undefined,
@@ -2227,7 +2248,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // One request: an internal command, a skill or a simple command, a prompt of a connector (SPEC-CMD-001 § 5.7), whose
   // unknown name is never sent to the model (FA-01, EF-03), or a message; then a turn.
   const results: TurnResult[] = [];
-  type RequestOutcome = { result?: TurnResult; refused?: string; shown?: Node; note?: string; exit?: true; silent?: true };
+  type RequestOutcome = { result?: TurnResult; refused?: string; shown?: Node; note?: string; exit?: true; silent?: true; send?: string };
   const processRequest = async (original: string | readonly ContentPart[], signal: AbortSignal, literal = false): Promise<RequestOutcome> => {
     let content = original;
     const first = typeof content === "string" ? content : content.find((p) => p.type === "text")?.text;
@@ -2245,7 +2266,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         case "internal": {
           // FA-04: the commands of the interface are refused in an automated run, with an explanation.
           if (!app && resolved.command.interactiveOnly) return { refused: `Commande indisponible en exécution automatisée : /${entry.name}.` };
-          return runInternalCommand(resolved.command, entry.args);
+          const outcome = await runInternalCommand(resolved.command, entry.args);
+          // A command that sends a message (/planning <description>): the turn follows.
+          if (outcome.send === undefined) return outcome;
+          replaceFirst(outcome.send);
+          break;
         }
         case "connector": {
           // SPEC-MCP-011 § 5.3: positional arguments in the declared order, then the content of the prompt as the message.
@@ -2325,6 +2350,25 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     }
     return { result };
   };
+  /**
+   * SPEC-CMD-045 § 5.3: the alias resolved and allowed (EF-01, FA-01), then applied from the next request (EF-02), the
+   * thresholds of the context computed again. A price is required under a cost cap (SPEC-MOD-005).
+   */
+  const switchModel = (value: string): { model: ResolvedModel } | { refused: string } => {
+    const r = deps.catalog.resolve(value, providerId, identity, resolveOptions);
+    if (isResolveFailure(r)) return { refused: `Modèle inconnu : ${value}. Alias admis : large, medium, small, default, ou un identifiant complet.` };
+    if (!allowedByList(r, value)) return { refused: `Ce modèle n'est pas autorisé par votre configuration : ${r.id}. Modèles autorisés : ${allowList!.join(", ")}.` };
+    if (r.lifecycle?.status === "retired") return { refused: `Le modèle ${r.id} a été retiré.` };
+    const model: ResolvedModel = { ...r, capabilities: effectiveCapabilities(r.capabilities, providerId).capabilities };
+    if (!model.capabilities.toolCalling) return { refused: `Le modèle ${model.id} ne prend pas en charge les appels d'outils.` };
+    if (ledger.snapshot.cap !== undefined && !pricingOf(model)) return { refused: `Le plafond de coût ne peut pas être garanti avec ${model.id}, qui n'a pas de tarif.` };
+    currentModel = model;
+    meter.setModel(model);
+    effort = mapEffort(effort ?? (settings.get<string>("models.effort") as ApiEffort), model.capabilities.effort);
+    transcript?.append("system", { event: "model_changed", model: model.id });
+    debug.log("api", "model changed", { model: model.id });
+    return { model };
+  };
   // The options of the session that replaces this one: those of the launch, without the choice of the session, and the
   // mode and the model of this one when they are kept (SPEC-CMD-009 § 5.1).
   const carryArgs = (keepModeAndModel: boolean): string[] => {
@@ -2334,7 +2378,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       if (skip.has(name)) continue;
       for (const v of Array.isArray(value) ? value : [value]) out.push(v === true ? `--${name}` : `--${name}=${String(v)}`);
     }
-    if (keepModeAndModel) out.push(`--approval-mode=${modeState.mode}`, `--model=${resolvedModel.id}`);
+    if (keepModeAndModel) out.push(`--approval-mode=${modeState.mode}`, `--model=${currentModel.id}`);
     return out;
   };
   // The internal commands of this version (SPEC-CMD-001 rank 1): help, exit, key bindings.
@@ -2348,6 +2392,104 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       case "transcript":
         app?.openTranscript();
         return { silent: true };
+      case "switch-model": {
+        const [value, flag] = args.trim().split(/\s+/);
+        if (!value) return { refused: "Usage : /switch-model <modèle> [défaut]." };
+        const r = switchModel(value);
+        if ("refused" in r) return { refused: r.refused }; // FA-01
+        let note = `Modèle : ${r.model.label ?? r.model.id} (${r.model.id}), à partir de la prochaine requête.`;
+        // § 5.1: the default of the next sessions, when asked.
+        if (flag === "défaut" || flag === "default") {
+          try {
+            setValueInSettingsFile(locations.userSettingsFile, ["models", "selected"], r.model.id, system.platform);
+            note += " Il devient le modèle par défaut.";
+          } catch (e) {
+            note += ` Il n'a pas pu devenir le défaut : ${(e as Error).message}`;
+          }
+        }
+        // FA-02, CA-01: a context larger than the new window: a compaction is proposed.
+        const occupied = meter.occupation(conversation.system, conversation.tools, conversation.messages, conversation.segment).tokens;
+        if (occupied > meter.effectiveWindow) {
+          const question = `Le contexte actuel (${occupied} jetons) dépasse la fenêtre de ${r.model.id} (${meter.effectiveWindow} jetons). Résumer la conversation maintenant ?`;
+          if (app && (await app.confirm(question, "résumer", "plus tard"))) {
+            const outcome = await context.compactNow(undefined, controller.signal);
+            note += outcome.kind === "compacted" ? ` Conversation résumée : ${outcome.tokensBefore} → ${outcome.tokensAfter} jetons.` : ` La compaction n'a pas abouti.`;
+          } else note += ` Attention : le contexte (${occupied} jetons) dépasse la fenêtre de ce modèle ; utilisez /condense.`;
+        }
+        return { shown: text(note), note };
+      }
+      case "reasoning-level": {
+        // SPEC-CMD-022: validated against the model (EF-01, FA-01); recorded, except `max`, valid for this session only.
+        const level = args.trim().toLowerCase() as ApiEffort;
+        if (!["low", "medium", "high", "xhigh", "max"].includes(level)) return { refused: "Usage : /reasoning-level low|medium|high|max." };
+        if (!currentModel.capabilities.effort.includes(level)) return { refused: `Le modèle ${currentModel.id} ne prend pas en charge le niveau ${level}${currentModel.capabilities.effort.length > 0 ? ` (niveaux : ${currentModel.capabilities.effort.join(", ")})` : ""}.` };
+        effort = level;
+        let note = `Niveau de réflexion : ${level}${level === "max" || level === "xhigh" ? ", pour cette session seulement" : ""}.`;
+        if (level !== "max" && level !== "xhigh") {
+          try {
+            setValueInSettingsFile(locations.userSettingsFile, ["models", "effort"], level, system.platform);
+          } catch (e) {
+            note += ` Il n'a pas pu être enregistré : ${(e as Error).message}`;
+          }
+        }
+        return { shown: text(note), note };
+      }
+      case "planning": {
+        // SPEC-CMD-048: the planning mode, within the prohibitions of the administrator (EF-01); a description goes to the model.
+        if (modeState.mode !== "planning") {
+          try {
+            modeState.set("planning");
+          } catch (e) {
+            return { refused: (e as Error).message };
+          }
+          app?.refresh();
+        }
+        if (args.trim() === "") return { shown: text(approvedPlan ? `Mode planification. Plan approuvé :\n${approvedPlan}` : "Mode planification activé : le modèle explore et propose un plan avant d'agir."), note: "Mode planification activé." };
+        return { send: args.trim() };
+      }
+      case "condense": {
+        // SPEC-CMD-011: the instructions of the user orient the summary (EF-01); also in an automated run.
+        if (conversation.messages.length === 0) return { refused: "La conversation est vide : rien à résumer." };
+        const outcome = await context.compactNow(args.trim() || undefined, controller.signal);
+        if (outcome.kind !== "compacted") return { refused: "message" in outcome ? outcome.message : "La compaction n'a pas abouti." };
+        const note = `Conversation résumée : ${outcome.tokensBefore} → ${outcome.tokensAfter} jetons.`;
+        return { shown: text(note), note };
+      }
+      case "preferences": {
+        // SPEC-CMD-013: a setting of the user, its effective value and its source; changed after validation (EF-01),
+        // never when it is locked by the organisation (EF-02, FA-01); applied at once when the setting allows it.
+        const [key, ...rest] = args.trim().split(/\s+/).filter(Boolean);
+        if (!key) {
+          const keys = ["models.selected", "models.effort", "context.autoCompact.enabled", "permissions.initialMode", "ui.colorMode", "ui.sessionSummary", "sessions.retentionDays"];
+          const lines = keys.map((k) => `${k} = ${JSON.stringify(liveSettings.get(k))} (${liveSettings.origin(k)})`);
+          return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
+        }
+        const def = SETTING_BY_KEY.get(key);
+        if (!def) return { refused: `Réglage inconnu : ${key}.` };
+        if (rest.length === 0) {
+          const note = `${key} = ${JSON.stringify(liveSettings.get(key))} (source : ${liveSettings.origin(key)})`;
+          return { shown: text(note), note };
+        }
+        if (liveSettings.origin(key) === "managed") return { refused: `Ce réglage est fixé par l'organisation : ${key} (lecture seule).` };
+        if (!def.scopes.includes("user")) return { refused: `Ce réglage ne se modifie pas en portée utilisateur : ${key}.` };
+        const raw = rest.join(" ");
+        let value: unknown;
+        try {
+          value = JSON.parse(raw);
+        } catch {
+          value = raw;
+        }
+        const problem = validateSettingValue(key, value);
+        if (problem) return { refused: `Valeur invalide pour ${key} : ${problem}.` };
+        try {
+          setValueInSettingsFile(locations.userSettingsFile, key.split("."), value, system.platform);
+        } catch (e) {
+          return { refused: `Le réglage n'a pas pu être enregistré : ${(e as Error).message}` };
+        }
+        applySettingsChanges(); // applied at once for the hot settings
+        const note = `${key} = ${JSON.stringify(value)} enregistré${isHotKey(key) ? ", appliqué immédiatement" : " ; il prendra effet à la prochaine session"}.`;
+        return { shown: text(note), note };
+      }
       case "edit-mode": {
         // SPEC-IHM-013 EF-03, CA-06: switched during the input, the content kept, for this session.
         const wanted = args.trim();
@@ -2431,7 +2573,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           `${identity.get("PRODUCT")} ${identity.version}`,
           `Session : ${sessionId}${transcript ? "" : " (non enregistrée)"}`,
           `Dossier : ${projectReal}`,
-          `Fournisseur : ${providerId} · modèle : ${resolvedModel.id}`,
+          `Fournisseur : ${providerId} · modèle : ${currentModel.id}`,
           `Mode de permission : ${modeState.mode}`,
           `Confiance du projet : ${trust.trusted ? "accordée" : "non accordée"}`,
           "Connecteurs :",
@@ -2814,8 +2956,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       },
       modeRefusal: (mode) => (isModeAvailable(mode, availability) ? undefined : unavailableReason(mode, availability)),
       setMode: (mode) => modeState.set(mode),
-      selectModel: () => {
-        throw new ControlError("unavailable", "Changement de modèle indisponible dans cette version.");
+      selectModel: (value) => {
+        const r = switchModel(value);
+        if ("refused" in r) throw new ControlError("model_refused", r.refused);
+        return r.model.id;
       },
       commands: () =>
         commandCatalog()
