@@ -11,6 +11,8 @@ import type { ModelCapabilities } from "./catalog";
 export interface OpenAICompatibleOptions {
   /** Base URL: mandatory for `openai_compatible`; for `openai`, the SDK default unless `OPENAI_BASE_URL` is set. */
   readonly baseURL?: string;
+  /** The connections of the product: proxy and trust store (SPEC-PER-022). */
+  readonly fetch?: typeof fetch;
   readonly apiKey?: string;
   /** `OPENAI_ORG_ID` for the `openai` provider. */
   readonly organization?: string;
@@ -141,6 +143,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     this.#client = new OpenAI({
       ...(options.baseURL ? { baseURL: options.baseURL } : {}),
       ...(options.organization ? { organization: options.organization } : {}),
+      ...(options.fetch ? { fetch: options.fetch } : {}),
       // The key is optional for this provider (SPEC-API-001 § 5.1): without it, no authorization header is sent.
       apiKey: options.apiKey ?? "unused",
       maxRetries: 0, // retries follow SPEC-API-003, applied by the product (gap E-021)

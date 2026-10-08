@@ -183,6 +183,9 @@ export class EnvironmentView {
     }
     for (const [k, v] of Object.entries(extra)) out[k] = v;
     // SPEC-MOD-008 EF-05: the depth of `run_agent` follows the processes, so that a chain of connectors stays bounded.
+    // SPEC-PER-022 § 5.3 step 4: the extra authorities reach the children by the usual variable.
+    const ca = this.#raw[`${this.#prefix}EXTRA_CA_CERTS`];
+    if (ca !== undefined && out["NODE_EXTRA_CA_CERTS"] === undefined) out["NODE_EXTRA_CA_CERTS"] = ca;
     const depth = this.#raw[`${this.#prefix}AGENT_DEPTH`];
     if (depth !== undefined) out[`${this.#prefix}AGENT_DEPTH`] = depth;
     out[`${this.#prefix}CHILD_PROCESS`] = "1";

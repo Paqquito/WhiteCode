@@ -25,6 +25,8 @@ export interface WebAccess {
   /** Step 6: the prompt applied to the content by the light model. */
   readonly ask: (prompt: string, content: string, url: string, signal: AbortSignal) => Promise<string>;
   readonly cache: Map<string, { readonly at: number; readonly text: string; readonly type: string }>;
+  /** The connections of the product: proxy and trust store (SPEC-PER-022). */
+  readonly fetch?: typeof fetch;
 }
 
 /** FA-03: below this size, the content is returned as it is. */
@@ -101,7 +103,7 @@ export function createFetchUrlTool(web: () => WebAccess | undefined): Tool<Fetch
         let response: Response;
         try {
           for (let hops = 0; ; hops++) {
-            response = await fetch(url.href, { redirect: "manual", signal, headers: { Accept: "text/html, text/plain, text/markdown, application/json;q=0.9, */*;q=0.5" } });
+            response = await (w.fetch ?? fetch)(url.href, { redirect: "manual", signal, headers: { Accept: "text/html, text/plain, text/markdown, application/json;q=0.9, */*;q=0.5" } });
             const location = response.status >= 300 && response.status < 400 ? response.headers.get("location") : null;
             if (!location) break;
             const next = new URL(location, url);

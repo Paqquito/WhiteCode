@@ -54,6 +54,7 @@ import { ControlSession, type ControlEnd, type ControlOperations } from "../cont
 import { ControlError } from "../control/protocol";
 import { bearerMatches, FramedLink, isLoopback, originAllowed, parseListenAddress } from "../control/remote";
 import { connectWebSocket, listenWebSocket, type WsPeer, type WsServer } from "../platform/websocket";
+import { networkFetch } from "../platform/network";
 import { ConnectorServerSession, DEFAULT_CAPABILITIES, Gate, SERVE_CAPABILITIES, WRITING_CAPABILITIES, type CallOutcome, type ServeCapability, type ServedTool } from "../connectors/server";
 import { ResponseExecution } from "../engine/executor";
 import { morePermissive } from "../control/protocol";
@@ -166,6 +167,8 @@ export interface ProviderFactoryOptions {
   readonly timeoutMs: number;
   readonly idleTimeoutMs: number;
   readonly headers: Readonly<Record<string, string>>;
+  /** The connections of the product: proxy, trust store, client certificate (SPEC-PER-022). */
+  readonly fetch?: typeof fetch;
 }
 
 export interface RunDependencies {
@@ -212,6 +215,7 @@ function createProvider(o: ProviderFactoryOptions): ModelProvider {
     baseURL: o.baseURL,
     apiKey: o.apiKey,
     organization: o.organization,
+    ...(o.fetch ? { fetch: o.fetch } : {}),
     timeoutMs: o.timeoutMs,
     idleTimeoutMs: o.idleTimeoutMs,
     headers: o.headers,
@@ -708,7 +712,28 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   }
   if (baseURL) checkUrl(baseURL);
   const prefix = identity.get("HTTP_HEADER_PREFIX");
+  // SPEC-PER-022: the proxy (public variables, never from the project, RG-01), the extra authorities and the client
+  // certificate (own variables); an unreadable file stops the launch.
+  const readPem = (name: string): string | undefined => {
+    const path = env.own(name);
+    if (path === undefined) return undefined;
+    try {
+      return readFileSync(path, "utf8");
+    } catch {
+      throw new RunError(`Fichier illisible pour ${env.prefix}${name} : ${path}.`, ExitCode.UsageOrConfiguration);
+    }
+  };
+  const proxyVar = (name: string) => env.public(name) ?? env.public(name.toLowerCase());
+  const network = networkFetch({
+    ...(proxyVar("HTTP_PROXY") ? { httpProxy: proxyVar("HTTP_PROXY")! } : {}),
+    ...(proxyVar("HTTPS_PROXY") ? { httpsProxy: proxyVar("HTTPS_PROXY")! } : {}),
+    noProxy: (proxyVar("NO_PROXY") ?? "").split(","),
+    ...(readPem("EXTRA_CA_CERTS") !== undefined ? { extraCa: readPem("EXTRA_CA_CERTS")! } : {}),
+    ...(readPem("TLS_CLIENT_CERT") !== undefined ? { clientCert: readPem("TLS_CLIENT_CERT")!, clientKey: readPem("TLS_CLIENT_KEY") } : {}),
+    caHint: `variable ${env.prefix}EXTRA_CA_CERTS`,
+  });
   const providerOptions: ProviderFactoryOptions = {
+    fetch: network,
     providerId,
     apiKey,
     authToken,
@@ -962,6 +987,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     },
     ask: (prompt, content, url, signal) => askLightModel(prompt, content, url, signal),
     cache: new Map(),
+    fetch: network,
   };
   const fetchTool = createFetchUrlTool(() => webAccess) as never;
   if (inToolset("fetch_url")) registry.addStatic(fetchTool);

@@ -16,6 +16,8 @@ export interface AnthropicProviderOptions {
   readonly apiKey?: string;
   readonly authToken?: string;
   readonly baseURL?: string;
+  /** The connections of the product: proxy and trust store (SPEC-PER-022). */
+  readonly fetch?: typeof fetch;
   /** Request timeout in milliseconds (`{{ENV_PREFIX}}REQUEST_TIMEOUT`). */
   readonly timeoutMs: number;
   /** Stream idle timeout in milliseconds (`api.streamIdleTimeout`). */
@@ -168,6 +170,7 @@ export class AnthropicProvider implements ModelProvider {
       apiKey: options.apiKey ?? null,
       authToken: options.authToken ?? null,
       ...(options.baseURL ? { baseURL: options.baseURL } : {}),
+      ...(options.fetch ? { fetch: options.fetch } : {}),
       maxRetries: 0, // retries follow SPEC-API-003, applied by the product (gap E-021)
       timeout: options.timeoutMs,
       defaultHeaders: { ...options.headers },
