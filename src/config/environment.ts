@@ -35,6 +35,7 @@ export const OWN_VARIABLES: readonly OwnVariableDef[] = [
   { name: "SHELL_INIT_FILE", type: "path", owner: "SPEC-OUT-008" },
   { name: "CHILD_PROCESS", type: "string", owner: "SPEC-OUT-008" },
   { name: "CONTROL_TOKEN", type: "string", owner: "SPEC-MOD-007", secret: true },
+  { name: "AGENT_DEPTH", type: "integer", owner: "SPEC-MOD-008" },
   { name: "CONTROL_TLS_CERT", type: "path", owner: "SPEC-MOD-007" },
   { name: "CONTROL_TLS_KEY", type: "path", owner: "SPEC-MOD-007", secret: true },
   { name: "EXTRA_CA_CERTS", type: "path", owner: "SPEC-PER-022" },
@@ -181,6 +182,9 @@ export class EnvironmentView {
       out[k] = v;
     }
     for (const [k, v] of Object.entries(extra)) out[k] = v;
+    // SPEC-MOD-008 EF-05: the depth of `run_agent` follows the processes, so that a chain of connectors stays bounded.
+    const depth = this.#raw[`${this.#prefix}AGENT_DEPTH`];
+    if (depth !== undefined) out[`${this.#prefix}AGENT_DEPTH`] = depth;
     out[`${this.#prefix}CHILD_PROCESS`] = "1";
     return out;
   }

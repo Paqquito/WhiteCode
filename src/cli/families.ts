@@ -64,7 +64,11 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
       op("reset-choices", "Réinitialise les décisions d'approbation de connecteurs du projet."),
     ],
   },
-  { name: "connector-server", role: "Serveur de connecteur", operations: [op("start", "Lance le produit comme serveur de connecteur.")] },
+  {
+    name: "connector-server",
+    role: "Serveur de connecteur",
+    operations: [op("start", "Lance le produit comme serveur de connecteur.", { delivered: true, options: ["capabilities", "root", "transport", "approval-mode", "listen"] })],
+  },
   {
     name: "extension",
     role: "Extensions",
@@ -143,7 +147,7 @@ export const FAMILY_BY_NAME: ReadonlyMap<string, FamilyDef> = new Map(FAMILY_CAT
 
 /** Common options of the sub-commands (§ 5.4): `true` when the option takes a value. */
 /** § 5.4 of SPEC-MOD-012, plus the options proper to an operation: `--lean-context` (SPEC-EXT-004), `--installable` (SPEC-EXT-002). */
-export const COMMON_OPTIONS: Readonly<Record<string, boolean>> = { json: false, scope: true, force: false, "preserve-data": false, name: true, verbose: false, help: false, "lean-context": true, installable: false };
+export const COMMON_OPTIONS: Readonly<Record<string, boolean>> = { json: false, scope: true, force: false, "preserve-data": false, name: true, verbose: false, help: false, "lean-context": true, installable: false, capabilities: true, root: true, transport: true, "approval-mode": true, listen: true };
 
 export interface ParsedSubcommand {
   readonly family: string;

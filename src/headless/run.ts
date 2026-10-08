@@ -3,7 +3,7 @@
 //             SPEC-SES-002 (§ 5.1, § 5.3 steps 4 to 6, FA-02, EF-01, EF-05, ERR-01, CA-01 to CA-05), SPEC-SES-003 (§ 5.3, EF-01, EF-02, ERR-01, ERR-02, CA-01, CA-02),
 //             SPEC-CFG-004 (ERR-01), SPEC-CFG-005 (steps 4 and 5, EF-02, EF-03), SPEC-CFG-008 (§ 5.3, EF-01, EF-02, ERR-01),
 //             SPEC-SES-004 (ERR-03, CA-01, CA-02), SPEC-SES-008 (FA-01, EF-03), SPEC-SES-012 (§ 5.3, EF-01, EF-03, ERR-01, ERR-02, CA-01, CA-02), SPEC-SES-015 (steps 2 to 4, FA-01),
-//             SPEC-MOD-001 (§ 5.1, EF-01, EF-04, ERR-01, FA-04 summary at exit, FA-06, CA-05), SPEC-MOD-006 (§ 5.1, § 5.4 steps 1 and 7, FA-03, § 11), SPEC-MOD-007 (§ 5.1, § 6, EF-01, EF-02, EF-08, ERR-02, ERR-03, CA-04, CA-06), SPEC-CMD-002 (§ 5.3, FA-01, ERR-01, CA-01)
+//             SPEC-MOD-001 (§ 5.1, EF-01, EF-04, ERR-01, FA-04 summary at exit, FA-06, CA-05), SPEC-MOD-006 (§ 5.1, § 5.4 steps 1 and 7, FA-03, § 11), SPEC-MOD-007 (§ 5.1, § 6, EF-01, EF-02, EF-08, ERR-02, ERR-03, CA-04, CA-06), SPEC-MOD-008 (§ 5.1, § 6, § 10, FA-02, FA-05, EF-02 to EF-07, RG-01 to RG-03, CA-01 to CA-06), SPEC-CMD-002 (§ 5.3, FA-01, ERR-01, CA-01)
 // Supports: SPEC-MOT-005 (loading per segment, files touched), SPEC-MOT-007 (reminder producers), SPEC-CFG-001, SPEC-CFG-007 (RG-02, FA-01), SPEC-OUT-008, SPEC-OUT-009 (EF-07), SPEC-PER-001 (CA-05), SPEC-PER-003, SPEC-PER-010, SPEC-MOD-003 (CA-02, CA-04, CA-05), SPEC-SES-001, SPEC-API-006, decisions D-03, D-05, D-09, D-10, D-13, gaps E-013, E-017, E-018, E-045, E-050, E-094
 // Composition root of a session: options → identity and settings → provider → engine → automated output, or the
 // interactive application (lot 5).
@@ -44,13 +44,18 @@ import { habilitate } from "../hooks/habilitation";
 import { HookRuntime } from "../hooks/runtime";
 import type { Identity } from "../identity/identity";
 import { isRule, parseRule, ruleMatches, type Rule, type RuleDecision, type RuleScope } from "../permissions/rules";
-import { insideAllowed, isProtectedPath, protectedLocations } from "../permissions/paths";
+import { insideAllowed, isProtectedPath, protectedLocations, realTargetPath } from "../permissions/paths";
 import { isModeAvailable, ModeError, ModeState, resolveInitialMode, unavailableReason, type ModeAvailability } from "../permissions/modes";
 import type { Authorities } from "../permissions/resolver";
 import { ControlSession, type ControlEnd, type ControlOperations } from "../control/session";
 import { ControlError } from "../control/protocol";
 import { bearerMatches, FramedLink, isLoopback, originAllowed, parseListenAddress } from "../control/remote";
-import { connectWebSocket, listenWebSocket, type WsPeer } from "../platform/websocket";
+import { connectWebSocket, listenWebSocket, type WsPeer, type WsServer } from "../platform/websocket";
+import { ConnectorServerSession, DEFAULT_CAPABILITIES, Gate, SERVE_CAPABILITIES, WRITING_CAPABILITIES, type CallOutcome, type ServeCapability, type ServedTool } from "../connectors/server";
+import { ResponseExecution } from "../engine/executor";
+import { morePermissive } from "../control/protocol";
+import { familyHelp, FAMILY_BY_NAME, parseSubcommand, SubcommandUsageError } from "../cli/families";
+import { randomUUID } from "node:crypto";
 import { AnthropicProvider } from "../providers/anthropic";
 import { effectiveCapabilities, isDeliveredProvider } from "../providers/adapters";
 import { OpenAICompatibleProvider } from "../providers/openai-compatible";
@@ -249,10 +254,46 @@ interface RunHolder {
   errSink?: (text: string) => void;
 }
 
-async function run(argv: readonly string[], deps: RunDependencies, err: (text: string) => void, holder: RunHolder): Promise<number> {
+/** `connector-server start` (SPEC-MOD-008): the options of the operation, before the session is composed. */
+interface ServeRequest {
+  readonly capabilities?: string;
+  readonly root?: string;
+  readonly transport: "process" | "network";
+  readonly listen?: string;
+}
+
+async function run(argv: readonly string[], deps: RunDependencies, err: (text: string) => void, holder: RunHolder, serve?: ServeRequest): Promise<number> {
   const { streams, identity, system } = deps;
+  // SPEC-MOD-008 § 5.1: the product as a connector server: an automated session without requests, driven by the calls.
+  if (!serve && argv[0] === "connector-server" && argv[1] === "start") {
+    let p;
+    try {
+      p = parseSubcommand(argv);
+    } catch (e) {
+      if (e instanceof SubcommandUsageError) throw new RunError(e.message, ExitCode.UsageOrConfiguration);
+      throw e;
+    }
+    const allowed = new Set(["capabilities", "root", "transport", "approval-mode", "listen", "verbose", "help"]);
+    for (const name of p.options.keys()) if (!allowed.has(name)) throw new RunError(`Option non prise en charge par connector-server start : --${name}.`, ExitCode.UsageOrConfiguration);
+    if (p.options.has("help")) {
+      streams.writeOut(familyHelp(identity.get("PRODUCT_CLI"), FAMILY_BY_NAME.get("connector-server")!));
+      return ExitCode.Success;
+    }
+    if (p.args.length > 0) throw new RunError(`Argument inattendu : ${p.args[0]}.`, ExitCode.UsageOrConfiguration);
+    const transport = p.options.get("transport") ?? "process";
+    if (transport !== "process" && transport !== "network") throw new RunError(`Transport inconnu : ${String(transport)} (process ou network).`, ExitCode.UsageOrConfiguration);
+    const request: ServeRequest = {
+      transport,
+      ...(typeof p.options.get("capabilities") === "string" ? { capabilities: p.options.get("capabilities") as string } : {}),
+      ...(typeof p.options.get("root") === "string" ? { root: p.options.get("root") as string } : {}),
+      ...(typeof p.options.get("listen") === "string" ? { listen: p.options.get("listen") as string } : {}),
+    };
+    const mode = p.options.get("approval-mode");
+    const inner = ["--non-interactive", "--ephemeral", ...(request.root ? ["--cwd", request.root] : []), ...(typeof mode === "string" ? ["--approval-mode", mode] : []), ...(p.options.has("verbose") ? ["--verbose"] : [])];
+    return run(inner, deps, err, holder, request);
+  }
   // SPEC-MOD-012: `<famille> [<opération>] …` is an administration operation, never a session (EF-04).
-  if (looksLikeSubcommand(argv)) {
+  if (!serve && looksLikeSubcommand(argv)) {
     const env = new EnvironmentView(identity.get("ENV_PREFIX"), deps.environment);
     identity.applyOverrides(env.identityOverrides(identity.overridableCandidates));
     return runSubcommand(argv, { streams, identity, catalog: deps.catalog, env, cwd: deps.cwd, system, managedDir: deps.managedDir });
@@ -458,7 +499,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
 
   // Requests (EF-06 of SPEC-MOD-002): argument, otherwise standard input; `jsonl`: one message per line (gap E-050).
   let requests: AsyncIterable<InputItem>;
-  if (!nonInteractive || controlled) {
+  if (!nonInteractive || controlled || serve) {
     // SPEC-MOD-001: the requests come from the input area; an initial request is the first message (CA-04).
     // SPEC-MOD-006: the control driver reads the input itself, while the turns run.
     requests = (async function* () {})();
@@ -1931,6 +1972,162 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     phase("affichage");
     reportPhases();
   }
+  // SPEC-MOD-008: the connector server answers the calls until the end of its transport.
+  if (serve) {
+    phase("affichage");
+    reportPhases();
+    // EF-03: the folder fixed at launch; `mcp.serve.rootDirectory` (user and managed scopes) when no --root is given.
+    const configuredRoot = settings.get<string | undefined>("mcp.serve.rootDirectory");
+    if (!serve.root && configuredRoot && comparablePath(absolute(configuredRoot, cwd), system.platform) !== comparablePath(cwd, system.platform)) {
+      if (!existsSync(absolute(configuredRoot, cwd))) throw new RunError(`Dossier autorisé introuvable : ${configuredRoot}.`, ExitCode.UsageOrConfiguration);
+    }
+    const capabilities = serveCapabilities(serve.capabilities, settings.get<string[]>("mcp.serve.capabilities"), settings.origin("mcp.serve.capabilities"), err);
+    const depth = env.ownInteger("AGENT_DEPTH") ?? 0;
+    const maxDepth = settings.get<number>("mcp.serve.maxAgentDepth");
+    // The calls never meet the detection of repeated calls of the agent (SPEC-MOT-046): the client is not a model of this session.
+    const serveExecutor = { ...loopDeps.executor, loopGuard: undefined, emit };
+    const outsideRoot = (path: unknown) => typeof path === "string" && !insideAllowed(realTargetPath(absolute(path, cwd)), allowedDirectories, system.platform);
+    const tools: ServedTool[] = [];
+    for (const name of capabilities) {
+      if (name === "run_agent") {
+        tools.push(RUN_AGENT_TOOL);
+        continue;
+      }
+      const tool = registry.get(name);
+      if (!tool) {
+        err(`avertissement : capacité ${name} indisponible dans cet environnement : elle n'est pas exposée.`);
+        continue;
+      }
+      tools.push({ name: name as ServeCapability, description: tool.description(toolEnv), inputSchema: tool.inputSchema });
+    }
+    const callTool = async (name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<CallOutcome> => {
+      // FA-02, ERR-02, CA-02: outside the allowed folder, refused without saying whether the path exists.
+      if (outsideRoot(input["path"])) return { text: "Access denied.", isError: true };
+      // A relative path designates a place of the allowed folder, the working folder of the client's view.
+      const args = typeof input["path"] === "string" ? { ...input, path: absolute(input["path"], cwd) } : input;
+      const execution = new ResponseExecution(serveExecutor, signal);
+      execution.submit({ callId: randomUUID(), name, input: args });
+      execution.responseComplete("end_turn");
+      const [part] = await execution.results();
+      return { text: (part?.content ?? []).map((c) => (c.type === "text" ? c.text : `[${c.mediaType}]`)).join("\n"), isError: part?.isError ?? true };
+    };
+    const runAgent = async (input: Record<string, unknown>, signal: AbortSignal, progress: (message: string) => void): Promise<CallOutcome> => {
+      const prompt = input["prompt"];
+      if (typeof prompt !== "string" || prompt.trim() === "") return { text: "Invalid parameters: prompt is required.", isError: true }; // ERR-03
+      if (depth + 1 > maxDepth) return { text: "Nesting too deep.", isError: true }; // EF-05, ERR-04, CA-05
+      if (outsideRoot(input["cwd"])) return { text: "Access denied.", isError: true };
+      const dir = typeof input["cwd"] === "string" ? absolute(input["cwd"], cwd) : cwd;
+      const mode = input["approvalMode"] ?? modeState.mode;
+      // RG-01: never more rights than a local session of the server.
+      if (typeof mode !== "string" || !(PERMISSION_MODES_LIST as readonly string[]).includes(mode)) return { text: "Invalid parameters: unknown approvalMode.", isError: true };
+      if (morePermissive(mode as PermissionMode, modeState.mode)) return { text: `Invalid parameters: approvalMode cannot be more permissive than ${modeState.mode}.`, isError: true };
+      const iterations = input["maxIterations"];
+      if (iterations !== undefined && (!Number.isInteger(iterations) || (iterations as number) < 1)) return { text: "Invalid parameters: maxIterations must be a positive integer.", isError: true };
+      const schema = input["outputSchema"];
+      if (schema !== undefined && (typeof schema !== "object" || schema === null || Array.isArray(schema))) return { text: "Invalid parameters: outputSchema must be an object.", isError: true };
+      const out: string[] = [];
+      const errors: string[] = [];
+      const nested: StandardStreams = {
+        writeOut: (t) => void out.push(t),
+        writeErr: (t) => void errors.push(t),
+        readAllStdin: async () => prompt,
+        stdinLines: async function* () {},
+        stdinIsTTY: false,
+        stdoutIsTTY: false,
+      };
+      const code = await runCli(
+        [
+          "--non-interactive",
+          "--result-format",
+          "json",
+          "--cwd",
+          dir,
+          "--approval-mode",
+          mode,
+          ...(iterations !== undefined ? ["--max-iterations", String(iterations)] : []),
+          ...(schema !== undefined ? ["--output-schema", JSON.stringify(schema)] : []),
+        ],
+        {
+          ...deps,
+          streams: nested,
+          cwd: dir,
+          environment: { ...deps.environment, [`${env.prefix}AGENT_DEPTH`]: String(depth + 1) },
+          signal,
+          onEvent: (e) => {
+            // FA-03: the advance of a long run.
+            if (e.type === "tool_call") progress(`tool ${e.name}`);
+            if (e.type === "turn_completed") progress("turn completed");
+          },
+        },
+      );
+      let doc: Record<string, unknown> = {};
+      try {
+        doc = JSON.parse(out.join("")) as Record<string, unknown>;
+      } catch {
+        // no document: the error output says why
+      }
+      const text = typeof doc["result"] === "string" && doc["result"] !== "" ? (doc["result"] as string) : errors.join("").trim() || `The run ended with code ${code}.`;
+      return { text, isError: code !== ExitCode.Success, ...(doc["structuredResult"] !== undefined ? { structured: doc["structuredResult"] } : {}) };
+    };
+    const gate = new Gate(settings.get<number>("mcp.serve.maxConcurrency"));
+    const handlers = {
+      tools,
+      callTool,
+      runAgent,
+      maxConcurrency: settings.get<number>("mcp.serve.maxConcurrency"),
+      serverInfo: { name: identity.get("PRODUCT_CLI"), version: identity.version },
+      // EF-06: every call, with its origin, its capability and its issue.
+      journal: (e: { client: string; capability: string; outcome: string; ms: number }) => {
+        err(`Appel de ${e.client} : ${e.capability} — ${e.outcome === "ok" ? "réussi" : e.outcome === "cancelled" ? "annulé" : "en erreur"} (${e.ms} ms).`);
+        debug.log("serve", "call", e);
+      },
+    };
+    let where = "processus (entrée et sortie standard)";
+    let server: WsServer | undefined;
+    if (serve.transport === "network") {
+      const token = env.own("CONTROL_TOKEN");
+      if (!token) throw new RunError(`Jeton d'authentification requis : variable ${env.prefix}CONTROL_TOKEN.`, ExitCode.UsageOrConfiguration); // EF-07
+      const sessions = new Map<WsPeer, ConnectorServerSession>();
+      const listening = listenSecurely({
+        value: serve.listen ?? settings.get<string>("remote.transport.listenAddress"),
+        settings,
+        env,
+        err,
+        token,
+        maxPayloadLength: settings.get<number>("remote.transport.maxFrameBytes"),
+        log: (event, data) => debug.log("serve", event, data),
+        onOpen: (peer) => sessions.set(peer, new ConnectorServerSession(handlers, (m) => peer.send(JSON.stringify(m)), gate)),
+        onMessage: (peer, text) => sessions.get(peer)?.receive(text),
+        onClose: (peer) => {
+          sessions.get(peer)?.close();
+          sessions.delete(peer);
+        },
+      });
+      server = listening.server;
+      holder.cleanups.push(() => listening.server.stop());
+      where = `réseau (${listening.url})`;
+    }
+    // § 10: what is exposed, where and how, so that the operator checks the exposure.
+    err(`Serveur de connecteur prêt : capacités ${tools.map((t) => t.name).join(", ") || "aucune"} ; dossier autorisé ${projectReal} ; transport ${where}.`);
+    if (server) {
+      // Until the server is stopped.
+      await new Promise<void>((resolve) => (controller.signal.aborted ? resolve() : controller.signal.addEventListener("abort", () => resolve(), { once: true })));
+    } else {
+      const session = new ConnectorServerSession(handlers, (m) => streams.writeOut(`${JSON.stringify(m)}\n`), gate);
+      for await (const line of streams.stdinLines()) {
+        if (controller.signal.aborted) break;
+        if (line.trim() !== "") session.receive(line);
+      }
+      session.close(); // the end of the input stops the calls in progress
+    }
+    await hooks.fire("session_closed", { reason: "exit" });
+    await hooks.close();
+    await connectors?.close();
+    await shellRuntime?.stopAll();
+    transcript?.close();
+    return bySignal ? ExitCode.Interrupted : ExitCode.Success;
+  }
+
   // SPEC-MOD-006: the control driver handles the input and the requests of the host until the end of the channel.
   let controlEnd: ControlEnd | undefined;
   if (control) {
@@ -2126,50 +2323,21 @@ async function openRemoteLink(
   });
   const listen = opt("control-listen");
   if (listen !== undefined) {
-    const value = typeof listen === "string" ? listen : settings.get<string>("remote.transport.listenAddress");
-    const address = parseListenAddress(value);
-    if (typeof address === "string") throw usage(`Adresse d'écoute invalide : ${value} (${address}).`);
-    const where = address.hostname.includes(":") ? `[${address.hostname}]:${address.port}` : `${address.hostname}:${address.port}`;
-    const loopback = isLoopback(address.hostname);
-    // CA-04, § 12: an address reachable from the network is announced before the listening starts.
-    if (!loopback) err(`avertissement : adresse d'écoute publique ${where} : le moteur sera joignable depuis le réseau ; seules les origines de remote.transport.allowedOrigins sont admises.`);
-    const certFile = env.own("CONTROL_TLS_CERT");
-    const keyFile = env.own("CONTROL_TLS_KEY");
-    if ((certFile === undefined) !== (keyFile === undefined)) throw usage(`${env.prefix}CONTROL_TLS_CERT et ${env.prefix}CONTROL_TLS_KEY s'emploient ensemble.`);
-    if (certFile === undefined && !(loopback && plaintextLoopback)) throw usage("Un transport chiffré est requis."); // EF-01, ERR-03, CA-06
-    let tls: { cert: string; key: string } | undefined;
-    if (certFile !== undefined && keyFile !== undefined) {
-      try {
-        tls = { cert: readFileSync(certFile, "utf8"), key: readFileSync(keyFile, "utf8") };
-      } catch {
-        throw usage(`Certificat ou clé illisible : ${certFile}.`);
-      }
-    }
-    const allowed = settings.get<string[]>("remote.transport.allowedOrigins");
-    let server: ReturnType<typeof listenWebSocket>;
-    try {
-      server = listenWebSocket({
-        hostname: address.hostname,
-        port: address.port,
-        ...(tls ? { tls } : {}),
-        maxPayloadLength: maxFrameBytes * 2 + 65_536,
-        authorize: ({ headers, remoteAddress }) => {
-          // EF-02, EF-08, FA-04: the origin and the token are checked before anything else; the refusal says nothing of its cause.
-          const ok = originAllowed(remoteAddress, headers.get("origin"), allowed) && bearerMatches(headers, token);
-          if (!ok) log.log("connection_refused", { origin: remoteAddress });
-          return ok;
-        },
-        onOpen: (peer) => link.open(peer),
-        onMessage: (peer, text) => link.receive(peer, text),
-        onClose: (peer) => link.closed(peer),
-      });
-    } catch {
-      throw usage(`Impossible d'écouter sur ${where}.`); // ERR-02
-    }
-    holder.cleanups.push(() => server.stop());
+    const listening = listenSecurely({
+      value: typeof listen === "string" ? listen : settings.get<string>("remote.transport.listenAddress"),
+      settings,
+      env,
+      err,
+      token,
+      maxPayloadLength: maxFrameBytes * 2 + 65_536,
+      log: (event, data) => log.log(event, data),
+      onOpen: (peer) => link.open(peer),
+      onMessage: (peer, text) => link.receive(peer, text),
+      onClose: (peer) => link.closed(peer),
+    });
+    holder.cleanups.push(() => listening.server.stop());
     (holder.finalizers ??= []).push(() => link.drain()); // first: the last messages, then a normal closing (§ 5.2 step 7)
-    const host = server.hostname.includes(":") ? `[${server.hostname}]` : server.hostname;
-    err(`En écoute sur ${tls ? "wss" : "ws"}://${host}:${server.port}`);
+    err(`En écoute sur ${listening.url}`);
     return link;
   }
   const endpoint = String(opt("control-connect"));
@@ -2209,6 +2377,105 @@ async function openRemoteLink(
   (holder.finalizers ??= []).push(() => link.drain());
   if (!(await connect())) throw usage(`Connexion impossible : ${url.origin}.`);
   return link;
+}
+
+/**
+ * A WebSocket server bound to an address of the configuration (SPEC-MOD-007, SPEC-MOD-008 EF-07): a public address is
+ * announced before the listening (CA-04), encryption is required outside the loopback interface (EF-01, ERR-03), the
+ * origin and the token are checked before anything is exchanged (EF-02, EF-08).
+ */
+function listenSecurely(o: {
+  readonly value: string;
+  readonly settings: { get<T>(key: string): T };
+  readonly env: EnvironmentView;
+  readonly err: (text: string) => void;
+  readonly token: string;
+  readonly maxPayloadLength: number;
+  readonly log: (event: string, data: Record<string, unknown>) => void;
+  readonly onOpen: (peer: WsPeer) => void;
+  readonly onMessage: (peer: WsPeer, text: string) => void;
+  readonly onClose: (peer: WsPeer) => void;
+}): { readonly server: WsServer; readonly url: string } {
+  const usage = (message: string) => new RunError(message, ExitCode.UsageOrConfiguration);
+  const address = parseListenAddress(o.value);
+  if (typeof address === "string") throw usage(`Adresse d'écoute invalide : ${o.value} (${address}).`);
+  const where = address.hostname.includes(":") ? `[${address.hostname}]:${address.port}` : `${address.hostname}:${address.port}`;
+  const loopback = isLoopback(address.hostname);
+  if (!loopback) o.err(`avertissement : adresse d'écoute publique ${where} : le moteur sera joignable depuis le réseau ; seules les origines de remote.transport.allowedOrigins sont admises.`);
+  const certFile = o.env.own("CONTROL_TLS_CERT");
+  const keyFile = o.env.own("CONTROL_TLS_KEY");
+  if ((certFile === undefined) !== (keyFile === undefined)) throw usage(`${o.env.prefix}CONTROL_TLS_CERT et ${o.env.prefix}CONTROL_TLS_KEY s'emploient ensemble.`);
+  if (certFile === undefined && !(loopback && o.settings.get<boolean>("remote.transport.allowPlaintextLoopback"))) throw usage("Un transport chiffré est requis.");
+  let tls: { cert: string; key: string } | undefined;
+  if (certFile !== undefined && keyFile !== undefined) {
+    try {
+      tls = { cert: readFileSync(certFile, "utf8"), key: readFileSync(keyFile, "utf8") };
+    } catch {
+      throw usage(`Certificat ou clé illisible : ${certFile}.`);
+    }
+  }
+  const allowed = o.settings.get<string[]>("remote.transport.allowedOrigins");
+  let server: WsServer;
+  try {
+    server = listenWebSocket({
+      hostname: address.hostname,
+      port: address.port,
+      ...(tls ? { tls } : {}),
+      maxPayloadLength: o.maxPayloadLength,
+      authorize: ({ headers, remoteAddress }) => {
+        // The refusal says nothing of its cause (ERR-01).
+        const ok = originAllowed(remoteAddress, headers.get("origin"), allowed) && bearerMatches(headers, o.token);
+        if (!ok) o.log("connection_refused", { origin: remoteAddress });
+        return ok;
+      },
+      onOpen: o.onOpen,
+      onMessage: o.onMessage,
+      onClose: o.onClose,
+    });
+  } catch {
+    throw usage(`Impossible d'écouter sur ${where}.`); // ERR-02
+  }
+  const host = server.hostname.includes(":") ? `[${server.hostname}]` : server.hostname;
+  return { server, url: `${tls ? "wss" : "ws"}://${host}:${server.port}` };
+}
+
+/** `run_agent` (SPEC-MOD-008 § 5.2): a complete request of the agent; its parameters are stable (EF-08). */
+const RUN_AGENT_TOOL: ServedTool = {
+  name: "run_agent",
+  description: "Runs a complete request of the agent in the allowed folder and returns its final answer.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      prompt: { type: "string", minLength: 1, description: "The request." },
+      cwd: { type: "string", description: "Working folder, inside the allowed folder. Default: the allowed folder." },
+      maxIterations: { type: "integer", minimum: 1, description: "Maximal number of round trips with the model." },
+      approvalMode: { type: "string", enum: ["planning", "no_prompt", "ask", "auto_edit", "auto_approve", "unrestricted"], description: "Permission mode, never more permissive than the one of the server." },
+      outputSchema: { type: "object", description: "JSON schema of the expected result." },
+    },
+    required: ["prompt"],
+    additionalProperties: false,
+  },
+};
+
+const PERMISSION_MODES_LIST = ["ask", "planning", "auto_edit", "no_prompt", "auto_approve", "unrestricted"] as const;
+
+/**
+ * EF-01, RG-03: the capabilities exposed. From the launch option, any known capability; from the settings, only the
+ * reading ones and `run_agent`, since writing and running must be asked for explicitly at launch.
+ */
+function serveCapabilities(option: string | undefined, configured: readonly string[], origin: string, err: (text: string) => void): readonly string[] {
+  const known = new Set<string>(SERVE_CAPABILITIES);
+  if (option !== undefined) {
+    const wanted = splitList(option);
+    const unknown = wanted.filter((c) => !known.has(c));
+    if (unknown.length > 0) throw new RunError(`Capacité inconnue : ${unknown.join(", ")} (${SERVE_CAPABILITIES.join(", ")}).`, ExitCode.UsageOrConfiguration);
+    return [...new Set(wanted)];
+  }
+  if (origin === "default") return DEFAULT_CAPABILITIES;
+  const kept = configured.filter((c) => known.has(c) && !WRITING_CAPABILITIES.has(c));
+  const ignored = configured.filter((c) => !kept.includes(c));
+  if (ignored.length > 0) err(`avertissement : mcp.serve.capabilities : ${ignored.join(", ")} ignoré${ignored.length > 1 ? "s" : ""} (l'écriture et l'exécution se demandent par --capabilities au lancement).`);
+  return [...new Set(kept)];
 }
 
 /** Alias of each tier, for the allow list (SPEC-API-007). */

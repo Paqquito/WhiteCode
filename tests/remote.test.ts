@@ -88,7 +88,14 @@ describe("SPEC-MOD-007 server mode", () => {
     const ws = workspace();
     const cert = join(ws.root, "cert.pem");
     const key = join(ws.root, "key.pem");
-    const made = Bun.spawnSync([OPENSSL!, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=localhost"], { stdout: "ignore", stderr: "ignore" });
+    const made = Bun.spawnSync([OPENSSL!, "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=localhost"], {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+      timeout: 20_000,
+      // The OpenSSL of Git for Windows would turn "/CN=localhost" into a path, then wait for a subject on its input.
+      env: { ...process.env, MSYS_NO_PATHCONV: "1", MSYS2_ARG_CONV_EXCL: "*" },
+    });
     expect(made.exitCode).toBe(0);
     const controller = new AbortController();
     let err = "";
@@ -109,7 +116,7 @@ describe("SPEC-MOD-007 server mode", () => {
     const warning = err.indexOf("adresse d'écoute publique 0.0.0.0:0");
     expect(warning).toBeGreaterThanOrEqual(0);
     expect(warning).toBeLessThan(err.indexOf("En écoute sur wss://"));
-  });
+  }, 30_000);
 
   test("SPEC-MOD-007/CA-05 — a second host trying to drive: it is refused", async () => {
     const ws = workspace();
