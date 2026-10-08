@@ -235,6 +235,7 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "agents.loadProjectInstructions", schema: bool(), default: true, scopes: [U], owner: "SPEC-AGT-001" },
   { key: "agents.allowProjectAgents", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-AGT-005" },
   { key: "tasks.maxOutputBytes", schema: int(1_024), default: 100 * 1024 * 1024, scopes: [U], owner: "SPEC-AGT-016" },
+  { key: "planning.defaultResumeMode", schema: enumOf(["ask", "auto_edit"]), default: "ask", scopes: [U], owner: "SPEC-OUT-024" },
   { key: "engine.output.schemaRetries", schema: int(0, 5), default: 2, scopes: [U, P], owner: "SPEC-MOD-004" },
   { key: "engine.output.schemaStrictExtraction", schema: bool(), default: false, scopes: [U, P], owner: "SPEC-MOD-004" },
   { key: "engine.output.schemaMaxDepth", schema: int(1, 100), default: 12, scopes: [U], owner: "SPEC-MOD-004" },

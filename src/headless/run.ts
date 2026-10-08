@@ -25,7 +25,7 @@ import { readUserState, updateUserState } from "../config/trust";
 import { FallbackPolicy } from "../engine/fallback";
 import { buildSystemInstructions, estimateTokens, RequiredSectionUnavailable } from "../engine/system-instructions";
 import { InstructionsLoader, instructionsReminder, renderInstructions } from "../engine/project-instructions";
-import { dateChangeProducer, ReminderCenter, type Reminder } from "../engine/reminders";
+import { dateChangeProducer, ReminderCenter, type Reminder, type ReminderProducer } from "../engine/reminders";
 import { TaskList, taskListElements, todoReminderProducer, type Task } from "../engine/task-list";
 import { MAIN_AGENT } from "../tools/update-todo-list";
 import { Conversation } from "../engine/conversation";
@@ -90,6 +90,7 @@ import { createSpawnAgentTool, type SpawnAgentInput } from "../tools/spawn-agent
 import { loadAgents, READING_TOOLS, BUILT_IN_AGENTS, type AgentDefinition, type AgentLocation } from "../agents/definitions";
 import { restrictedView, type ToolLookup } from "../tools/registry";
 import { BackgroundTasks } from "../engine/background";
+import { createPlanningTools, createUserChoiceTool, type ChoiceQuestion, type ChoiceReply, type PlanDecision } from "../tools/planning";
 import { backgroundOutputTool, backgroundStopTool, createWorkItemTools, monitorProcessTool } from "../tools/background-tools";
 import type { HookBus } from "../extension-points/hooks";
 import { closingFields, combineResults, exitCodeFor, renderResult, type ResultFormat } from "./output";
@@ -935,6 +936,92 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const inToolset = (name: string) => toolsetNames === undefined || toolsetNames.includes(name) || (toolsetNames.length === 1 && toolsetNames[0] === "default");
   const taskTools = [...createWorkItemTools({ fire: (event, fields) => void hooks.fire(event, fields) }), backgroundOutputTool as never, backgroundStopTool as never, ...(posixShell || powerShell ? [monitorProcessTool as never] : [])];
   for (const tool of taskTools) if (inToolset(tool.name)) registry.addStatic(tool);
+  // SPEC-OUT-024, SPEC-OUT-033: planning and questions need someone to answer: the interface (FA-03 of SPEC-OUT-024), or a
+  // control host that handles the question (FA-02 of SPEC-OUT-033, added once it has declared it).
+  let approvedPlan: string | undefined;
+  const askUser = async (questions: readonly ChoiceQuestion[], signal: AbortSignal): Promise<readonly ChoiceReply[]> => {
+    if (app) {
+      const replies: ChoiceReply[] = [];
+      for (const q of questions) {
+        if (signal.aborted) break;
+        const a = await app.choose(q.question, q.options, { multiple: q.allow_multiple === true, ...(q.header ? { header: q.header } : {}) });
+        replies.push(a.kind === "options" ? { labels: a.labels } : a.kind === "other" ? { other: a.text } : { none: true });
+      }
+      return replies;
+    }
+    if (control) {
+      const out = await control.channel.demand("request_user_choice", { questions }, signal);
+      const answers = out.kind === "answer" && out.ok ? ((out.result as { answers?: unknown } | undefined)?.answers ?? []) : [];
+      return questions.map((_, i) => {
+        const a = Array.isArray(answers) ? (answers[i] as Record<string, unknown> | undefined) : undefined;
+        if (Array.isArray(a?.["labels"]) && a!["labels"].every((l) => typeof l === "string")) return { labels: a!["labels"] as string[] };
+        if (typeof a?.["other"] === "string") return { other: a["other"] };
+        return { none: true as const };
+      });
+    }
+    return questions.map(() => ({ none: true as const }));
+  };
+  const choiceTool = createUserChoiceTool(askUser) as never;
+  const [startPlanningTool, submitPlanTool] = createPlanningTools({
+    mode: () => modeState.mode,
+    enter: async (reason) => {
+      if (!app) return false;
+      const yes = await app.confirm(`Le modèle propose de passer en mode planification${reason ? ` : ${reason}` : ""}. Il ne fera qu'explorer, puis présentera un plan.`, "planifier", "continuer sans");
+      if (yes) {
+        modeState.set("planning");
+        app.refresh();
+      }
+      return yes;
+    },
+    decide: async (plan): Promise<PlanDecision> => {
+      if (!app) return { kind: "none" };
+      app.commit(box([text([{ text: "Plan proposé", style: { bold: true } }]), text(plan)], { padding: { left: 2 } }));
+      const first = settings.get<string>("planning.defaultResumeMode") === "auto_edit" ? "auto_edit" : "ask";
+      const modes: PermissionMode[] = first === "auto_edit" ? ["auto_edit", "ask"] : ["ask", "auto_edit"];
+      const resume = (m: PermissionMode) => `Approuver et reprendre en ${m}`;
+      const choice = await app.choose("Que faire de ce plan ?", [...modes.map((m) => ({ label: resume(m) })), { label: "Modifier le plan" }, { label: "Rejeter avec un commentaire" }], { other: false });
+      if (choice.kind !== "options") return { kind: "none" };
+      const label = choice.labels[0]!;
+      let final = plan;
+      let edited = false;
+      let mode = modes.find((m) => label === resume(m));
+      if (label === "Rejeter avec un commentaire") {
+        const comment = await app.editText("Commentaire pour le modèle (Entrée pour l'envoyer) :", "", true);
+        return comment === undefined ? { kind: "none" } : { kind: "rejected", comment };
+      }
+      if (label === "Modifier le plan") {
+        // EF-04, FA-01: the plan edited in the input area, then the resume mode.
+        const text = await app.editText("Plan modifié (Entrée pour valider) :", plan);
+        if (text === undefined) return { kind: "none" };
+        final = text;
+        edited = text !== plan;
+        const then = await app.choose("Reprendre dans quel mode ?", modes.map((m) => ({ label: resume(m) })), { other: false });
+        if (then.kind !== "options") return { kind: "none" };
+        mode = modes.find((m) => then.labels[0] === resume(m));
+      }
+      // SPEC-PER-003 FA-01, CA-04: the chosen mode applies at once; the approved plan is kept (EF-03).
+      modeState.set(mode!);
+      app.refresh();
+      approvedPlan = final;
+      return { kind: "approved", mode: mode!, plan: final, edited };
+    },
+  });
+  if (!nonInteractive) {
+    for (const tool of [startPlanningTool, submitPlanTool, choiceTool] as never[]) if (inToolset((tool as { name: string }).name)) registry.addStatic(tool);
+  }
+  // SPEC-MOT-007 CA-03: while the planning mode lasts, it is recalled every few requests (its activation has its own note).
+  let planningRequests = 0;
+  const planningReminder: ReminderProducer = {
+    type: "planning_mode",
+    produce: () => {
+      if (modeState.mode !== "planning") {
+        planningRequests = 0;
+        return [];
+      }
+      planningRequests++;
+      return planningRequests % 5 === 0 ? [{ type: "planning_mode", text: "The planning mode is still active: read and explore only, change nothing, and present your plan with submit_plan when it is ready.", priority: 2, repeatable: true }] : [];
+    },
+  };
 
   // Limits: the most restrictive defined source wins (SPEC-MOD-005 RG-01, gap E-017); default 50 in automated runs (E-018).
   const strictest = (key: string, option: number | undefined, label: string): number | undefined => {
@@ -1499,6 +1586,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         ...restoreFiles(recentFiles, settings.get<number>("context.compaction.restoreFiles"), settings.get<number>("context.compaction.restoreTokens")),
         // SPEC-OUT-021 EF-03, SPEC-MOT-011 CA-02: the task list survives the compaction.
         ...taskListElements(taskList, MAIN_AGENT),
+        // SPEC-OUT-024 EF-03: the approved plan survives the compaction.
+        ...(approvedPlan ? [`The plan approved by the user, to follow:\n${approvedPlan}`] : []),
       ],
       onCompacted: () => loopGuard.compacted(),
     },
@@ -1530,6 +1619,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           trace: (event, data) => debug.log("control", event, data), // EF-08
         })
       : undefined;
+  // SPEC-OUT-033 FA-02, CA-03: a control host that handles the questions gets the tool, once it has said so.
+  if (control && inToolset("request_user_choice")) void control.channel.initialized.then(() => control.channel.host?.demands.has("request_user_choice") && registry.addStatic(choiceTool));
   if (stream) {
     stream.sessionId = sessionId;
     control?.channel.sendInit(sessionId); // § 5.4 step 2: before any other message
@@ -1557,6 +1648,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       { type: "turn_interrupted", produce: () => interruptionNotes.splice(0) },
       connectorReminders,
       background.reminders,
+      planningReminder,
     ],
     settings.get<number>("context.reminders.maxTokens"),
     estimateTokens,

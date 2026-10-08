@@ -74,6 +74,29 @@ interface PendingApproval {
   explaining?: Editor;
 }
 
+/** Answer of a choice dialog (SPEC-OUT-033 § 5.3, SPEC-OUT-024 § 5.3 step 3). */
+export type ChoiceAnswer = { readonly kind: "options"; readonly labels: readonly string[] } | { readonly kind: "other"; readonly text: string } | { readonly kind: "cancelled" };
+
+interface ChoiceDialog {
+  readonly title: string;
+  readonly header?: string;
+  readonly options: ReadonlyArray<{ readonly label: string; readonly description?: string }>;
+  readonly multiple: boolean;
+  /** A free answer is offered as the last option (EF-01 of SPEC-OUT-033). */
+  readonly other: boolean;
+  selected: number;
+  readonly marked: Set<number>;
+  readonly shownAt: number;
+  readonly resolve: (answer: ChoiceAnswer) => void;
+}
+
+/** A text typed in the input area for a dialog (free answer, edited plan, comment), instead of a message. */
+interface Capture {
+  readonly prompt: string;
+  readonly allowEmpty: boolean;
+  readonly resolve: (text: string | undefined) => void;
+}
+
 interface Confirm {
   readonly message: string;
   readonly yes: string;
@@ -146,6 +169,8 @@ export class InteractiveApp {
   readonly #stash: string[];
   readonly #approvals: PendingApproval[] = [];
   #confirm: Confirm | undefined;
+  #choice: ChoiceDialog | undefined;
+  #capture: Capture | undefined;
   #session: TerminalSession | undefined;
   #unsubscribeInput: (() => void) | undefined;
   #unsubscribeResize: (() => void) | undefined;
@@ -635,6 +660,95 @@ export class InteractiveApp {
   // ---- Confirmations ----------------------------------------------------------------------------------------------
 
   /** A question with two answers, in a fixed panel (exit with work in progress, queue after an interruption). */
+  /**
+   * A question with options, entirely usable from the keyboard (EF-04 of SPEC-OUT-033): arrows, numbers, space to mark
+   * with several answers, Enter to validate, Échap to give no answer; the last option is a free answer.
+   */
+  choose(title: string, options: ReadonlyArray<{ readonly label: string; readonly description?: string }>, o: { readonly multiple?: boolean; readonly header?: string; readonly other?: boolean } = {}): Promise<ChoiceAnswer> {
+    if (this.#exiting) return Promise.resolve({ kind: "cancelled" });
+    return new Promise((resolve) => {
+      this.#choice = {
+        title,
+        ...(o.header ? { header: o.header } : {}),
+        options,
+        multiple: o.multiple === true,
+        other: o.other !== false,
+        selected: 0,
+        marked: new Set(),
+        shownAt: this.#now,
+        resolve: (answer) => {
+          this.#choice = undefined;
+          if (answer.kind !== "other" || answer.text !== "\u0000") {
+            resolve(answer);
+            this.#redraw();
+            return;
+          }
+          // The free answer: typed in the input area.
+          void this.editText(`${title} — votre réponse :`, "").then((text) => resolve(text === undefined ? { kind: "cancelled" } : { kind: "other", text }));
+        },
+      };
+      this.#redraw();
+    });
+  }
+
+  /** A text typed or edited in the input area, sent with Enter, abandoned with Échap (`undefined`). */
+  editText(prompt: string, initial: string, allowEmpty = false): Promise<string | undefined> {
+    if (this.#exiting) return Promise.resolve(undefined);
+    return new Promise((resolve) => {
+      this.#capture = {
+        prompt,
+        allowEmpty,
+        resolve: (text) => {
+          this.#capture = undefined;
+          resolve(text);
+          this.#redraw();
+        },
+      };
+      this.#editor.set(initial);
+      this.#redraw();
+    });
+  }
+
+  #choiceKey(c: ChoiceDialog, e: KeyEvent, action: string | undefined): void {
+    if (this.#now - c.shownAt < this.#o.settings.dialogGuardMs) return;
+    const count = c.options.length + (c.other ? 1 : 0);
+    const pick = (index: number) => {
+      if (c.other && index === c.options.length) return c.resolve({ kind: "other", text: "\u0000" });
+      if (c.multiple) {
+        if (c.marked.has(index)) c.marked.delete(index);
+        else c.marked.add(index);
+        this.#redraw();
+        return;
+      }
+      c.resolve({ kind: "options", labels: [c.options[index]!.label] });
+    };
+    if (e.name === "up") c.selected = (c.selected + count - 1) % count;
+    else if (e.name === "down") c.selected = (c.selected + 1) % count;
+    else if (e.name === "escape" || action === "dialog.refuse") return c.resolve({ kind: "cancelled" }); // FA-01: no answer
+    else if (e.text === " " && c.multiple && c.selected < c.options.length) return pick(c.selected);
+    else if (e.name === "enter") {
+      if (c.multiple && c.marked.size > 0 && c.selected !== c.options.length) return c.resolve({ kind: "options", labels: [...c.marked].sort((a, b) => a - b).map((i) => c.options[i]!.label) });
+      if (c.multiple && c.selected < c.options.length) return c.resolve({ kind: "options", labels: [c.options[c.selected]!.label] });
+      return pick(c.selected);
+    } else if (e.text !== undefined && /^[1-9]$/.test(e.text) && Number(e.text) <= count) {
+      c.selected = Number(e.text) - 1;
+      return pick(c.selected);
+    } else return;
+    this.#redraw();
+  }
+
+  #choiceView(c: ChoiceDialog): Node {
+    const t = tone("info", this.#view.unicode);
+    const labels = [...c.options.map((o) => o.label), ...(c.other ? ["Autre (réponse libre)"] : [])];
+    const lines = labels.map((label, i) => {
+      const box = c.multiple && i < c.options.length ? (c.marked.has(i) ? "[x] " : "[ ] ") : "";
+      const description = c.options[i]?.description;
+      return text([{ text: `${i === c.selected ? "❯" : " "} ${i + 1}. ${box}`, style: i === c.selected ? { bold: true } : {} }, { text: label, style: i === c.selected ? { bold: true } : {} }, ...(description ? [{ text: ` — ${description}`, style: { dim: true } }] : [])]);
+    });
+    const hint = c.multiple ? "↑↓ · Espace : cocher · Entrée : valider · Échap : sans réponse" : "↑↓ ou chiffre · Entrée : choisir · Échap : sans réponse";
+    return box([text([...(c.header ? [{ text: `[${c.header}] `, style: { dim: true } }] : []), { text: c.title, style: { bold: true } }]), ...lines, text([{ text: hint, style: { dim: true } }])], { border: { style: t.style }, padding: { left: 1, right: 1 } });
+  }
+
   confirm(message: string, yes = "Oui", no = "Non"): Promise<boolean> {
     if (this.#exiting) return Promise.resolve(false);
     return new Promise((resolve) => {
@@ -741,11 +855,30 @@ export class InteractiveApp {
     }
     const approval = this.#approvals[0];
     const searching = this.#assist.searching;
-    const contexts: KeyContext[] = approval || this.#confirm ? ["dialog", "app"] : searching ? ["search", "app"] : [...this.#assist.contexts(), "input", "app"];
+    const contexts: KeyContext[] = approval || this.#confirm || this.#choice ? ["dialog", "app"] : searching ? ["search", "app"] : [...this.#assist.contexts(), "input", "app"];
     const action = this.#keymap.action(e, contexts);
     // Essential application actions keep priority over any edition (SPEC-IHM-013 § 5.5).
     const modalEscape = this.#modal !== undefined && (this.#modal.mode !== "normal" || this.#modal.pending !== "");
+    // A text typed for a dialog is abandoned with Échap, before the interruption of the turn.
+    if (this.#capture && action === "app.cancel" && !approval && !this.#confirm && !modalEscape) {
+      this.#editor.set("");
+      this.#capture.resolve(undefined);
+      return;
+    }
+    if (this.#choice && action !== "app.interrupt") {
+      this.#choiceKey(this.#choice, e, action);
+      return;
+    }
     if (action === "app.interrupt" || (action === "app.cancel" && this.running && !approval && !this.#confirm && !modalEscape)) {
+      if (this.#choice) {
+        this.#choice.resolve({ kind: "cancelled" });
+        return;
+      }
+      if (this.#capture) {
+        this.#editor.set("");
+        this.#capture.resolve(undefined);
+        return;
+      }
       if (approval || this.#confirm) {
         if (approval) approval.resolve({ answer: "no_stop" });
         else this.#confirm!.resolve(false);
@@ -991,6 +1124,15 @@ export class InteractiveApp {
 
   /** Validation (§ 5.5): sends when idle, queues during a turn (FA-01, SPEC-IHM-011 § 5.1); an empty input sends nothing. */
   #submit(): void {
+    if (this.#capture) {
+      // A text for a dialog, never a message (SPEC-OUT-024 EF-04, SPEC-OUT-033 EF-01).
+      const text = this.#editor.text;
+      if (text.trim() === "" && !this.#capture.allowEmpty) return;
+      this.#editor.set("");
+      this.#capture.resolve(text);
+      this.#saveState();
+      return;
+    }
     const typed = this.#editor.text;
     if (typed.trim() === "") return; // EF-06, CA-06
     const content = this.#expanded(typed);
@@ -1066,6 +1208,8 @@ export class InteractiveApp {
     const approval = this.#approvals[0];
     if (approval) panels.push(this.#dialogView(approval));
     if (this.#confirm) panels.push(this.#confirmView(this.#confirm));
+    if (this.#choice) panels.push(this.#choiceView(this.#choice));
+    if (this.#capture) panels.push(box([text([{ text: this.#capture.prompt, style: { bold: true } }]), text([{ text: "Entrée : valider · Échap : annuler", style: { dim: true } }])], { padding: { left: 2 } }));
     // SPEC-OUT-021 § 10: the task list above the input area, emptied once every task is done (§ 5.3 step 3).
     const tasks = this.#o.tasks?.() ?? [];
     if (tasks.length > 0 && tasks.some((t) => t.status !== "completed")) {

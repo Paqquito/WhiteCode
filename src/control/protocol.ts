@@ -28,7 +28,7 @@ export const ENGINE_DEMANDS = ["approval_request", "request_user_choice", "notif
 export type EngineDemand = (typeof ENGINE_DEMANDS)[number];
 
 /** Demands this version sends: the others are part of the protocol, but no function of the product emits them yet. */
-export const EMITTED_DEMANDS: readonly EngineDemand[] = ["approval_request", "notify", "confirm_escalation"];
+export const EMITTED_DEMANDS: readonly EngineDemand[] = ["approval_request", "request_user_choice", "notify", "confirm_escalation"];
 
 /** Response delay bounds and default (§ 6). */
 export const RESPONSE_TIMEOUT_BOUNDS = { min: 1_000, max: 600_000 } as const;
