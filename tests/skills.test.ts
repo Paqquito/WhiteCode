@@ -134,7 +134,7 @@ describe("SPEC-CMD-001 commands in a request", () => {
     userSkill(ws, "revue", { description: "Review." }, "body");
     const p = new ScriptedProvider([{ text: "done" }]);
     const res = await run(ws, p, ["/revu the change"]);
-    expect(res.stderr).toContain("Commande inconnue : /revu. Noms proches : /revue.");
+    expect(res.stderr).toContain("Commande inconnue : /revu. Noms proches : /revue");
     expect(p.requests).toHaveLength(0);
   });
 

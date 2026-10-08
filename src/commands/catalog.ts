@@ -137,12 +137,12 @@ export class CommandCatalog {
     for (const c of this.#internal.values()) if (!this.#isDisabled(c.name) && !(this.#automated && c.interactiveOnly)) out.push({ name: c.name, source: "internal", description: c.description, usage: c.usage });
     for (const s of this.#skills.skills.values()) {
       if (s.extension || s.invocation === "model" || this.#internal.has(s.name) || this.#isDisabled(s.name)) continue;
-      out.push({ name: s.name, source: s.scope, description: s.description, usage: s.argumentsHelp });
+      out.push({ name: s.name, source: s.scope === "product" ? "internal" : s.scope, description: s.description, usage: s.argumentsHelp });
     }
     for (const [key, s] of this.#skills.qualified) {
       // A masked command is listed under its qualified form only.
       if (this.#skills.skills.get(s.name) === s && !this.#internal.has(s.name)) continue;
-      if (!this.#isDisabled(key)) out.push({ name: key, source: s.scope, description: s.description, usage: s.argumentsHelp });
+      if (!this.#isDisabled(key)) out.push({ name: key, source: s.scope === "product" ? "internal" : s.scope, description: s.description, usage: s.argumentsHelp });
     }
     const shortOf = new Map<string, string>();
     for (const [short, names] of this.#claims) if (names.length === 1) shortOf.set(names[0]!, short);

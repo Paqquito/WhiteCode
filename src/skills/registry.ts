@@ -7,7 +7,8 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { parseYaml } from "../platform/yaml";
 
-export type SkillScope = "managed" | "project" | "user" | "extension";
+/** `product`: the skills built into the product, of the lowest priority (SPEC-EXT-021 to SPEC-EXT-032). */
+export type SkillScope = "managed" | "project" | "user" | "extension" | "product";
 export type Invocation = "user" | "model" | "both";
 
 export interface Skill {
@@ -28,6 +29,8 @@ export interface Skill {
   readonly command: boolean;
   /** Extension providing it: its name is then `<extension>:<name>` (SPEC-EXT-011 EF-01). */
   readonly extension?: string;
+  /** Instructions carried by the product itself, instead of a file. */
+  readonly content?: string;
 }
 
 export interface SkillLocation {
@@ -53,7 +56,7 @@ export interface SkillSet {
 }
 
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const PRIORITY: readonly SkillScope[] = ["managed", "project", "user", "extension"];
+const PRIORITY: readonly SkillScope[] = ["managed", "project", "user", "extension", "product"];
 export const DEFINITION_FILE = "definition.md";
 
 /** Header and body of a Markdown file with a `---` YAML header; the whole text is the body without header. */
@@ -147,18 +150,17 @@ function readLocation(loc: SkillLocation, warnings: string[]): Skill[] {
   return loc.namespace ? out.map((s) => ({ ...s, name: `${loc.namespace}:${s.name}`, extension: loc.namespace })) : out;
 }
 
-/** § 5.2: managed, then project, then user; the first of a name wins (EF-03, CA-04). */
-export function loadSkills(locations: readonly SkillLocation[]): SkillSet {
+/** § 5.2: managed, then project, then user, then the extensions and the product; the first of a name wins (EF-03, CA-04). */
+export function loadSkills(locations: readonly SkillLocation[], products: readonly Skill[] = []): SkillSet {
   const warnings: string[] = [];
   const skills = new Map<string, Skill>();
   const qualified = new Map<string, Skill>();
   for (const scope of PRIORITY)
-    for (const loc of locations.filter((l) => l.scope === scope))
-      for (const s of readLocation(loc, warnings)) {
+    for (const s of scope === "product" ? products : locations.filter((l) => l.scope === scope).flatMap((loc) => readLocation(loc, warnings))) {
         if ((s.scope === "project" || s.scope === "user") && !qualified.has(`${s.scope}:${s.name}`)) qualified.set(`${s.scope}:${s.name}`, s);
         const current = skills.get(s.name);
         if (!current) skills.set(s.name, s);
-        else if (current.scope !== s.scope) {
+        else if (current.scope !== s.scope && s.scope !== "product") {
           const reach = s.scope === "project" || s.scope === "user" ? ` ; elle reste joignable par /${s.scope}:${s.name}` : "";
           warnings.push(`La compétence ${s.name} de portée ${s.scope} est masquée par celle de portée ${current.scope}${reach}.`);
         }

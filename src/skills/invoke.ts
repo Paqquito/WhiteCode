@@ -20,7 +20,13 @@ export function splitArguments(args: string): string[] {
 const usesPositional = (text: string) => /\$[1-9](?![0-9])/.test(text);
 
 /** Steps 1 and 2: the caller allowed by `invocation` (EF-01), then the content with its substitutions. */
-export function loadSkill(set: SkillSet, name: string, args: string, caller: Caller, vars: { readonly session: string }): Loaded {
+export function loadSkill(
+  set: SkillSet,
+  name: string,
+  args: string,
+  caller: Caller,
+  vars: { readonly session: string; /** Context of a skill of the product, added at the invocation. */ readonly expand?: (skill: Skill, content: string) => string },
+): Loaded {
   // Messages in English for the model, in French for the user.
   const user = caller === "user";
   // A short name of an extension command (SPEC-EXT-011 FA-01); an ambiguous one lists the qualified names.
@@ -40,7 +46,7 @@ export function loadSkill(set: SkillSet, name: string, args: string, caller: Cal
   if (skill.context === "agent" && user) return { ok: false, kind: "unavailable", message: `La compétence ${name} s'exécute dans un sous-agent : demandez-la au modèle, la commande ne la lance pas dans cette version.` };
   let body: string;
   try {
-    body = splitHeader(readFileSync(skill.file, "utf8")).body.trim();
+    body = skill.content?.trim() ?? splitHeader(readFileSync(skill.file, "utf8")).body.trim();
   } catch (e) {
     const why = e instanceof Error ? e.message : String(e);
     return { ok: false, kind: "unavailable", message: user ? `La compétence ${name} est illisible : ${why}.` : `The skill ${name} cannot be read: ${why}.` };
@@ -56,12 +62,12 @@ export function loadSkill(set: SkillSet, name: string, args: string, caller: Cal
   const content = body.replace(/\$\{(ARGS|SKILL_ROOT|CURRENT_SESSION)\}|\$([1-9])(?![0-9])/g, (_, variable: string | undefined, n: string | undefined) =>
     variable !== undefined ? values[variable]! : (words[Number(n) - 1] ?? ""),
   );
-  return { ok: true, skill, content };
+  return { ok: true, skill, content: vars.expand ? vars.expand(skill, content) : content };
 }
 
 /** EF-04: the invocation named in the conversation, with its source; the files of the skill are read on demand (EF-02 of SPEC-EXT-019). */
 export function framed(skill: Skill, content: string, invocation: string): string {
   const grants = skill.tools.length > 0 ? `\nUntil the end of this turn, these actions are allowed without request: ${skill.tools.join(", ")}.` : "";
-  const files = skill.command ? "" : `\nThe files of the skill are in ${skill.root}: read them with read_file when the instructions refer to them.`;
+  const files = skill.command || skill.content !== undefined ? "" : `\nThe files of the skill are in ${skill.root}: read them with read_file when the instructions refer to them.`;
   return `<skill name="${skill.name}" scope="${skill.scope}" invoked="${invocation}">${files}${grants}\n${content}\n</skill>`;
 }

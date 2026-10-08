@@ -39,6 +39,8 @@ export interface HookRuntimeOptions {
   /** Context for the model, through a system reminder (SPEC-HOK-010 § 5.1); `origin` names the event, and the hook when it comes late. */
   readonly addContext: (text: string, origin: string) => void;
   readonly clock?: () => Date;
+  /** Debug journal (domain `hooks`, SPEC-OBS-012): the declarations of an event, retained or not by their filter. */
+  readonly log?: (message: string, data?: unknown) => void;
 }
 
 interface Started {
@@ -80,7 +82,15 @@ export class HookRuntime implements HookBus {
   #select(event: string, fields: Record<string, unknown>): HookDeclaration[] {
     const field = HOOK_EVENTS[event]?.discriminant;
     const value = field ? fields[field] : undefined;
-    return this.#snapshot.declarations.filter((d) => d.event === event && d.matches(value === undefined ? undefined : String(value)));
+    const declared = this.#snapshot.declarations.filter((d) => d.event === event);
+    const selected = declared.filter((d) => d.matches(value === undefined ? undefined : String(value)));
+    if (declared.length > 0)
+      this.#o.log?.(`event ${event}: ${selected.length} of ${declared.length} hook(s) selected`, {
+        ...(field ? { [field]: value } : {}),
+        selected: selected.map((d) => d.label),
+        filteredOut: declared.filter((d) => !selected.includes(d)).map((d) => ({ hook: d.label, match: d.match })),
+      });
+    return selected;
   }
 
   /** Step 1: common fields and the fields of the event; large tool results cut with a flag (EF-04). */
