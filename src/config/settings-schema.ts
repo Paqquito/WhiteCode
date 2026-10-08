@@ -240,6 +240,8 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "tools.fetch.maxBytes", schema: int(1_024), default: 10 * 1024 * 1024, scopes: [G], owner: "SPEC-OUT-012" },
   { key: "tools.fetch.timeout", schema: durationSchema(), kind: "duration", default: 30_000, scopes: [G], owner: "SPEC-OUT-012" },
   { key: "tools.fetch.preapprovedDomains", schema: strList(), default: [], scopes: [G], owner: "SPEC-OUT-012" },
+  { key: "context.attachments.maxTokens", schema: int(100), default: 12_000, scopes: [U, G], owner: "SPEC-MOT-006" },
+  { key: "context.attachments.maxTotalTokens", schema: int(100), default: 60_000, scopes: [U, G], owner: "SPEC-MOT-006" },
   { key: "engine.output.schemaRetries", schema: int(0, 5), default: 2, scopes: [U, P], owner: "SPEC-MOD-004" },
   { key: "engine.output.schemaStrictExtraction", schema: bool(), default: false, scopes: [U, P], owner: "SPEC-MOD-004" },
   { key: "engine.output.schemaMaxDepth", schema: int(1, 100), default: 12, scopes: [U], owner: "SPEC-MOD-004" },

@@ -1653,6 +1653,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const controlContext: Reminder[] = [];
   // SPEC-MOT-009 EF-03: an interrupted turn is announced to the model at the next request.
   const interruptionNotes: Reminder[] = [];
+  // SPEC-MOT-006 step 5: the files changed outside the agent since they were read.
+  const changeNotes: Reminder[] = [];
+  const changeNotified = new Map<string, string>();
   const controlRules: Rule[] = [];
   const control =
     controlled && stream
@@ -1701,6 +1704,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       { type: "shell_observation", produce: () => shellObservations.splice(0) },
       { type: "host_context", produce: () => controlContext.splice(0) },
       { type: "turn_interrupted", produce: () => interruptionNotes.splice(0) },
+      { type: "file_changed", produce: () => changeNotes.splice(0) },
       connectorReminders,
       background.reminders,
       planningReminder,
@@ -1757,11 +1761,18 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     readDenied,
     maxCount: settings.get<number>("ui.attachments.maxCount"),
     maxTotalBytes: settings.get<number>("ui.attachments.maxTotalBytes"),
+    maxTokens: settings.get<number>("context.attachments.maxTokens"),
+    maxTotalTokens: settings.get<number>("context.attachments.maxTotalTokens"),
   });
+  // SPEC-MOT-006 step 6: a file attached whole is known as read, like a read by read_file.
+  const recordAttached = (read: ReadonlyArray<{ path: string; mtimeMs: number; size: number; complete: boolean }>) => {
+    for (const r of read) readState.set(comparablePath(realPathOrSelf(r.path), system.platform), { mtimeMs: r.mtimeMs, size: r.size, complete: r.complete });
+  };
   // A message typed in the input area: doubled trigger characters give their literal character (FA-06 of SPEC-IHM-007),
   // the files it references are read now (SPEC-IHM-010 § 5.4). For the messages taken at the safe point of a turn (SPEC-MOT-008).
   const typedParts = (typed: string): ContentPart[] => {
     const attached = attach(typed, attachmentOptions(), []);
+    recordAttached(attached.read);
     for (const n of attached.notices) app?.notice("warning", n);
     return [{ type: "text", text: literalTriggers(typed).text }, ...attached.parts.map((p) => ({ type: "text" as const, text: p }))];
   };
@@ -2233,6 +2244,31 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     } else if (entry?.kind === "text" && entry.text !== first) {
       replaceFirst(entry.text);
     }
+    // SPEC-MOT-006 § 5.3 steps 1 and 2: outside the interface, the references of a message are attached here (the
+    // input area attaches them itself, SPEC-IHM-010).
+    if (!app && entry?.kind !== "command" && first !== undefined) {
+      const attached = attach(first, attachmentOptions(), []);
+      recordAttached(attached.read);
+      for (const n of attached.notices) emit({ type: "warning", message: n });
+      if (attached.parts.length > 0) {
+        const base: ContentPart[] = typeof content === "string" ? [{ type: "text", text: content }] : [...content];
+        content = [...base, ...attached.parts.map((p) => ({ type: "text" as const, text: p }))];
+      }
+    }
+    // Step 5, EF-06, CA-04: the files read, then changed outside the agent since, announced once per change.
+    for (const [key, record] of readState as Map<string, { mtimeMs: number; size: number }>) {
+      let now: ReturnType<typeof statSync>;
+      try {
+        now = statSync(key);
+      } catch {
+        continue;
+      }
+      if (now.mtimeMs === record.mtimeMs && now.size === record.size) continue;
+      const stamp = `${now.mtimeMs}:${now.size}`;
+      if (changeNotified.get(key) === stamp) continue;
+      changeNotified.set(key, stamp);
+      changeNotes.push({ type: "file_changed", text: `The file ${key} was changed outside this conversation since you last read it: read it again before relying on its content or editing it.`, priority: 3 });
+    }
     const result = await runTurn(loopDeps, content, signal);
     skillAllows.length = 0; // EF-02 of SPEC-EXT-020: the grants of a skill end with its turn
     if (result.stopCause === "interrupted") {
@@ -2373,6 +2409,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         // SPEC-IHM-010 § 5.4, EF-04: the referenced files are read now; a pasted text attaches nothing (EF-10).
         // The references are those of the typed text: a doubled `@@` is a literal mark, never a reference (CA-12 of SPEC-IHM-007).
         const attached = attach(text, attachmentOptions(), meta.pasted ?? []);
+        recordAttached(attached.read);
         for (const n of attached.notices) interactiveApp.notice("warning", n);
         const content: string | ContentPart[] = attached.parts.length > 0 ? [{ type: "text", text: sent }, ...attached.parts.map((p) => ({ type: "text" as const, text: p }))] : sent;
         const outcome = await processRequest(content, signal, meta.literal === true);
