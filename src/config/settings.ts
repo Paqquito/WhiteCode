@@ -1,4 +1,5 @@
 // Implements: SPEC-CFG-001 (EF-01 to EF-05, RG-01 to RG-08, FA-01 to FA-03), SPEC-CFG-002 (EF-03, ERR-01 to ERR-03, RG-02)
+// Supports: SPEC-CFG-003 (shared key validation), gap E-120.
 // Loads the settings scopes, validates each key, merges them by priority and records the origin of every value.
 
 import { existsSync, readFileSync } from "node:fs";
@@ -12,7 +13,7 @@ export interface ConfigIssue {
   readonly code: string;
   readonly severity: "error" | "warning";
   /** Nature of the problem: `config validate` treats every kind but `unknown-key` and `untrusted` as an error of the file. */
-  readonly kind?: "scope" | "type" | "range" | "restrictive" | "invalid-json" | "unknown-key" | "untrusted";
+  readonly kind?: "scope" | "type" | "range" | "restrictive" | "invalid-json" | "policy" | "unknown-key" | "untrusted";
   readonly message: string;
   readonly scope?: Origin;
   readonly key?: string;
@@ -72,12 +73,14 @@ function lineOf(text: string, offset: number): number {
 }
 
 /** Flattens a settings object into declared keys; unknown keys are reported (ERR-02 of SPEC-CFG-001). */
-function flatten(obj: Record<string, unknown>, prefix: string, out: Map<string, unknown>, unknown: string[]): void {
+export function flattenSettings(obj: Record<string, unknown>, prefix: string, out: Map<string, unknown>, unknown: string[], duplicates?: string[]): void {
   for (const [k, v] of Object.entries(obj)) {
     if (prefix === "" && k === "$schema") continue;
     const key = prefix ? `${prefix}.${k}` : k;
-    if (SETTING_BY_KEY.has(key)) out.set(key, v);
-    else if (isPlainObject(v) && isKnownPrefix(key)) flatten(v, key, out, unknown);
+    if (SETTING_BY_KEY.has(key)) {
+      if (out.has(key)) duplicates?.push(key);
+      out.set(key, v);
+    } else if (isPlainObject(v) && isKnownPrefix(key)) flattenSettings(v, key, out, unknown, duplicates);
     else unknown.push(key);
   }
 }
@@ -209,7 +212,7 @@ export class Settings {
     }
     const flat = new Map<string, unknown>();
     const unknown: string[] = [];
-    flatten(data, "", flat, unknown);
+    flattenSettings(data, "", flat, unknown);
     for (const key of unknown) {
       const near = suggest(key, SETTING_BY_KEY.keys(), 3);
       this.#issue({ code: "ERR-02", severity: "warning", kind: "unknown-key", scope: source.scope, key, message: `Clé inconnue \`${key}\`${near[0] ? ` — vouliez-vous dire \`${near[0]}\` ?` : "."}` });

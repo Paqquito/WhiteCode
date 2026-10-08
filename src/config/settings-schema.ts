@@ -1,4 +1,5 @@
 // Implements: SPEC-CFG-002 (EF-02, § 6 widening keys, § 6.1 catalogue for the keys of lot 1)
+// Supports: SPEC-CFG-003 (policy.requiredKeys), SPEC-PER-001 (detachedWaitTimeout catalogue), gap E-120.
 // Single source of truth for setting keys: type, default, allowed scopes, owner sheet, merge rule, widening flags.
 
 import { Type, type TSchema } from "@sinclair/typebox";
@@ -69,6 +70,8 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "thinking.summaries.visible", schema: bool(), default: false, scopes: [U], owner: "SPEC-MOT-023" },
 
   // Permissions
+  { key: "policy.requiredKeys", schema: strList(), default: [], scopes: [G], owner: "SPEC-CFG-003" },
+  { key: "permissions.detachedWaitTimeout", schema: durationSchema(), kind: "duration", default: 30 * 60_000, scopes: [U, G], owner: "SPEC-PER-001" },
   { key: "permissions.allowRules", schema: strList(), default: [], scopes: [U, P, L, G, C], owner: "SPEC-PER-001", merge: "concat", hot: true },
   { key: "permissions.askRules", schema: strList(), default: [], scopes: [U, P, L, G, C], owner: "SPEC-PER-001", merge: "concat", hot: true },
   { key: "permissions.denyRules", schema: strList(), default: [], scopes: [U, P, L, G, C], owner: "SPEC-PER-001", merge: "concat", hot: true },

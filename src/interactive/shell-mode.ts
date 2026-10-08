@@ -1,4 +1,5 @@
 // Implements: SPEC-IHM-012 (§ 5.1 activation, § 5.2 steps 1 to 4, § 5.3 adding to the context, § 5.4 interruption, FA-01, FA-04, FA-05, EF-01 to EF-06, EF-08 to EF-10, ERR-01, ERR-04, ERR-05, RG-01 to RG-04, CA-02 to CA-08)
+// Supports: SPEC-CFG-003 (policy rechecked after approval), gap E-120.
 // The shell mode of the input area: a line starting with `!` is a command for the shell of the platform (PowerShell by
 // default under Windows), never a message for the model. It goes through the ordinary permission rules, exactly like a
 // command asked by the model, runs in the same environment, shows its output as it comes, and may be added to the
@@ -25,6 +26,7 @@ export function shellCommand(text: string): string {
 }
 
 export interface ShellModeDeps {
+  readonly policyRefusal?: () => string | undefined;
   readonly runtime: ShellRuntime;
   readonly platform: PlatformName;
   readonly hasPosix: boolean;
@@ -47,6 +49,8 @@ export type ShellLineOutcome = { readonly refused: string } | { readonly result:
 
 /** § 5.2: the permission decision of the ordinary rules (EF-02, RG-01), then the execution with its output as it comes. */
 export async function runShellLine(command: string, signal: AbortSignal, onOutput: (chunk: string) => void, d: ShellModeDeps): Promise<ShellLineOutcome> {
+  const refused = d.policyRefusal?.();
+  if (refused) return { refused };
   const shell = shellOf(d);
   if (!shell) return { refused: "Aucun interpréteur de commandes n'est disponible." };
   const input: ShellInput = { command };
@@ -75,8 +79,12 @@ export async function runShellLine(command: string, signal: AbortSignal, onOutpu
       signal,
     );
     if (r.decision === "deny") return { refused: `Commande refusée : ${r.reason}` }; // RG-03: nothing runs
+    const afterApproval = d.policyRefusal?.();
+    if (afterApproval) return { refused: afterApproval };
     if (r.persist) d.persistRule(r.persist.scope, r.persist.rule);
   }
+  const beforeExecution = d.policyRefusal?.();
+  if (beforeExecution) return { refused: beforeExecution };
   const result = shell.tool.name === "run_powershell" ? await d.runtime.runPowerShell(command, d.timeoutMs, signal, onOutput) : await d.runtime.runPosix(command, d.timeoutMs, signal, onOutput);
   return { result };
 }

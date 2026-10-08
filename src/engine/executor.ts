@@ -1,7 +1,7 @@
 // Implements: SPEC-MOT-002 (§ 5.3, EF-01 to EF-07, FA-02 to FA-05, RG-01 to RG-04, ERR-01 to ERR-03, CA-01 to CA-06, CA-08), SPEC-OUT-001 (FA-01, EF-02, EF-05, EF-06, CA-03),
 //             SPEC-MOT-046 (§ 5.1 detection before the hook and the permission, § 5.3 points 2 to 5, FA-01 to FA-03, EF-01 to EF-04),
 //             SPEC-MOD-006 (FA-05, CA-03 parameters replaced by the control host evaluated again)
-// Supports: SPEC-HOK-010 (EF-03 input changed by a hook validated again, ERR-01, ERR-02), SPEC-SES-006 (backup before a write, EF-01), SPEC-PER-001 (decision then resolution of `ask`, CA-05 persisted answer), SPEC-PER-003 (CA-08 revalidation), SPEC-OUT-003 (EF-06 difference shown), gaps E-022, E-049
+// Supports: SPEC-HOK-010 (EF-03 input changed by a hook validated again, ERR-01, ERR-02), SPEC-SES-006 (backup before a write, EF-01), SPEC-PER-001 (decision then resolution of `ask`, CA-05 persisted answer), SPEC-PER-003 (CA-08 revalidation), SPEC-OUT-003 (EF-06 difference shown), SPEC-CFG-003 (policy gate before execution), gaps E-022, E-049, E-120
 
 import type { PermissionMode } from "../config/settings-schema";
 import type { HookBus } from "../extension-points/hooks";
@@ -18,6 +18,8 @@ import type { ResultStore } from "../session/result-store";
 import { boundText } from "../tools/output-bounds";
 
 export interface ExecutorDeps {
+  /** Mandatory policy checked against the raw source before hooks and again after any approval or queue. */
+  readonly policyRefusal?: () => string | undefined;
   /** File history of the session (SPEC-SES-006): called around the tools that change files. */
   readonly fileHistory?: { beforeWrite(paths: readonly string[]): string | undefined; afterWrite(paths: readonly string[]): void };
   readonly registry: ToolLookup;
@@ -187,7 +189,13 @@ export class ResponseExecution {
       return outcome;
     };
     const signal = this.#controller.signal;
+    const policyBlocked = () => {
+      const reason = this.#deps.policyRefusal?.();
+      return reason ? finish(textOutcome(reason, true, "permission_denied"), false) : undefined;
+    };
     try {
+      const blocked = policyBlocked();
+      if (blocked) return blocked;
       if (!tool) return finish(textOutcome(`Unknown tool: ${call.name}. This tool is not available in this session.`, true, "unavailable")); // ERR-01 of SPEC-MOT-001
       if (schemaErrors.length > 0) return finish(textOutcome(`Invalid input: ${schemaErrors.join("; ")}.`, true, "invalid_input")); // EF-02
       const ctx = this.#deps.toolContext(signal);
@@ -231,8 +239,12 @@ export class ResponseExecution {
       let decision: Decision;
       let pctx: ReturnType<ExecutorDeps["permissionContext"]>;
       for (let round = 0; ; round++) {
+        const blocked = policyBlocked();
+        if (blocked) return blocked;
         // Hook first (step 2 of § 5.3): a changed input is the one shown, decided and executed (SPEC-HOK-010 EF-03, CA-03).
         const hook = await this.#deps.hooks.beforeTool(call);
+        const afterHook = policyBlocked();
+        if (afterHook) return afterHook;
         if (hook.stopTurn) this.#stopTurnRequested = true;
         if (hook.conflict) return finish(textOutcome(`Blocked: ${hook.reason ?? "several hooks change this call in incompatible ways."}`, true, "permission_denied"), false); // SPEC-HOK-010 ERR-01
         if (hook.modifiedInput) {
@@ -289,6 +301,8 @@ export class ResponseExecution {
       const release = await this.#semaphore.acquire();
       try {
         if (signal.aborted) return finish(textOutcome("Not executed: the turn was interrupted.", true, "interrupted"));
+        const blocked = policyBlocked();
+        if (blocked) return blocked;
         // Revalidation before execution (CA-08 of SPEC-MOT-002 and SPEC-PER-003, gap E-049): a mode change since the decision is applied.
         const now = this.#deps.permissionContext();
         if (now.mode !== pctx.mode) {
@@ -301,6 +315,8 @@ export class ResponseExecution {
           }
         }
         // SPEC-SES-006 EF-01, ERR-01: the files a tool changes are saved first; without a backup, no change.
+        const afterApproval = policyBlocked();
+        if (afterApproval) return afterApproval;
         const writes = subject.kind === "paths" && subject.access === "write" ? subject.paths : [];
         if (writes.length > 0 && this.#deps.fileHistory) {
           const refusal = this.#deps.fileHistory.beforeWrite(writes);
@@ -321,6 +337,8 @@ export class ResponseExecution {
         if (writes.length > 0) this.#deps.fileHistory?.afterWrite(writes);
         if (outcome === "timeout") return finish(textOutcome(`Timed out after ${Math.round(limit / 1000)} s.`, true, "timeout")); // ERR-03, CA-05
         if (signal.aborted) return finish(textOutcome("Interrupted by the user.", true, "interrupted"));
+        const afterExecution = this.#deps.policyRefusal?.();
+        if (afterExecution) return finish({ ...outcome, content: [...outcome.content, { type: "text", text: `This tool completed before the policy check failed. No subsequent hook was run. ${afterExecution}` }] });
         const after = await this.#deps.hooks.afterTool(call, outcome.isError, outcome.content.map((c) => (c.type === "text" ? c.text : `[${c.mediaType}]`)).join("\n"));
         if (after.stopTurn) this.#stopTurnRequested = true;
         // The model learns that the call ran with other parameters than its own (SPEC-MOD-006 FA-05).
@@ -383,6 +401,8 @@ export class ResponseExecution {
       this.#deps.authorities,
       signal,
     );
+    const policyRefusal = this.#deps.policyRefusal?.();
+    if (policyRefusal) return { allowed: false, reason: policyRefusal };
     if (resolution.decision === "deny") {
       if (resolution.stopTurn) this.#stopTurnRequested = true;
       return { allowed: false, reason: resolution.reason };

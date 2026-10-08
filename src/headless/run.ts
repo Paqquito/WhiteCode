@@ -1,7 +1,7 @@
 // Implements: SPEC-MOD-002 (§ 5.1, § 5.2, FA-01, FA-02, FA-05, FA-06, EF-01 to EF-08, ERR-01 to ERR-04, CA-01 to CA-06, CA-08), SPEC-MOD-011 (§ 5.4 start-up, EF-03, EF-04, EF-07, ERR-04),
 //             SPEC-MOT-004 (§ 5.3 steps 1 to 4, EF-01, EF-02, ERR-01 to ERR-05, RG-01, RG-02, ENF-01, CA-03, CA-04),
 //             SPEC-SES-002 (§ 5.1, § 5.3 steps 4 to 6, FA-02, EF-01, EF-05, ERR-01, CA-01 to CA-05), SPEC-SES-003 (§ 5.3, EF-01, EF-02, ERR-01, ERR-02, CA-01, CA-02),
-//             SPEC-CFG-001 (CA-03, managed preference locks), SPEC-CFG-004 (ERR-01), SPEC-CFG-005 (steps 4 and 5, EF-02, EF-03), SPEC-CFG-008 (§ 5.3, EF-01, EF-02, ERR-01),
+//             SPEC-CFG-001 (CA-03, CA-06), SPEC-CFG-003 (CA-07, CA-16), SPEC-HOK-002 (CA-06), SPEC-CFG-004 (ERR-01), SPEC-CFG-005 (steps 4 and 5, EF-02, EF-03), SPEC-CFG-008 (§ 5.3, EF-01, EF-02, ERR-01),
 //             SPEC-SES-004 (ERR-03, CA-01, CA-02), SPEC-SES-008 (FA-01, EF-03), SPEC-SES-012 (§ 5.3, EF-01, EF-03, ERR-01, ERR-02, CA-01, CA-02), SPEC-SES-015 (steps 2 to 4, FA-01),
 //             SPEC-MOD-001 (§ 5.1, EF-01, EF-04, ERR-01, FA-04 summary at exit, FA-06, CA-05), SPEC-MOD-006 (§ 5.1, § 5.4 steps 1 and 7, FA-03, § 11), SPEC-MOD-007 (§ 5.1, § 6, EF-01, EF-02, EF-08, ERR-02, ERR-03, CA-04, CA-06), SPEC-MOD-008 (§ 5.1, § 6, § 10, FA-02, FA-05, EF-02 to EF-07, RG-01 to RG-03, CA-01 to CA-06), SPEC-CMD-002 (§ 5.3, FA-01, ERR-01, CA-01)
 // Supports: SPEC-MOT-005 (loading per segment, files touched), SPEC-MOT-007 (reminder producers), SPEC-CFG-001, SPEC-CFG-007 (RG-02, FA-01), SPEC-OUT-008, SPEC-OUT-009 (EF-07), SPEC-PER-001 (CA-05), SPEC-PER-003, SPEC-PER-010, SPEC-MOD-003 (CA-02, CA-04, CA-05), SPEC-SES-001, SPEC-API-006, decisions D-03, D-05, D-09, D-10, D-13, gaps E-013, E-017, E-018, E-045, E-050, E-094
@@ -14,7 +14,9 @@ import { ExitCode } from "../cli/exit-codes";
 import { helpText, versionText } from "../cli/help";
 import { CliUsageError, dangerOptions, parseCommandLine, splitList, undeliveredOptions } from "../cli/parser";
 import { EnvironmentView, PUBLIC_SECRET_VARIABLES } from "../config/environment";
-import { readSettingsFile, validateSettingValue, type ScopeSource, type Settings } from "../config/settings";
+import { readSettingsFile, validateSettingValue, Settings, type ScopeSource } from "../config/settings";
+import { computeLocations } from "../config/locations";
+import { ManagedPolicyGuard, validateManagedPolicy } from "../config/managed-policy";
 import { isHotKey, SettingsReloader } from "../config/reload";
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import { loadConfiguration, scopeSources } from "../config/load";
@@ -313,6 +315,34 @@ interface ServeRequest {
 
 async function run(argv: readonly string[], deps: RunDependencies, err: (text: string) => void, holder: RunHolder, serve?: ServeRequest): Promise<number> {
   const { streams, identity, system } = deps;
+  const policyEnv = new EnvironmentView(identity.get("ENV_PREFIX"), deps.environment);
+  const policyLocations = computeLocations(identity, policyEnv, deps.cwd, system, deps.managedDir);
+  const policyGuard = new ManagedPolicyGuard(policyLocations.managedSettingsFile);
+  const assertPolicy = () => {
+    const issues = policyGuard.check();
+    if (issues.length > 0) throw new RunError(issues.map((i) => i.message).join("\n"), ExitCode.BlockedByPolicy);
+  };
+  const policyRefusal = () => policyGuard.check().length > 0 ? "Blocked: the mandatory organisation policy is invalid, missing or changed. Ask your administrator to verify it and restart the session." : undefined;
+  const localPolicyDiagnostic = () => {
+    const managedText = readSettingsFile(policyLocations.managedSettingsFile);
+    const preferences = Settings.load({ sources: [
+      { scope: "managed", name: policyLocations.managedSettingsFile, text: validateManagedPolicy(managedText).settingsText },
+      { scope: "user", name: policyLocations.userSettingsFile, text: readSettingsFile(policyLocations.userSettingsFile) },
+    ], projectTrusted: false });
+    return ["Diagnostic local de politique", `Source : ${policyLocations.managedSettingsFile}`,
+      ...policyGuard.check().map((i) => i.message),
+      "Faites vérifier la source par votre administrateur, puis redémarrez.", "Préférences d'interface valides :",
+      ...SETTINGS.filter((s) => s.key.startsWith("ui.") && !s.secret && preferences.origin(s.key) !== "default").map((s) => `${s.key} = ${JSON.stringify(preferences.get(s.key))}`),
+    ].join("\n");
+  };
+  // Administrative help and file validation are local recovery surfaces; no session is composed for them.
+  if (!serve && looksLikeSubcommand(argv) && argv.length > 1 && !argv.includes("--help") && !(argv[0] === "config" && argv[1] === "validate")) {
+    if (argv[0] === "diagnostic" && argv[1] === "validate" && policyGuard.check().length > 0) {
+      streams.writeOut(localPolicyDiagnostic() + "\n");
+      return ExitCode.BlockedByPolicy;
+    }
+    assertPolicy();
+  }
   // SPEC-MOD-008 § 5.1: the product as a connector server: an automated session without requests, driven by the calls.
   if (!serve && argv[0] === "connector-server" && argv[1] === "start") {
     let p;
@@ -366,6 +396,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     streams.writeOut(versionText(identity));
     return ExitCode.Success;
   }
+  if (policyGuard.check().length > 0 && parsed.prompt?.trim() === "/diagnose" && !opt("control-channel") && !opt("control-listen") && !opt("control-connect")) {
+    streams.writeOut(localPolicyDiagnostic() + "\n");
+    return ExitCode.BlockedByPolicy;
+  }
+  assertPolicy();
   const undelivered = undeliveredOptions(parsed);
   if (undelivered.length > 0) throw new RunError(`Option non disponible dans cette version : ${undelivered.join(", ")}.`, ExitCode.UsageOrConfiguration);
 
@@ -774,7 +809,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     idleTimeoutMs: settings.get<number>("api.streamIdleTimeout"),
     headers: { "User-Agent": identity.get("USER_AGENT"), [`${prefix}version`]: identity.version, [`${prefix}entrypoint`]: nonInteractive ? "non-interactive" : "interactive" },
   };
-  const provider = withRequestLog((deps.providerFactory ?? createProvider)(providerOptions), providerOptions, (m, d) => debug.log("api", m, d));
+  assertPolicy();
+  const loggedProvider = withRequestLog((deps.providerFactory ?? createProvider)(providerOptions), providerOptions, (m, d) => debug.log("api", m, d));
+  const provider: ModelProvider = { id: loggedProvider.id, async *stream(request, signal) { assertPolicy(); yield* loggedProvider.stream(request, signal); } };
   phase("compatibilité et authentification");
   // CA-03 of SPEC-API-001: thinking requested explicitly from a model without it is announced as unavailable, without error.
   if (settings.get<boolean>("thinking.enabled") && settings.origin("thinking.enabled") !== "default" && resolvedModel.capabilities.thinking === "none") {
@@ -875,7 +912,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       userSettingsFile: locations.userSettingsFile,
       platform: system.platform,
     });
+  assertPolicy();
   let installedExtensions = minimal ? { active: [], report: [], imposedProblems: [] } : await activation(settings);
+  assertPolicy();
   for (const line of installedExtensions.imposedProblems) err(`avertissement : ${line}`); // FA-01 of SPEC-EXT-009: never hidden
   for (const line of installedExtensions.report) err(`avertissement : ${line}`);
   // SPEC-EXT-009 § 5.3 step 3, EF-03: with `extensions.managedOnly`, only the managed customisations and the managed
@@ -1239,6 +1278,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const firstSnapshot = hookSnapshot(settings);
   for (const w of firstSnapshot.warnings) err(`avertissement : ${w}`);
   const hooks = new HookRuntime({
+    policyRefusal,
     snapshot: firstSnapshot,
     sessionId,
     cwd: projectReal,
@@ -1458,6 +1498,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         })
       : undefined;
   if (connectors) {
+    assertPolicy();
     connectors.start();
     holder.cleanups.push(() => void connectors.close());
     if (opt("wait-for-mcp") === true) await connectors.waitAll(settings.get<number>("mcp.connectTimeout") + 5_000, controller.signal);
@@ -1816,6 +1857,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
 
   // SPEC-CFG-005 steps 2 to 5: hot keys (the permission rules) apply to the next calls; the others are announced.
   const applySettingsChanges = () => {
+    assertPolicy();
     const reload = reloader.check();
     if (!reload) return;
     liveSettings = reload.settings;
@@ -2006,6 +2048,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
 
   const loopDeps: LoopDeps = {
     beforeRequest: () => {
+      assertPolicy();
       applySettingsChanges();
       refreshSkills();
       refreshConnectorTools();
@@ -2048,6 +2091,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     pendingNote: () => modeState.takeNote(),
     context,
     executor: {
+      policyRefusal,
       registry,
       hooks,
       // SPEC-PER-001 § 5.3 point c: the habilitated `approval_needed` hooks answer before any other authority.
@@ -2426,6 +2470,12 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const processRequest = async (original: string | readonly ContentPart[], signal: AbortSignal, literal = false): Promise<RequestOutcome> => {
     let content = original;
     const first = typeof content === "string" ? content : content.find((p) => p.type === "text")?.text;
+    if (policyGuard.check().length > 0) {
+      if (!literal && first?.trim() === "/diagnose") return { note: localPolicyDiagnostic() };
+      if (!literal && first?.trim() === "/help") return { note: helpText(identity) };
+      if (!literal && ["/quit", "/exit"].includes(first?.trim() ?? "")) return { exit: true };
+      return { refused: policyGuard.check().map((i) => i.message).join("\n") };
+    }
     // EF-08, ERR-05, CA-07 of SPEC-IHM-012: the shell mode is not available in an automated run.
     if (!app && first !== undefined && isShellLine(first)) return { refused: "Le mode shell n'est pas disponible dans ce mode." };
     const entry = first !== undefined && !literal ? recognize(first) : undefined;
@@ -2505,8 +2555,16 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       changeNotified.set(key, stamp);
       changeNotes.push({ type: "file_changed", text: `The file ${key} was changed outside this conversation since you last read it: read it again before relying on its content or editing it.`, priority: 3 });
     }
-    const result = await runTurn(loopDeps, content, signal);
-    skillAllows.length = 0; // EF-02 of SPEC-EXT-020: the grants of a skill end with its turn
+    let result: TurnResult;
+    try {
+      result = await runTurn(loopDeps, content, signal);
+      assertPolicy();
+    } catch (error) {
+      if ((app || control) && error instanceof RunError && error.exitCode === ExitCode.BlockedByPolicy) return { refused: error.message };
+      throw error;
+    } finally {
+      skillAllows.length = 0;
+    }
     if (result.stopCause === "interrupted") {
       const partial = result.finalText.trim();
       interruptionNotes.push({
@@ -2557,6 +2615,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   };
   // The internal commands of this version (SPEC-CMD-001 rank 1): help, exit, key bindings.
   const runInternalCommand = async (command: InternalCommand, args: string): Promise<RequestOutcome> => {
+    if (policyGuard.check().length > 0) {
+      if (command.name === "diagnose") return { note: localPolicyDiagnostic() };
+      if (command.name === "help") return { note: helpText(identity) };
+      if (command.name !== "quit" && command.name !== "exit") return { refused: policyGuard.check().map((i) => i.message).join("\n") };
+    }
     switch (command.name) {
       case "exit":
       case "quit":
@@ -3265,6 +3328,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       process: async (text, signal, meta) => {
         // SPEC-IHM-012: a shell line goes to the interpreter, never to the model (EF-01).
         if (!meta.literal && isShellLine(text) && settings.get<boolean>("ui.shellMode.enabled") && shellRuntime) {
+          assertPolicy();
           const command = shellCommand(text);
           if (command === "") return { kind: "shown" };
           interactiveApp.shellStarted(command);
@@ -3276,6 +3340,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
             toolContext: (s) => loopDeps.executor.toolContext(s),
             permissionContext: () => loopDeps.executor.permissionContext(),
             authorities: loopDeps.executor.authorities,
+            policyRefusal: () => policyGuard.check().length > 0 ? localPolicyDiagnostic() : undefined,
             persistRule,
             timeoutMs: settings.get<number>("ui.shellMode.timeoutMs"),
           });

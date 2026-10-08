@@ -1,5 +1,6 @@
 // Implements: SPEC-HOK-002 (§ 5.1 format, § 5.2 sources and merging, § 5.4 steps 1 to 3, EF-01, EF-02, EF-04, EF-05 for optional declarations, ERR-01, ERR-02, CA-04, CA-05, CA-07),
 //             SPEC-HOK-012 (§ 5.1, § 5.3 steps 1 and 2, FA-01, EF-01 to EF-03, RG-01), SPEC-HOK-004 (§ 5.1 fields of an `http` action)
+// Supports: SPEC-CFG-003 (coherent mandatory declarations), gap E-120.
 // Snapshot of the hooks of a session: declarations of every scope kept apart, filtered by the administrator controls.
 
 import { parseDuration } from "../config/units";
@@ -117,7 +118,7 @@ export function buildSnapshot(
     if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
     const seen = new Set<string>();
     for (const [event, list] of Object.entries(value as Record<string, unknown>)) {
-      if (!(event in HOOK_EVENTS)) {
+      if (!Object.hasOwn(HOOK_EVENTS, event)) {
         const near = suggest(event, Object.keys(HOOK_EVENTS), 3);
         warnings.push(`Événement de crochet inconnu : ${event} (portée ${scope}).${near.length > 0 ? ` Vouliez-vous dire : ${near.join(", ")} ?` : ""}`); // ERR-01
         continue;
@@ -168,7 +169,7 @@ export function buildSnapshot(
           return;
         }
         // EF-02: exact duplicates are merged within one scope only.
-        const key = JSON.stringify([event, match ?? "", actions]);
+        const key = fingerprintOf(event, raw);
         if (seen.has(key)) return;
         seen.add(key);
         declarations.push({ event, match, matches, actions, id, mandatory, async: d["async"] === true ? true : undefined, scope, file: file ?? scope, fingerprint: fingerprintOf(event, raw), label });

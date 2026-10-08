@@ -1,10 +1,12 @@
 // Implements: SPEC-CFG-001 (§ 5.1 sources by scope, § 5.3 loading with the project trust), SPEC-PER-016 (trust decision before the project settings)
+// Supports: SPEC-CFG-003 (CA-07, reject the mandatory version as a whole), gap E-120.
 // Shared by the agent run and the administration sub-commands.
 
 import type { Identity } from "../identity/identity";
 import type { SystemInfo } from "../platform/system";
 import type { EnvironmentView } from "./environment";
 import { computeLocations, type Locations } from "./locations";
+import { validateManagedPolicy } from "./managed-policy";
 import { readSettingsFile, Settings, type ScopeSource } from "./settings";
 import type { Scope } from "./settings-schema";
 import { decideTrust, readUserState } from "./trust";
@@ -46,8 +48,11 @@ export function loadConfiguration(r: LoadRequest): LoadedConfiguration {
   const locations = computeLocations(r.identity, r.env, r.cwd, r.system, r.managedDir);
   const sources = scopeSources(locations);
   if (r.cliSource) sources.push(r.cliSource);
-  const loadOptions = { sources, environment: r.env.settingsLayer(), cliValues: r.cliValues ?? {}, allowedScopes: r.allowedScopes };
+  const policy = validateManagedPolicy(sources.find((s) => s.scope === "managed")?.text);
+  const validatedSources = sources.map((s) => s.scope === "managed" ? { ...s, text: policy.settingsText } : s);
+  const loadOptions = { sources: validatedSources, environment: r.env.settingsLayer(), cliValues: r.cliValues ?? {}, allowedScopes: r.allowedScopes };
   const firstPass = Settings.load({ ...loadOptions, projectTrusted: false });
+  firstPass.issues.push(...policy.issues);
   const trust = decideTrust({
     projectRoot: locations.projectRoot,
     userState: readUserState(locations.userStateFile),
@@ -56,5 +61,6 @@ export function loadConfiguration(r: LoadRequest): LoadedConfiguration {
     platform: r.system.platform,
   });
   const settings = Settings.load({ ...loadOptions, projectTrusted: trust.trusted });
+  settings.issues.push(...policy.issues);
   return { locations, sources, firstPass, settings, trust };
 }

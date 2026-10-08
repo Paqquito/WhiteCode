@@ -2,7 +2,7 @@
 //             SPEC-HOK-003 (§ 5.1 variables, § 5.3 steps 4 and 5, FA-02, EF-02, EF-04, CA-01 to CA-04), SPEC-HOK-010 (§ 5.4 steps 1 and 6, EF-05, CA-01, CA-04 to CA-07),
 //             SPEC-HOK-004 (§ 5.3 step 4, EF-05, ERR-01, ERR-02, CA-01 to CA-04), SPEC-HOK-007 (§ 5.3, FA-01, EF-01 to EF-03, ERR-01, RG-01, CA-01, CA-02),
 //             SPEC-PER-001 (§ 5.3 point c habilitated hook, CA-12, CA-19)
-// Supports: SPEC-MOT-001 (EF-08 hooks of the loop), SPEC-MOT-005 (`instructions_read`), SPEC-CFG-005 (`settings_modified`)
+// Supports: SPEC-MOT-001 (EF-08 hooks of the loop), SPEC-MOT-005 (`instructions_read`), SPEC-CFG-005 (`settings_modified`), SPEC-CFG-003 (raw policy checks), gap E-120.
 // The hooks of a session: payloads, selection, execution in parallel, aggregation and the effects of the decisions.
 
 import type { HookBus, BeforeToolResult } from "../extension-points/hooks";
@@ -16,6 +16,7 @@ import { createHttpAgents, runHttpHook, type Resolver } from "./http";
 import type { PlatformName } from "../platform/system";
 
 export interface HookRuntimeOptions {
+  readonly policyRefusal?: () => string | undefined;
   readonly snapshot: HookSnapshot;
   readonly sessionId: string;
   readonly cwd: string;
@@ -119,6 +120,8 @@ export class HookRuntime implements HookBus {
   }
 
   async #runAction(d: HookDeclaration, index: number, payload: string, event: string, fields: Record<string, unknown>, signal?: AbortSignal): Promise<ActionOutcome> {
+    const refusal = this.#o.policyRefusal?.();
+    if (refusal) return { label: d.label, mandatory: true, failure: refusal };
     const action = d.actions[index]!;
     const label = d.actions.length > 1 ? `${d.label}[${index + 1}]` : d.label;
     if (action.type === "http") return this.#runHttp(d, label, action, payload, signal);
@@ -280,6 +283,7 @@ export class HookRuntime implements HookBus {
    */
   readonly approvalHook: ApprovalHook = {
     decide: async (request: ApprovalRequest) => {
+      if (this.#o.policyRefusal?.()) return "deny";
       const event = "approval_needed";
       const fields = { toolId: request.toolName, toolArguments: request.input ?? {}, suggestions: request.suggestions, reason: request.reason, origin: request.origin };
       const started = this.#start(event, fields, this.#select(event, fields));

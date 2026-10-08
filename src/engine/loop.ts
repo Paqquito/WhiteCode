@@ -1,6 +1,7 @@
 // Implements: SPEC-MOT-001 (§ 5.3 steps 1 to 10, FA-01 to FA-03, EF-01 to EF-10, RG-01 to RG-04, CA-01 to CA-06, CA-10), SPEC-MOD-005 (FA-01 to FA-03, FA-06, EF-02, EF-03, EF-08, EF-10),
 //             SPEC-API-003 (§ 5.1, § 5.3, FA-01, FA-02, EF-01 to EF-06, ERR-01 to ERR-03, RG-01, CA-01 to CA-04), SPEC-API-002 (FA-01, CA-02)
 // Supports: SPEC-MOT-008 (§ 5.3 step 3, EF-02, EF-03: messages typed during the work, at the safe point), SPEC-MOT-007 (reminders before each request), decision D-12 (append-only history), gaps E-021 (retries around the SDK), E-022, E-056 (retry after a partial response), E-072 (empty final response), SPEC-SES-001 (EF-01)
+// Supports: SPEC-CFG-003 (policy check before context compaction), gap E-120.
 
 import type { HookBus } from "../extension-points/hooks";
 import type { ApiEffort, ModelPricing, ResolvedModel } from "../providers/catalog";
@@ -193,6 +194,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
     // FA-01, FA-03 of SPEC-MOD-005: limits checked before each request.
     const stop = limits.beforeRequest();
     if (stop) return finish(stop.cause, stop.message);
+    deps.beforeRequest?.();
 
     // SPEC-MOT-012: before the request, between two iterations (RG-01); a compaction refused by the budget stops the run.
     if (deps.context) {
@@ -201,7 +203,6 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
       if (turnSignal.aborted) return interrupted();
     }
 
-    deps.beforeRequest?.();
     // SPEC-MOT-007: reminders, tagged (EF-01), appended and never removed (D-12), persisted with their type (EF-04).
     const mode = deps.pendingNote?.();
     const notes = [
