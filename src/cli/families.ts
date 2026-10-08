@@ -108,7 +108,14 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
   { name: "history", role: "Historique des saisies", operations: [op("remove", "Efface l'historique des saisies (--all).")] },
   { name: "storage", role: "Données locales", operations: [op("purge", "Supprime les données locales selon les règles de rétention.")] },
   { name: "project", role: "Projet courant", operations: [op("reset-choices", "Réinitialise les décisions mémorisées pour le projet courant.")] },
-  { name: "diagnostic", role: "Diagnostic", operations: [op("validate", "Vérifie l'environnement et signale les anomalies."), op("repair", "Applique les corrections proposées et acceptées.")] },
+  {
+    name: "diagnostic",
+    role: "Diagnostic",
+    operations: [
+      op("validate", "Vérifie l'environnement et signale les anomalies.", { delivered: true, options: ["json"] }),
+      op("repair", "Applique les corrections proposées, chacune après accord.", { delivered: true }),
+    ],
+  },
   {
     name: "installation",
     role: "Installation",

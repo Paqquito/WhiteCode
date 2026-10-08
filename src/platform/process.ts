@@ -138,6 +138,21 @@ export function launchLine(command: string, args: readonly string[], env: Readon
   return { file: env["ComSpec"] ?? "cmd.exe", args: ["/d", "/s", "/c", `"${[found, ...args].map(quote).join(" ")}"`] };
 }
 
+/**
+ * Starts `file` without waiting for it nor tying it to the terminal (an editor opened on a file, SPEC-CMD-039 step 2).
+ * False when it could not be started.
+ */
+export function startDetached(file: string, args: readonly string[], options: { readonly cwd: string; readonly env: Readonly<Record<string, string>> }): boolean {
+  try {
+    const child = spawn(file, [...args], { cwd: options.cwd, env: options.env, stdio: "ignore", detached: true, windowsHide: false });
+    child.on("error", () => {});
+    child.unref();
+    return child.pid !== undefined;
+  } catch {
+    return false;
+  }
+}
+
 /** Runs a short command to completion (detection, snapshot); output captured, time bounded. */
 export function runToCompletion(file: string, args: readonly string[], options: { cwd: string; env: Readonly<Record<string, string>>; timeoutMs: number }): { code: number | null; stdout: string; stderr: string } {
   const r = spawnSync(file, [...args], { cwd: options.cwd, env: options.env, stdio: ["ignore", "pipe", "pipe"], timeout: options.timeoutMs, windowsHide: true, encoding: "buffer" });

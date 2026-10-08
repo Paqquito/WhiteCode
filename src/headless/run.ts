@@ -8,7 +8,7 @@
 // Composition root of a session: options → identity and settings → provider → engine → automated output, or the
 // interactive application (lot 5).
 
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { ExitCode } from "../cli/exit-codes";
 import { helpText, versionText } from "../cli/help";
@@ -18,11 +18,13 @@ import { readSettingsFile, validateSettingValue, type ScopeSource, type Settings
 import { isHotKey, SettingsReloader } from "../config/reload";
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import { loadConfiguration, scopeSources } from "../config/load";
-import { looksLikeSubcommand, runSubcommand } from "../admin/subcommands";
+import { diagnosticInputs, looksLikeSubcommand, runSubcommand } from "../admin/subcommands";
 import { SETTING_BY_KEY, type PermissionMode, type Scope } from "../config/settings-schema";
 import { appendRuleToSettingsFile, readValueInSettingsFile, setValueInSettingsFile } from "../config/settings-writer";
 import { broadAllowWarning, describeMasking, maskedRules, scopeName } from "../permissions/rule-review";
 import { HOOK_EVENTS } from "../hooks/events";
+import { createInstructionsRequest, parseChoices, SETUP_CHOICES, type SetupChoice } from "../commands/create-instructions";
+import { renderDiagnostics, runDiagnostics, type Finding } from "../admin/diagnostic";
 import { readUserState, updateUserState } from "../config/trust";
 import { FallbackPolicy } from "../engine/fallback";
 import { buildSystemInstructions, estimateTokens, RequiredSectionUnavailable } from "../engine/system-instructions";
@@ -75,7 +77,8 @@ import { activeChain, assistantRecord, designateSession, projectSessions, protoc
 import { PresenceRegistry } from "../session/presence";
 import { BlobStore, FileHistory, observe, type SnapshotRecord } from "../session/file-history";
 import { changesByTurn } from "../session/turn-changes";
-import { runToCompletion } from "../platform/process";
+import { launchLine, runToCompletion, startDetached } from "../platform/process";
+import { keybindingsTemplate, readKeybindingsFile } from "../interactive/keybindings-file";
 import { unifiedDiff } from "../shared/diff";
 import { applyPlan, computePlan, renderPlan, RestoreError } from "../session/restore";
 import { createDebugLog, DISABLED_DEBUG_LOG, type DebugLog } from "../shared/debug-log";
@@ -1856,8 +1859,15 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   let history: InputHistory | undefined;
   const usagePath = join(locations.configDir, "completion-usage.json");
   const completionUsage = readUsage(usagePath);
+  // SPEC-CMD-039: the file of the bindings, over those of the user settings.
+  const keybindingsPath = join(locations.configDir, "keybindings.json");
+  const composeKeymap = () => {
+    const file = readKeybindingsFile(keybindingsPath);
+    const built = buildKeymap({ ...liveSettings.get<Record<string, unknown>>("ui.keybindings.bindings"), ...file.bindings }, { strictConflicts: liveSettings.get<boolean>("ui.keybindings.strictConflicts") });
+    return { ...built, warnings: [...(file.error ? [file.error] : []), ...built.warnings] };
+  };
   if (!nonInteractive) {
-    const built = buildKeymap(settings.get<Record<string, unknown>>("ui.keybindings.bindings"), { strictConflicts: settings.get<boolean>("ui.keybindings.strictConflicts") });
+    const built = composeKeymap();
     for (const w of built.warnings) err(`avertissement [raccourcis] : ${w}`);
     keymap = built.keymap;
     const capabilities = detectCapabilities({
@@ -2264,7 +2274,14 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   };
   // SPEC-CMD-001: the catalogue of the commands, built again for each request (skills reread, connectors connected).
   const commandCatalog = () =>
-    new CommandCatalog({ internal: INTERNAL_COMMANDS, skills: skillSet, connectors: connectors?.prompts() ?? [], disabled: settings.get<string[]>("commands.disabled"), automated: nonInteractive });
+    new CommandCatalog({
+      internal: INTERNAL_COMMANDS,
+      skills: skillSet,
+      connectors: connectors?.prompts() ?? [],
+      // SPEC-CMD-020 § 11: the variable hides the diagnosis.
+      disabled: [...settings.get<string[]>("commands.disabled"), ...(env.ownBoolean("HIDE_DIAGNOSTIC") === true ? ["diagnose"] : [])],
+      automated: nonInteractive,
+    });
   for (const w of commandCatalog().warnings) err(`avertissement : ${w}`); // EF-01, CA-03
 
   // One request: an internal command, a skill or a simple command, a prompt of a connector (SPEC-CMD-001 § 5.7), whose
@@ -2793,6 +2810,76 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         ];
         return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
       }
+      case "create-instructions": {
+        // SPEC-CMD-033: a request to the model, which explores, drafts, shows and writes after agreement (EF-02). The
+        // guided version asks first what to set up and keeps only those phases (FA-01, EF-03).
+        const guided = liveSettings.get<boolean>("commands.createInstructions.guided");
+        let choices = parseChoices(args);
+        if (!choices) return { refused: "Usage : /create-instructions [projet] [personnel] [compétences] [crochets]." };
+        if (!guided && choices.length > 0) return { refused: "Le choix des éléments demande la version guidée (commands.createInstructions.guided)." };
+        if (guided && choices.length === 0) {
+          if (app) {
+            const answer = await app.choose("Que mettre en place ?", SETUP_CHOICES.map((c) => ({ label: c.label })), { multiple: true });
+            if (answer.kind !== "options" || answer.labels.length === 0) return { refused: "Mise en place abandonnée." };
+            choices = SETUP_CHOICES.filter((c) => answer.labels.includes(c.label)).map((c) => c.id);
+          } else choices = SETUP_CHOICES.map((c) => c.id) as SetupChoice[];
+        }
+        const relativeToRoot = (p: string) => relative(locations.projectRoot, p).replace(/\\/g, "/");
+        const request = createInstructionsRequest(
+          {
+            instructionsFile: identity.get("INSTRUCTIONS_FILE"),
+            localInstructionsFile: identity.get("LOCAL_INSTRUCTIONS_FILE"),
+            projectDir: identity.get("PROJECT_DIR"),
+            projectSettings: relativeToRoot(locations.projectSettingsFile),
+            localSettings: relativeToRoot(locations.localSettingsFile),
+          },
+          guided,
+          choices,
+        );
+        return { send: `<command name="/create-instructions" source="product">\n${request}\n</command>` };
+      }
+      case "diagnose": {
+        // SPEC-CMD-020: the checks of the environment and of the session, by status; a correction is applied only after
+        // the agreement of the user (EF-01); the report is plain text, without any secret (EF-02, RG-01).
+        const repair = args.trim() === "repair";
+        if (args.trim() !== "" && !repair) return { refused: "Usage : /diagnose [repair]." };
+        const states: Record<string, string> = { error: "en échec", unavailable: "indisponible", pending: "en attente", connecting: "connexion en cours" };
+        const extra: Finding[] = [
+          ...(connectors?.status() ?? []).map((s): Finding =>
+            s.state === "connected" ? { status: "ok", area: "Connecteurs", message: `${s.name} connecté`, location: s.source } : { status: s.state === "error" || s.state === "unavailable" ? "error" : "warning", area: "Connecteurs", message: `${s.name} ${states[s.state] ?? s.state}${s.error ? ` : ${s.error}` : ""}`, location: s.source, fix: { description: `/connectors reconnect ${s.name}` } },
+          ),
+          ...hooks.snapshot.warnings.map((w): Finding => ({ status: "warning", area: "Crochets", message: w })),
+          ...hooks.snapshot.ignored.map((x): Finding => ({ status: "warning", area: "Crochets", message: `${x.label} ignoré : ${x.reason}` })),
+          ...[...installedExtensions.imposedProblems, ...installedExtensions.report, ...extensions.report].map((p): Finding => ({ status: "warning", area: "Extensions", message: p })),
+          ...maskedRules(rules).map((m): Finding => ({ status: "warning", area: "Règles d'accès", message: describeMasking(m, ruleSource) })), // SPEC-PER-012 § 5.2
+        ];
+        const findings = await runDiagnostics(
+          diagnosticInputs({ sources: scopeSources(locations), settings: liveSettings, configDir: locations.configDir, sessionsDir: locations.sessionsDir, platform: system.platform }),
+          extra,
+        );
+        const lines = renderDiagnostics(findings, `Diagnostic — ${identity.get("PRODUCT")} ${identity.version}`);
+        if (repair) {
+          const fixable = findings.filter((f) => f.fix?.apply);
+          if (fixable.length === 0) lines.push("Aucune correction automatique à appliquer.");
+          else if (!app) lines.push("Corrections non appliquées : l'accord de l'utilisateur est demandé dans l'interface.");
+          else {
+            app.commit(box(lines.splice(0).map((l) => text(l))));
+            let applied = 0;
+            for (const f of fixable) {
+              if (!(await app.confirm(`Appliquer : ${f.fix!.description} (${f.location}) ?`, "appliquer", "ignorer"))) continue;
+              try {
+                f.fix!.apply!();
+                applied++;
+              } catch (e) {
+                lines.push(`Échec de la correction ${f.fix!.description} : ${(e as Error).message}`);
+              }
+            }
+            applySettingsChanges();
+            lines.push(`${applied} correction${applied > 1 ? "s" : ""} appliquée${applied > 1 ? "s" : ""}.`);
+          }
+        }
+        return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
+      }
       case "edit-mode": {
         // SPEC-IHM-013 EF-03, CA-06: switched during the input, the content kept, for this session.
         const wanted = args.trim();
@@ -2949,10 +3036,37 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         history?.clear();
         return { shown: text("Historique des saisies effacé.") };
       case "shortcuts":
+        if (args.trim() === "edit") {
+          // SPEC-CMD-039 § 5.3: the file created when it is missing, from a valid commented model (EF-01, CA-01), then
+          // opened in the editor of the user; it is read again at each save (step 3).
+          let created = false;
+          if (!existsSync(keybindingsPath)) {
+            try {
+              mkdirSync(dirname(keybindingsPath), { recursive: true });
+              writeFileSync(keybindingsPath, keybindingsTemplate(identity.get("PRODUCT")));
+              created = true;
+            } catch (e) {
+              return { refused: `Le fichier des raccourcis n'a pas pu être créé : ${(e as Error).message}` };
+            }
+          }
+          const childEnv = env.childEnvironment();
+          const editor = env.public("VISUAL") ?? env.public("EDITOR");
+          const [program, ...editorArgs] = editor ? splitArguments(editor) : [];
+          const opener = program
+            ? launchLine(program, [...editorArgs, keybindingsPath], childEnv)
+            : system.platform === "windows"
+              ? { file: childEnv["ComSpec"] ?? "cmd.exe", args: ["/d", "/c", "start", '""', keybindingsPath] }
+              : { file: system.platform === "macos" ? "open" : "xdg-open", args: [keybindingsPath] };
+          const opened = startDetached(opener.file, opener.args, { cwd, env: childEnv });
+          watchKeybindings();
+          const note = `Fichier des raccourcis${created ? " créé" : ""} : ${keybindingsPath}. ${opened ? `Ouvert dans ${program ?? "l'application par défaut"}` : "Ouvrez-le dans votre éditeur"} ; il est rechargé à chaque enregistrement.`;
+          return { shown: text(note), note };
+        }
         if (args.trim() === "reset") {
           // FA-03, CA-07 of SPEC-IHM-014: the default bindings again, in the settings file and in the session.
           try {
             setValueInSettingsFile(locations.userSettingsFile, ["ui", "keybindings", "bindings"], undefined, system.platform);
+            if (existsSync(keybindingsPath)) setValueInSettingsFile(keybindingsPath, ["bindings"], {}, system.platform);
           } catch (e) {
             return { refused: `La commande a échoué : ${(e as Error).message}` };
           }
@@ -2960,12 +3074,29 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           app?.setKeymap(keymap);
           return { shown: text("Raccourcis par défaut rétablis.") };
         }
-        if (args.trim() !== "") return { refused: "Usage : /shortcuts [reset]." };
+        if (args.trim() !== "") return { refused: "Usage : /shortcuts [edit|reset]." };
         return { shown: box(shortcutsHelp(keymap)) };
       default:
         return { refused: `Commande indisponible dans cette version : /${command.name}.` };
     }
   };
+
+  // SPEC-CMD-039 step 3: the file of the bindings read again when it is saved, its errors reported.
+  let watchingKeybindings = false;
+  function watchKeybindings() {
+    if (watchingKeybindings || !app) return;
+    watchingKeybindings = true;
+    watchFile(keybindingsPath, { interval: 300 }, (now, before) => {
+      if (now.mtimeMs === before.mtimeMs && now.size === before.size) return;
+      const built = composeKeymap();
+      keymap = built.keymap;
+      app?.setKeymap(keymap);
+      for (const w of built.warnings) app?.notice("warning", `Raccourcis : ${w}`);
+      if (built.warnings.length === 0) app?.notice("info", "Raccourcis rechargés.");
+    });
+    holder.cleanups.push(() => unwatchFile(keybindingsPath));
+  }
+  if (app && existsSync(keybindingsPath)) watchKeybindings();
 
   if (app) {
     const interactiveApp = app;

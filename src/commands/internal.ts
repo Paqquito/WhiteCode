@@ -34,5 +34,7 @@ export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
   { name: "restore", description: "Rétablit les fichiers dans leur état d'avant un message, après aperçu et confirmation.", kind: "action", widening: false, usage: "[numéro du message] [code]", interactiveOnly: true },
   { name: "extensions", description: "Gère les extensions : installées, découvrir, catalogues, erreurs ; install <réf> après présentation et accord.", kind: "action", widening: true, usage: "[installées|découvrir|catalogues|erreurs|install <réf> [user|project|local]]" },
   { name: "reload-extensions", description: "Recharge les extensions : compétences, commandes et crochets ajoutés ou retirés, avec un rapport.", kind: "action", widening: true },
-  { name: "shortcuts", description: "Affiche les raccourcis clavier effectifs ; reset rétablit ceux par défaut.", kind: "mixed", widening: false, usage: "[reset]", interactiveOnly: true },
+  { name: "diagnose", description: "Vérifie la configuration et l'environnement ; repair applique les corrections acceptées.", kind: "action", widening: false, usage: "[repair]" },
+  { name: "create-instructions", description: "Explore le dépôt et propose des instructions de projet concises, écrites après accord.", kind: "mixed", widening: false, usage: "[projet] [personnel] [compétences] [crochets]" },
+  { name: "shortcuts", description: "Affiche les raccourcis clavier effectifs ; edit ouvre leur fichier, reset rétablit ceux par défaut.", kind: "mixed", widening: false, usage: "[edit|reset]", interactiveOnly: true },
 ];

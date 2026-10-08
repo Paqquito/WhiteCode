@@ -312,6 +312,7 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "ui.keybindings.showFooterHints", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-014" },
   { key: "ui.keybindings.strictConflicts", schema: bool(), default: false, scopes: [U], owner: "SPEC-IHM-014" },
   { key: "commands.disabled", schema: strList(), default: [], scopes: [U, P, G], owner: "SPEC-CMD-001", merge: "concat" },
+  { key: "commands.createInstructions.guided", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-CMD-033" },
   { key: "commands.allowProjectCommands", schema: bool(), default: true, scopes: [U, P, G], owner: "SPEC-CMD-001", restrictiveValues: [false] },
 
   // Options forbidden by the managed policy (SPEC-MOD-011 § 11, decision D-13, gap E-029).

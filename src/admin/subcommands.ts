@@ -13,7 +13,8 @@ import type { Scope } from "../config/settings-schema";
 import type { Identity } from "../identity/identity";
 import { MODEL_TIERS } from "../identity/runtime-catalog";
 import type { StandardStreams } from "../platform/io";
-import { comparablePath, type SystemInfo } from "../platform/system";
+import { comparablePath, findExecutable, type SystemInfo } from "../platform/system";
+import { renderDiagnostics, runDiagnostics, type DiagnosticInputs } from "./diagnostic";
 import { effectiveCapabilities, isDeliveredProvider } from "../providers/adapters";
 import { capabilitiesOf, isResolveFailure, type ModelCatalog, type ModelEntry } from "../providers/catalog";
 import { suggest } from "../shared/suggest";
@@ -101,6 +102,9 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
     }
     case "config validate":
       return configValidate(deps, parsed.args[0], parsed.options.get("scope"), write, err);
+    case "diagnostic validate":
+    case "diagnostic repair":
+      return diagnostic(deps, operation.name === "repair", write, out);
     case "catalog add":
     case "catalog list":
     case "catalog update":
@@ -193,6 +197,66 @@ function extensionContext(deps: AdminDependencies, write: Writer, out: (t: strin
       return false;
     },
   };
+}
+
+/** The inputs of the checks, outside a session (SPEC-CMD-020 § 5.1). */
+export function diagnosticInputs(o: {
+  readonly sources: DiagnosticInputs["sources"];
+  readonly settings: Settings;
+  readonly configDir: string;
+  readonly sessionsDir: string;
+  readonly platform: SystemInfo["platform"];
+}): DiagnosticInputs {
+  return {
+    sources: o.sources.filter((s) => s.scope !== "cli"),
+    keybindings: o.settings.get<Record<string, unknown>>("ui.keybindings.bindings"),
+    executables: [
+      { name: "git", path: findExecutable("git"), purpose: "état du dépôt et catalogues d'extensions" },
+      { name: "rg", path: findExecutable("rg"), purpose: "recherche rapide dans les fichiers" },
+    ],
+    writable: [
+      { path: o.configDir, purpose: "dossier de configuration" },
+      ...(o.sessionsDir.startsWith(o.configDir) ? [] : [{ path: o.sessionsDir, purpose: "dossier des sessions" }]),
+    ],
+    platform: o.platform,
+  };
+}
+
+/**
+ * `diagnostic validate` (the report, `--json` for the support, EF-02) and `diagnostic repair` (each correction applied
+ * only after the agreement of the user, on a terminal; elsewhere nothing is changed, EF-01).
+ */
+async function diagnostic(deps: AdminDependencies, repair: boolean, write: Writer, out: (t: string) => void): Promise<number> {
+  const { locations, sources, settings } = loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir });
+  const findings = await runDiagnostics(diagnosticInputs({ sources, settings, configDir: locations.configDir, sessionsDir: locations.sessionsDir, platform: deps.system.platform }));
+  const title = `Diagnostic — ${deps.identity.get("PRODUCT")} ${deps.identity.version}`;
+  const errors = findings.filter((f) => f.status === "error").length;
+  if (!repair) {
+    write({ findings: findings.map(({ fix, ...f }) => ({ ...f, ...(fix ? { fix: fix.description } : {}) })), errors }, () => renderDiagnostics(findings, title).join("\n"));
+    return errors === 0 ? ExitCode.Success : ExitCode.UsageOrConfiguration;
+  }
+  out(renderDiagnostics(findings, title).join("\n"));
+  const fixable = findings.filter((f) => f.fix?.apply);
+  if (fixable.length === 0) {
+    out("Aucune correction automatique à appliquer.");
+    return errors === 0 ? ExitCode.Success : ExitCode.UsageOrConfiguration;
+  }
+  if (!deps.streams.stdinIsTTY) {
+    out("Corrections non appliquées : l'accord de l'utilisateur est demandé sur un terminal.");
+    return ExitCode.ConsentRequired;
+  }
+  let applied = 0;
+  const lines = deps.streams.stdinLines()[Symbol.asyncIterator]();
+  for (const f of fixable) {
+    deps.streams.writeErr(`Appliquer : ${f.fix!.description} (${f.location}) ? [o/N] `);
+    const answer = await lines.next();
+    if (answer.done) break;
+    if (!/^(o|oui|y|yes)$/i.test(answer.value.trim())) continue;
+    f.fix!.apply!();
+    applied++;
+  }
+  out(`${applied} correction${applied > 1 ? "s" : ""} appliquée${applied > 1 ? "s" : ""}.`);
+  return ExitCode.Success;
 }
 
 function settingsOf(deps: AdminDependencies): Settings {
