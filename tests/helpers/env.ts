@@ -78,7 +78,7 @@ export interface CapturedStreams extends StandardStreams {
   readonly err: string[];
 }
 
-export function captureStreams(options: { stdin?: string; tty?: boolean; stdinSource?: AsyncIterable<string>; onOut?: (text: string) => void } = {}): CapturedStreams {
+export function captureStreams(options: { stdin?: string; tty?: boolean; stdinSource?: AsyncIterable<string>; onOut?: (text: string) => void; onErr?: (text: string) => void } = {}): CapturedStreams {
   const out: string[] = [];
   const err: string[] = [];
   return {
@@ -88,7 +88,10 @@ export function captureStreams(options: { stdin?: string; tty?: boolean; stdinSo
       out.push(t);
       options.onOut?.(t);
     },
-    writeErr: (t) => void err.push(t),
+    writeErr: (t) => {
+      err.push(t);
+      options.onErr?.(t);
+    },
     readAllStdin: async () => options.stdin ?? "",
     stdinLines: async function* () {
       if (options.stdinSource) {
@@ -137,6 +140,8 @@ export async function cli(
     stdinSource?: AsyncIterable<string>;
     /** Called with each write to the standard output, as it happens. */
     onOut?: (text: string) => void;
+    /** Called with each write to the standard error, as it happens. */
+    onErr?: (text: string) => void;
     tty?: boolean;
     signal?: AbortSignal;
     identity?: Identity;
@@ -149,7 +154,7 @@ export async function cli(
   if (options.userConfig !== null) {
     writeFileSync(join(ws.configHome, "config.json"), JSON.stringify(deepMerge(TEST_USER_CONFIG, options.userConfig ?? {})));
   }
-  const streams = captureStreams({ stdin: options.stdin, tty: options.tty, stdinSource: options.stdinSource, onOut: options.onOut });
+  const streams = captureStreams({ stdin: options.stdin, tty: options.tty, stdinSource: options.stdinSource, onOut: options.onOut, onErr: options.onErr });
   const env: Record<string, string> = {
     [`${identity.get("ENV_PREFIX")}CONFIG_HOME`]: ws.configHome,
     ...options.env,

@@ -59,6 +59,8 @@ export const OPTIONS: readonly OptionDef[] = [
   { name: "stream-profile", value: "required", type: "enum", enumValues: ["standard", "compact"], group: "Entrées et sorties", description: "Profil de présentation d'une sortie jsonl.", defaultText: "standard", delivered: false, owner: "SPEC-OBS-022" },
   { name: "output-schema", value: "required", type: "path-or-content", group: "Entrées et sorties", description: "Schéma JSON du résultat attendu (fichier ou contenu).", delivered: true, owner: "SPEC-MOD-004" },
   { name: "control-channel", value: "none", group: "Entrées et sorties", description: "Ouvre le canal de contrôle d'un programme hôte (avec --request-format jsonl et --result-format jsonl).", delivered: true, owner: "SPEC-MOD-006" },
+  { name: "control-listen", value: "optional", type: "string", group: "Entrées et sorties", description: "Canal de contrôle sur une connexion persistante : attend l'hôte (--control-listen=<hôte:port>).", defaultText: "remote.transport.listenAddress", delivered: true, owner: "SPEC-MOD-007" },
+  { name: "control-connect", value: "required", type: "string", group: "Entrées et sorties", description: "Canal de contrôle sur une connexion persistante : se connecte au point d'entrée de l'hôte (wss://…).", delivered: true, owner: "SPEC-MOD-007" },
   { name: "emit-partial", value: "none", group: "Entrées et sorties", description: "Émet les fragments progressifs dans le flux.", delivered: false, owner: "SPEC-MOD-003" },
   { name: "emit-hook-events", value: "none", group: "Entrées et sorties", description: "Émet les événements de crochets dans le flux.", delivered: false, owner: "SPEC-MOD-003" },
   { name: "verbose", value: "none", group: "Entrées et sorties", description: "Diagnostic détaillé sur la sortie d'erreur.", delivered: true, owner: "SPEC-MOD-011" },
@@ -122,6 +124,7 @@ export const CONFLICTS: ReadonlyArray<readonly [string, string]> = [
     (["reopen", "reopen-last", "restore-files"] as const).map((b) => [a, b] as const),
   ),
   ["dry-run", "allow-external-overwrite"],
+  ["control-listen", "control-connect"],
 ];
 
 /** Options that require another option. */

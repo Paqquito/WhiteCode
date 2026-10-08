@@ -3,7 +3,7 @@
 //             SPEC-SES-002 (§ 5.1, § 5.3 steps 4 to 6, FA-02, EF-01, EF-05, ERR-01, CA-01 to CA-05), SPEC-SES-003 (§ 5.3, EF-01, EF-02, ERR-01, ERR-02, CA-01, CA-02),
 //             SPEC-CFG-004 (ERR-01), SPEC-CFG-005 (steps 4 and 5, EF-02, EF-03), SPEC-CFG-008 (§ 5.3, EF-01, EF-02, ERR-01),
 //             SPEC-SES-004 (ERR-03, CA-01, CA-02), SPEC-SES-008 (FA-01, EF-03), SPEC-SES-012 (§ 5.3, EF-01, EF-03, ERR-01, ERR-02, CA-01, CA-02), SPEC-SES-015 (steps 2 to 4, FA-01),
-//             SPEC-MOD-001 (§ 5.1, EF-01, EF-04, ERR-01, FA-04 summary at exit, FA-06, CA-05), SPEC-MOD-006 (§ 5.1, § 5.4 steps 1 and 7, FA-03, § 11), SPEC-CMD-002 (§ 5.3, FA-01, ERR-01, CA-01)
+//             SPEC-MOD-001 (§ 5.1, EF-01, EF-04, ERR-01, FA-04 summary at exit, FA-06, CA-05), SPEC-MOD-006 (§ 5.1, § 5.4 steps 1 and 7, FA-03, § 11), SPEC-MOD-007 (§ 5.1, § 6, EF-01, EF-02, EF-08, ERR-02, ERR-03, CA-04, CA-06), SPEC-CMD-002 (§ 5.3, FA-01, ERR-01, CA-01)
 // Supports: SPEC-MOT-005 (loading per segment, files touched), SPEC-MOT-007 (reminder producers), SPEC-CFG-001, SPEC-CFG-007 (RG-02, FA-01), SPEC-OUT-008, SPEC-OUT-009 (EF-07), SPEC-PER-001 (CA-05), SPEC-PER-003, SPEC-PER-010, SPEC-MOD-003 (CA-02, CA-04, CA-05), SPEC-SES-001, SPEC-API-006, decisions D-03, D-05, D-09, D-10, D-13, gaps E-013, E-017, E-018, E-045, E-050, E-094
 // Composition root of a session: options → identity and settings → provider → engine → automated output, or the
 // interactive application (lot 5).
@@ -49,6 +49,8 @@ import { isModeAvailable, ModeError, ModeState, resolveInitialMode, unavailableR
 import type { Authorities } from "../permissions/resolver";
 import { ControlSession, type ControlEnd, type ControlOperations } from "../control/session";
 import { ControlError } from "../control/protocol";
+import { bearerMatches, FramedLink, isLoopback, originAllowed, parseListenAddress } from "../control/remote";
+import { connectWebSocket, listenWebSocket, type WsPeer } from "../platform/websocket";
 import { AnthropicProvider } from "../providers/anthropic";
 import { effectiveCapabilities, isDeliveredProvider } from "../providers/adapters";
 import { OpenAICompatibleProvider } from "../providers/openai-compatible";
@@ -228,6 +230,7 @@ export async function runCli(argv: readonly string[], deps: RunDependencies): Pr
     err(`Erreur interne de ${identity.get("PRODUCT")} : ${(error as Error)?.stack ?? String(error)}`);
     return ExitCode.ExecutionError;
   } finally {
+    for (const finalize of (holder.finalizers ?? []).reverse()) await finalize().catch(() => undefined);
     for (const cleanup of holder.cleanups.reverse()) {
       try {
         cleanup();
@@ -241,6 +244,8 @@ export async function runCli(argv: readonly string[], deps: RunDependencies): Pr
 interface RunHolder {
   stream?: EventStream;
   cleanups: Array<() => void>;
+  /** Awaited before the other clean-ups, in reverse order (a connection that ends normally, SPEC-MOD-007 § 5.2 step 7). */
+  finalizers?: Array<() => Promise<void>>;
   errSink?: (text: string) => void;
 }
 
@@ -364,8 +369,12 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const terminal = streams.terminal;
   let nonInteractive = opt("non-interactive") === true || !streams.stdinIsTTY || !streams.stdoutIsTTY;
   // SPEC-MOD-006 § 5.1: the control channel, with the `jsonl` formats in and out; an automated run (gap E-101).
-  const controlOption = opt("control-channel") === true;
-  const streamFormats = (opt("request-format") ?? "text") === "jsonl" && (opt("result-format") ?? settings.get<string>("engine.output.format")) === "jsonl";
+  // SPEC-MOD-007: over a persistent connection, the channel carries the `jsonl` formats.
+  const remote = opt("control-listen") !== undefined || opt("control-connect") !== undefined;
+  const controlOption = opt("control-channel") === true || remote;
+  const streamFormats =
+    (opt("request-format") ?? (remote ? "jsonl" : "text")) === "jsonl" && (opt("result-format") ?? (remote ? "jsonl" : settings.get<string>("engine.output.format"))) === "jsonl";
+  if (remote && !streamFormats) throw new RunError("La connexion persistante transporte les formats jsonl : --request-format et --result-format n'en admettent pas d'autre.", ExitCode.UsageOrConfiguration);
   if (controlOption && !streamFormats) throw new RunError("--control-channel exige --request-format jsonl et --result-format jsonl.", ExitCode.UsageOrConfiguration);
   const controlled = controlOption || (settings.get<boolean>("engine.control.enabled") && streamFormats);
   if (controlled) nonInteractive = true;
@@ -430,13 +439,16 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const debugEnabled = debugOption !== undefined || env.ownBoolean("DEBUG") === true;
 
   // Formats (SPEC-MOD-003): chosen independently of each other (EF-01); every combination is supported (gap E-050).
-  const requestFormat = (opt("request-format") ?? "text") as string;
-  const format = (opt("result-format") ?? settings.get<string>("engine.output.format")) as ResultFormat;
+  const requestFormat = (opt("request-format") ?? (remote ? "jsonl" : "text")) as string;
+  const format = (opt("result-format") ?? (remote ? "jsonl" : settings.get<string>("engine.output.format"))) as ResultFormat;
+  // SPEC-MOD-007: the connection, opened before anything is written, so that the initialization is its first message.
+  const remoteLog: { log: (event: string, data: Record<string, unknown>) => void } = { log: () => {} };
+  const link = remote ? await openRemoteLink(opt, settings, env, err, holder, remoteLog) : undefined;
   const now = deps.now ?? (() => new Date());
   const stream =
     format === "jsonl"
       ? new EventStream({
-          write: (t) => streams.writeOut(t),
+          write: (t) => (link ? link.sendLine(t) : streams.writeOut(t)),
           includeThinking: settings.get<boolean>("engine.output.includeThinking"),
           maxEventSize: settings.get<number>("engine.output.maxEventSize"),
           now,
@@ -961,6 +973,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         : createDebugLog({ kind: "file", path: typeof output === "string" ? absolute(output, cwd) : join(transcript?.sessionDir ?? locations.configDir, "debug.log") }, domains);
   }
   for (const [domain, message, data] of earlyDebug) debug.log(domain, message, data);
+  remoteLog.log = (event, data) => debug.log("remote", event, data); // SPEC-MOD-007 § 14, never the token (RG-01)
   debug.log("config", "settings loaded", { trust: trust.source, mode: modeState.mode, model: resolvedModel.id, provider: providerId });
 
   // Repository state, captured at the start of each segment (SPEC-MOT-003 EF-04, Q-01, ENF-02); a failure is only logged (ERR-01).
@@ -1982,9 +1995,14 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       phase("affichage");
       reportPhases();
     }
-    controlEnd = await control.run(ops, streams.stdinLines(), parsed.prompt !== undefined && parsed.prompt.trim() !== "" ? [{ type: "text", text: parsed.prompt }] : undefined, controller.signal);
+    controlEnd = await control.run(ops, link ? link.lines() : streams.stdinLines(), parsed.prompt !== undefined && parsed.prompt.trim() !== "" ? [{ type: "text", text: parsed.prompt }] : undefined, controller.signal);
     if (controlEnd.kind === "refused") err(controlEnd.message);
-    if (controlEnd.kind === "broken") err(`Canal de contrôle rompu : exécution arrêtée${transcript ? ` ; la session reste reprenable (--reopen=${sessionId})` : ""}.`);
+    const reopenable = transcript ? ` ; la session reste reprenable (--reopen=${sessionId})` : "";
+    // FA-03 of SPEC-MOD-007: the resumption window expired; the run stops, the session stays reopenable.
+    if (link?.expired) {
+      controlEnd = { kind: "broken" };
+      err(`Fenêtre de reprise expirée : exécution arrêtée${reopenable}.`);
+    } else if (controlEnd.kind === "broken") err(`Canal de contrôle rompu : exécution arrêtée${reopenable}.`);
   }
   // Automated run: one turn per request, in order, in the same session (CA-04 of SPEC-MOD-003).
   for await (const item of requests) {
@@ -2079,6 +2097,118 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // With `jsonl` requests in `text`, each answer was already written after its turn.
   else if (format === "json" || requestFormat !== "jsonl") streams.writeOut(renderResult(format as "text" | "json", summary));
   return exitCode;
+}
+
+/**
+ * SPEC-MOD-007 § 5.1: the engine listens and waits for the host (server mode), or connects to the endpoint of the host
+ * (client mode). The token comes from the environment and is never written anywhere (RG-01).
+ */
+async function openRemoteLink(
+  opt: (name: string) => unknown,
+  settings: { get<T>(key: string): T },
+  env: EnvironmentView,
+  err: (text: string) => void,
+  holder: RunHolder,
+  log: { log: (event: string, data: Record<string, unknown>) => void },
+): Promise<FramedLink> {
+  const usage = (message: string) => new RunError(message, ExitCode.UsageOrConfiguration);
+  const token = env.own("CONTROL_TOKEN");
+  if (!token) throw usage(`Jeton d'authentification requis : variable ${env.prefix}CONTROL_TOKEN.`);
+  const maxFrameBytes = settings.get<number>("remote.transport.maxFrameBytes");
+  const plaintextLoopback = settings.get<boolean>("remote.transport.allowPlaintextLoopback");
+  const link = new FramedLink({
+    resumeWindowMs: settings.get<number>("remote.transport.resumeWindowSeconds") * 1000,
+    keepAliveMs: settings.get<number>("remote.transport.keepAliveSeconds") * 1000,
+    maxFrameBytes,
+    maxBuffered: 10_000,
+    notice: (text) => err(text),
+    trace: (event, data) => log.log(event, data),
+  });
+  const listen = opt("control-listen");
+  if (listen !== undefined) {
+    const value = typeof listen === "string" ? listen : settings.get<string>("remote.transport.listenAddress");
+    const address = parseListenAddress(value);
+    if (typeof address === "string") throw usage(`Adresse d'écoute invalide : ${value} (${address}).`);
+    const where = address.hostname.includes(":") ? `[${address.hostname}]:${address.port}` : `${address.hostname}:${address.port}`;
+    const loopback = isLoopback(address.hostname);
+    // CA-04, § 12: an address reachable from the network is announced before the listening starts.
+    if (!loopback) err(`avertissement : adresse d'écoute publique ${where} : le moteur sera joignable depuis le réseau ; seules les origines de remote.transport.allowedOrigins sont admises.`);
+    const certFile = env.own("CONTROL_TLS_CERT");
+    const keyFile = env.own("CONTROL_TLS_KEY");
+    if ((certFile === undefined) !== (keyFile === undefined)) throw usage(`${env.prefix}CONTROL_TLS_CERT et ${env.prefix}CONTROL_TLS_KEY s'emploient ensemble.`);
+    if (certFile === undefined && !(loopback && plaintextLoopback)) throw usage("Un transport chiffré est requis."); // EF-01, ERR-03, CA-06
+    let tls: { cert: string; key: string } | undefined;
+    if (certFile !== undefined && keyFile !== undefined) {
+      try {
+        tls = { cert: readFileSync(certFile, "utf8"), key: readFileSync(keyFile, "utf8") };
+      } catch {
+        throw usage(`Certificat ou clé illisible : ${certFile}.`);
+      }
+    }
+    const allowed = settings.get<string[]>("remote.transport.allowedOrigins");
+    let server: ReturnType<typeof listenWebSocket>;
+    try {
+      server = listenWebSocket({
+        hostname: address.hostname,
+        port: address.port,
+        ...(tls ? { tls } : {}),
+        maxPayloadLength: maxFrameBytes * 2 + 65_536,
+        authorize: ({ headers, remoteAddress }) => {
+          // EF-02, EF-08, FA-04: the origin and the token are checked before anything else; the refusal says nothing of its cause.
+          const ok = originAllowed(remoteAddress, headers.get("origin"), allowed) && bearerMatches(headers, token);
+          if (!ok) log.log("connection_refused", { origin: remoteAddress });
+          return ok;
+        },
+        onOpen: (peer) => link.open(peer),
+        onMessage: (peer, text) => link.receive(peer, text),
+        onClose: (peer) => link.closed(peer),
+      });
+    } catch {
+      throw usage(`Impossible d'écouter sur ${where}.`); // ERR-02
+    }
+    holder.cleanups.push(() => server.stop());
+    (holder.finalizers ??= []).push(() => link.drain()); // first: the last messages, then a normal closing (§ 5.2 step 7)
+    const host = server.hostname.includes(":") ? `[${server.hostname}]` : server.hostname;
+    err(`En écoute sur ${tls ? "wss" : "ws"}://${host}:${server.port}`);
+    return link;
+  }
+  const endpoint = String(opt("control-connect"));
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    throw usage(`Point d'entrée invalide : ${endpoint}.`);
+  }
+  if (url.protocol !== "wss:" && url.protocol !== "ws:") throw usage(`Point d'entrée invalide : ${endpoint} (wss:// attendu).`);
+  if (url.protocol === "ws:" && !(isLoopback(url.hostname) && plaintextLoopback)) throw usage("Un transport chiffré est requis."); // EF-01, ERR-03, CA-06
+  // FA-01: after a cut, the engine connects again during the resumption window and presents its token.
+  const connect = () =>
+    new Promise<boolean>((resolve) => {
+      let peer: WsPeer | undefined;
+      connectWebSocket(url.href, { Authorization: `Bearer ${token}` }, {
+        onOpen: (p) => {
+          peer = p;
+          link.openOutgoing(p);
+          resolve(true);
+        },
+        onMessage: (text) => peer && link.receive(peer, text),
+        onClose: () => {
+          if (!peer) return resolve(false);
+          link.closed(peer);
+          void reconnect();
+        },
+      });
+    });
+  const reconnect = async () => {
+    while (!link.ended && !link.attached) {
+      await new Promise((r) => setTimeout(r, 1_000));
+      if (link.ended || link.attached) return;
+      if (await connect()) return;
+    }
+  };
+  (holder.finalizers ??= []).push(() => link.drain());
+  if (!(await connect())) throw usage(`Connexion impossible : ${url.origin}.`);
+  return link;
 }
 
 /** Alias of each tier, for the allow list (SPEC-API-007). */
