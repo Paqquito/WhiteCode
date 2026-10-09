@@ -90,7 +90,7 @@ describe("SPEC-MOD-006 decisions of the host", () => {
     expect(h.messages.some((m) => m.type === "permission" && m["decision"] === "deny")).toBe(true);
   });
 
-  test("SPEC-MOD-006/CA-07 — a host that is not designated but handles decisions: it is never asked", async () => {
+  test("SPEC-MOD-006/CA-07 SPEC-PER-001/CA-18 SPEC-PER-028/CA-03 — a host that is not designated but handles decisions: it is never asked", async () => {
     const ws = workspace();
     const target = join(ws.project, "a.txt");
     const p = new ScriptedProvider([write(target), { text: "fini" }]);

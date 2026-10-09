@@ -1,5 +1,6 @@
 // Implements: SPEC-PER-001 (§ 5.3 handling of an `ask` decision, points a to d, resolution table, FA-01, FA-02, EF-10, EF-12, RG-05, RG-06)
 // Supports: SPEC-PER-028 (§ 5.2 point 1: the designated control host first), SPEC-MOD-006 (§ 5.4 step 5, RG-05)
+// Supports: SPEC-PER-001 (CA-22: cancellation before, between and after authorities), gap E-131.
 // Only designated or habilitated authorities decide; their mere presence is not enough (RG-06).
 
 import type { PermissionMode } from "../config/settings-schema";
@@ -103,12 +104,14 @@ export async function resolveAsk(
   authorities: Authorities,
   signal: AbortSignal,
 ): Promise<Resolution> {
+  if (signal.aborted) return cancelled();
   // Point a: no_prompt, any origin: only a designated delegate, the control host first (SPEC-PER-028 § 5.2); never a dialog nor a hook.
   if (mode === "no_prompt") {
     const host = await askHost(request, authorities.controlHost, signal);
     if (host) return host;
     if (authorities.delegate) {
       const d = await authorities.delegate.decide(request, signal);
+      if (signal.aborted) return cancelled();
       if (d === "allow") return { decision: "allow", by: "delegate" };
       if (d === "deny") return { decision: "deny", by: "delegate", reason: "Denied by the designated delegate." };
     }
@@ -118,6 +121,7 @@ export async function resolveAsk(
   // Point b: auto_approve, tool check or default origin: the classifier, never a hook nor a delegate.
   if (mode === "auto_approve" && (decision.origin === "tool_check" || decision.origin === "default")) {
     const verdict = authorities.classifier ? await authorities.classifier.decide(request, signal) : "unavailable";
+    if (signal.aborted) return cancelled();
     if (verdict === "allow") return { decision: "allow", by: "classifier" };
     if (verdict === "block") return { decision: "deny", by: "classifier", reason: "Blocked by the approval classifier." };
     const host = await askHost({ ...request, reason: `${request.reason} (approval classifier unavailable)` }, authorities.controlHost, signal);
@@ -129,6 +133,7 @@ export async function resolveAsk(
   // Point c: other cases. Habilitated hook, then designated authority or human, otherwise refusal.
   if (authorities.habilitatedHook) {
     const h = await authorities.habilitatedHook.decide(request, signal);
+    if (signal.aborted) return cancelled();
     if (h === "allow") return { decision: "allow", by: "hook" };
     if (h === "deny") return { decision: "deny", by: "hook", reason: "Denied by an approval hook." };
   }
@@ -137,6 +142,7 @@ export async function resolveAsk(
   if (authorities.human) return askHuman(request, authorities.human, signal);
   if (authorities.delegate) {
     const d = await authorities.delegate.decide(request, signal);
+    if (signal.aborted) return cancelled();
     if (d === "allow") return { decision: "allow", by: "delegate" };
     if (d === "deny") return { decision: "deny", by: "delegate", reason: "Denied by the designated delegate." };
   }
@@ -145,8 +151,10 @@ export async function resolveAsk(
 
 /** The designated control host; `undefined` when it is not consulted, so that the next authority answers (SPEC-MOD-006 FA-01). */
 async function askHost(request: ApprovalRequest, host: ControlAuthority | undefined, signal: AbortSignal): Promise<Resolution | undefined> {
+  if (signal.aborted) return cancelled();
   if (!host) return undefined;
   const d = await host.decide(request, signal);
+  if (signal.aborted) return cancelled();
   if (!d) return undefined;
   if (d.decision === "allow") return { decision: "allow", by: "control_host" };
   if (d.decision === "allow_modified") return { decision: "allow", by: "control_host", input: d.input };
@@ -154,7 +162,9 @@ async function askHost(request: ApprovalRequest, host: ControlAuthority | undefi
 }
 
 async function askHuman(request: ApprovalRequest, human: HumanApprovalChannel, signal: AbortSignal): Promise<Resolution> {
+  if (signal.aborted) return cancelled();
   const a = await human.request(request, signal);
+  if (signal.aborted) return cancelled();
   switch (a.answer) {
     case "yes":
       return { decision: "allow", by: "human" };
@@ -167,4 +177,8 @@ async function askHuman(request: ApprovalRequest, human: HumanApprovalChannel, s
     case "no_stop":
       return { decision: "deny", by: "human", reason: "The user denied this action and stopped the turn.", stopTurn: true };
   }
+}
+
+function cancelled(): Resolution {
+  return { decision: "deny", by: "none", reason: "The call was cancelled; its approval is no longer valid." };
 }

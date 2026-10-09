@@ -77,6 +77,33 @@ describe("SPEC-AGT-001 sub-agents", () => {
 });
 
 describe("SPEC-OUT-016 spawn_agent", () => {
+  test("SPEC-AGT-009/CA-01 — a resumed agent retains the content of files it actually read", async () => {
+    const ws = workspace();
+    const file = ws.write("project/context.txt", "EARLIER FILE CONTENT");
+    let previous = "";
+    const p = new ScriptedProvider([
+      { toolCalls: [spawn({ prompt: "Read context.txt and retain its content." })] },
+      (request) => {
+        previous = /\[agent (agent-[0-9a-f]{8})/.exec(JSON.stringify(request.history))?.[1] ?? "missing";
+        writeFileSync(file, "NEW CONTENT AFTER THE REPORT");
+        return { toolCalls: [spawn({ resume: previous, prompt: "Report the earlier file content without rereading." })] };
+      },
+      { text: "Parent finished." },
+    ], [
+      { toolCalls: [{ name: "read_file", input: { path: file } }] },
+      { text: "File read." },
+      (request) => {
+        expect(request.agent).toBe(previous);
+        expect(JSON.stringify(request.history)).toContain("EARLIER FILE CONTENT");
+        expect(JSON.stringify(request.history)).not.toContain("NEW CONTENT AFTER THE REPORT");
+        return { text: "EARLIER FILE CONTENT" };
+      },
+    ]);
+    const result = await run(ws, p);
+    expect(result.code).toBe(0);
+    expect(lastResults(main(p)[2])).toContain("EARLIER FILE CONTENT");
+    expect(sub(p).filter((request) => request.tools.some((tool) => tool.name === "read_file"))).toHaveLength(3);
+  });
   test("SPEC-OUT-016/CA-01 — three calls in one response: they progress together and each returns its report", async () => {
     const ws = workspace();
     const p = new ScriptedProvider([
@@ -171,7 +198,7 @@ describe("SPEC-AGT-002 and SPEC-AGT-005 definitions", () => {
 });
 
 describe("SPEC-OUT-037 a skill run in a sub-agent", () => {
-  test("SPEC-OUT-037/CA-02 — a skill declaring a sub-agent: only its report comes back into the conversation", async () => {
+  test("SPEC-OUT-037/CA-02 SPEC-EXT-020/CA-03 — a skill declaring a sub-agent: only its report comes back into the conversation", async () => {
     const ws = workspace();
     ws.write("home/config/skills/audit/definition.md", header({ name: "audit", description: "Audite le dépôt.", context: "agent" }, "CONSIGNES DÉTAILLÉES DE L'AUDIT"));
     const p = new ScriptedProvider([{ toolCalls: [{ name: "use_skill", input: { name: "audit" } }] }, { text: "audit : rien à signaler" }, { text: "fini" }]);

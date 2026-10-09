@@ -567,9 +567,15 @@ export class InteractiveApp {
   readonly approvals: HumanApprovalChannel = {
     request: (request, signal) =>
       new Promise<HumanAnswer>((resolve) => {
+        if (signal.aborted) { resolve({ answer: "no_stop" }); return; }
+        let settled = false;
+        const onAbort = () => pending.resolve({ answer: "no_stop" });
         const pending: PendingApproval = {
           request,
           resolve: (a) => {
+            if (settled) return;
+            settled = true;
+            signal.removeEventListener("abort", onAbort);
             const i = this.#approvals.indexOf(pending);
             if (i !== -1) this.#approvals.splice(i, 1);
             if (this.#approvals[0]) this.#approvals[0].shownAt = this.#now;
@@ -582,7 +588,7 @@ export class InteractiveApp {
         };
         // CA-02: the default choice of a dangerous command is « Non ».
         pending.selected = request.danger ? this.#choices(pending).findIndex((c) => c.label === "Non") : 0;
-        signal.addEventListener("abort", () => pending.resolve({ answer: "no_stop" }), { once: true });
+        signal.addEventListener("abort", onAbort, { once: true });
         this.#approvals.push(pending);
         this.#session?.screen.flush();
       }),

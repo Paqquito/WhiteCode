@@ -6,6 +6,7 @@
 //             SPEC-MOD-001 (§ 5.1, EF-01, EF-04, ERR-01, FA-04 summary at exit, FA-06, CA-05), SPEC-MOD-006 (§ 5.1, § 5.4 steps 1 and 7, FA-03, § 11), SPEC-MOD-007 (§ 5.1, § 6, EF-01, EF-02, EF-08, ERR-02, ERR-03, CA-04, CA-06), SPEC-MOD-008 (§ 5.1, § 6, § 10, FA-02, FA-05, EF-02 to EF-07, RG-01 to RG-03, CA-01 to CA-06), SPEC-CMD-002 (§ 5.3, FA-01, ERR-01, CA-01)
 // Supports: SPEC-MOT-005 (loading per segment, files touched), SPEC-MOT-007 (reminder producers), SPEC-CFG-001, SPEC-CFG-007 (RG-02, FA-01), SPEC-OUT-008, SPEC-OUT-009 (EF-07), SPEC-PER-001 (CA-05), SPEC-PER-003, SPEC-PER-010, SPEC-MOD-003 (CA-02, CA-04, CA-05), SPEC-SES-001, SPEC-API-006, decisions D-03, D-05, D-09, D-10, D-13, gaps E-013, E-017, E-018, E-045, E-050, E-094
 // Supports: SPEC-CFG-003 (FA-02, CA-05, CA-06, CA-08, file, enrolment, cache and native authority checks before composition and every action), gaps E-124 to E-127.
+// Supports: SPEC-PER-001 (CA-09, CA-11, CA-18, CA-20 to CA-23, CA-33), SPEC-PER-028 (CA-03), gap E-131.
 // Composition root of a session: options → identity and settings → provider → engine → automated output, or the
 // interactive application (lot 5).
 
@@ -1068,20 +1069,25 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   for (const w of skillSet.warnings) err(`avertissement : ${w}`);
   // SPEC-EXT-020 EF-02: the `tools` of an active skill are allowed until the end of the turn, never beyond a deny rule.
   const skillAllows: Rule[] = [];
-  const activateSkill = (skill: Skill) => {
+  const activateSkill = (skill: Skill, allows: Rule[] = skillAllows) => {
     for (const raw of skill.tools) {
       const rule = parseRule(raw, "allow", "session", cwd);
-      if (isRule(rule)) skillAllows.push(rule);
+      if (isRule(rule)) allows.push(rule);
       else err(`avertissement : compétence ${skill.name} : ${rule.message}`);
     }
   };
-  const useSkillTool = createUseSkillTool({
+  type AgentPermissionContext = LoopDeps["executor"]["permissionContext"];
+  const mainPermissionContext: AgentPermissionContext = () => loopDeps.executor.permissionContext();
+  const skillTool = (depth: number, caller: ToolLookup, parentContext: AgentPermissionContext, allows: Rule[]) => createUseSkillTool({
     expand: (skill, content) => productSkillContext(skill, content),
     skills: () => skillSet,
     session: () => sessionId,
-    activate: activateSkill,
-    runInAgent: (skill, content, signal) => runSubagent({ description: `skill ${skill.name}`, prompt: content }, BUILT_IN_AGENTS[0]!, signal, 0, registry),
+    activate: (skill) => activateSkill(skill, allows),
+    runInAgent: (skill, content, signal) => depth >= maxAgentDepth
+      ? Promise.resolve({ text: "This skill cannot start an agent beyond agents.maxDepth.", isError: true })
+      : runSubagent({ description: `skill ${skill.name}`, prompt: content }, BUILT_IN_AGENTS[0]!, signal, depth, caller, parentContext),
   }) as never;
+  const useSkillTool = skillTool(0, registry, mainPermissionContext, skillAllows);
   // SPEC-OUT-001 CA-01: `use_skill` too is presented only when --toolset names it.
   const skillsInToolset = toolsetNames === undefined || toolsetNames.includes("use_skill") || (toolsetNames.length === 1 && toolsetNames[0] === "default");
   if (modelSkills(skillSet).length > 0 && skillsInToolset) registry.addStatic(useSkillTool);
@@ -1103,8 +1109,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   agentCatalog();
   const maxAgentDepth = settings.get<number>("agents.maxDepth");
   // SPEC-OUT-016: one instance per depth, so that the delegation stops at `agents.maxDepth` (FA-03, EF-05).
-  const spawnTool = (depth: number, caller: ToolLookup) =>
-    createSpawnAgentTool({ agents: agentCatalog, maxParallel: settings.get<number>("agents.maxParallel"), launch: (input, def, signal) => runSubagent(input, def, signal, depth, caller) }) as never;
+  const spawnTool = (depth: number, caller: ToolLookup, parentContext: AgentPermissionContext = mainPermissionContext) =>
+    createSpawnAgentTool({ agents: agentCatalog, maxParallel: settings.get<number>("agents.maxParallel"), launch: (input, def, signal) => runSubagent(input, def, signal, depth, caller, parentContext) }) as never;
   if (maxAgentDepth >= 1 && agentsInToolset) registry.addStatic(spawnTool(0, registry));
   // SPEC-OUT-020, SPEC-OUT-022: the tools of the work items and of the background tasks, named in --toolset like the others.
   const inToolset = (name: string) => toolsetNames === undefined || toolsetNames.includes(name) || (toolsetNames.length === 1 && toolsetNames[0] === "default");
@@ -2192,7 +2198,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   phase("session");
   // SPEC-AGT-001, SPEC-OUT-016: a sub-agent, in its own context, with the tools, the model and the mode it may have.
   // Agents of this session are kept for a resumption (FA-01; the side transcript on disk is not delivered, gap E-105).
-  const subagents = new Map<string, { readonly name: string; readonly deps: LoopDeps }>();
+  const subagents = new Map<string, { readonly name: string; readonly deps: LoopDeps; readonly caller: ToolLookup; readonly skillAllows: Rule[] }>();
+  const activeSubagents = new Set<string>();
   // SPEC-OUT-012 step 6: the prompt applied to a web page by the light model, a side request admitted by the budget.
   const askLightModel = async (prompt: string, content: string, url: string, signal: AbortSignal): Promise<string> => {
     const small = deps.catalog.resolve("small", providerId, identity, resolveOptions);
@@ -2231,12 +2238,15 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     ...(a.delegate ? { delegate: { decide: (r, s) => a.delegate!.decide({ ...r, requester }, s) } } : {}),
     ...(a.habilitatedHook ? { habilitatedHook: { decide: (r, s) => a.habilitatedHook!.decide({ ...r, requester }, s) } } : {}),
   });
-  const runSubagent = async (input: SpawnAgentInput, definition: AgentDefinition | undefined, signal: AbortSignal, depth: number, caller: ToolLookup): Promise<{ text: string; isError: boolean }> => {
-    let agent: { readonly name: string; readonly deps: LoopDeps };
+  const runSubagent = async (input: SpawnAgentInput, definition: AgentDefinition | undefined, signal: AbortSignal, depth: number, caller: ToolLookup, parentContext: AgentPermissionContext): Promise<{ text: string; isError: boolean }> => {
+    let agent: { readonly name: string; readonly deps: LoopDeps; readonly caller: ToolLookup; readonly skillAllows: Rule[] };
     let id: string;
     if (input.resume !== undefined) {
       const found = subagents.get(input.resume);
       if (!found) return { text: `Unknown agent id: ${input.resume}. Agents of this session: ${[...subagents.keys()].join(", ") || "none"}.`, isError: true };
+      // E-131: a saved context stays with its caller; transferring it could widen another agent's tool view.
+      if (found.caller !== caller) return { text: "An agent can only be resumed by the same caller that launched it. Start a new agent within your own permissions.", isError: true };
+      if (activeSubagents.has(input.resume)) return { text: "This agent is already running; wait for its report before resuming it.", isError: true };
       agent = found;
       id = input.resume;
     } else {
@@ -2251,7 +2261,20 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         else emit({ type: "warning", message: `Modèle de l'agent ${def.name} non autorisé : modèle hérité.` });
       }
       // EF-02: the mode of the caller, or the one of the definition when it is not more permissive.
-      const mode = def.approvalMode && !morePermissive(def.approvalMode, modeState.mode) ? def.approvalMode : modeState.mode;
+      const unavailableMode = def.approvalMode !== undefined && !isModeAvailable(def.approvalMode, availability);
+      const requestedMode = unavailableMode ? (nonInteractive ? "no_prompt" : "ask") : def.approvalMode;
+      if (unavailableMode) emit({ type: "warning", message: `Mode de l'agent ${def.name} indisponible : mode ${requestedMode} appliqué.` });
+      const childMode = (): PermissionMode => {
+        const parentMode = parentContext().mode;
+        if (parentMode === "no_prompt") return "no_prompt";
+        return requestedMode && !morePermissive(requestedMode, parentMode) ? requestedMode : parentMode;
+      };
+      const agentSkillAllows: Rule[] = [];
+      const childContext: AgentPermissionContext = () => {
+        const parent = parentContext();
+        return { ...parent, mode: childMode(), sessionAllows: [...parent.sessionAllows, ...agentSkillAllows] };
+      };
+      const mode = childMode();
       // EF-01: the tools of the definition (or all) among those of the caller, minus the excluded ones; delegation only
       // below the maximal depth; a planning agent only reads (EF-06 of SPEC-OUT-016).
       const replaced = new Map<string, never>();
@@ -2260,9 +2283,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         (!def.tools || def.tools.includes(name)) &&
         !def.excludedTools.includes(name) &&
         (name !== "spawn_agent" || depth + 1 < maxAgentDepth) &&
-        (mode !== "planning" || READING_TOOLS.has(name));
+        ((mode !== "planning" && requestedMode !== "planning") || READING_TOOLS.has(name));
       const view = restrictedView(caller, allowed, replaced);
-      replaced.set("spawn_agent", spawnTool(depth + 1, view));
+      replaced.set("spawn_agent", spawnTool(depth + 1, view, childContext));
+      replaced.set("use_skill", skillTool(depth + 1, view, childContext, agentSkillAllows));
       // SPEC-AGT-002 EF-03: an agent limited to some hosts (the guide: the official documentation) reads nothing else.
       if (def.webHosts) {
         const hosts = def.webHosts.map((h) => (h === "$SERVICE_DOCS" ? docsUrl?.hostname : h)).filter((h): h is string => h !== undefined);
@@ -2317,6 +2341,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       };
       agent = {
         name: def.name,
+        caller,
+        skillAllows: agentSkillAllows,
         deps: {
           ...loopDeps,
           model,
@@ -2344,7 +2370,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
             registry: view,
             authorities: labelled(loopDeps.executor.authorities, def.name), // EF-04
             loopGuard: new LoopGuard(settings.get<number>("engine.loopGuard.threshold"), settings.get<boolean>("engine.loopGuard.enabled")),
-            permissionContext: () => ({ ...loopDeps.executor.permissionContext(), mode }),
+            permissionContext: childContext,
           },
         },
       };
@@ -2354,7 +2380,15 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     }
     // FA-03 of SPEC-AGT-001: the startup instruction of the definition comes before the prompt of the caller.
     const startup = input.resume === undefined ? definition?.startupInstruction : undefined;
-    const result = await runTurn(agent.deps, startup ? `${startup}\n\n${input.prompt}` : input.prompt, signal);
+    activeSubagents.add(id);
+    let result: TurnResult;
+    try {
+      result = await runTurn(agent.deps, startup ? `${startup}\n\n${input.prompt}` : input.prompt, signal);
+    } finally {
+      activeSubagents.delete(id);
+      // Skill grants never escape this agent's turn, including when it is resumed.
+      agent.skillAllows.length = 0;
+    }
     debug.log("agents", "finished", { id, cause: result.stopCause, ms: result.durationMs });
     const report = result.finalText.trim();
     if (result.stopCause === "interrupted") return { text: `The sub-agent ${id} was interrupted before its report.`, isError: true };

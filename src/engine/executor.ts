@@ -1,7 +1,7 @@
 // Implements: SPEC-MOT-002 (§ 5.3, EF-01 to EF-07, FA-02 to FA-05, RG-01 to RG-04, ERR-01 to ERR-03, CA-01 to CA-06, CA-08), SPEC-OUT-001 (FA-01, EF-02, EF-05, EF-06, CA-03),
 //             SPEC-MOT-046 (§ 5.1 detection before the hook and the permission, § 5.3 points 2 to 5, FA-01 to FA-03, EF-01 to EF-04),
 //             SPEC-MOD-006 (FA-05, CA-03 parameters replaced by the control host evaluated again)
-// Supports: SPEC-HOK-010 (EF-03 input changed by a hook validated again, ERR-01, ERR-02), SPEC-SES-006 (backup before a write, EF-01), SPEC-PER-001 (decision then resolution of `ask`, CA-05 persisted answer), SPEC-PER-003 (CA-08 revalidation), SPEC-OUT-003 (EF-06 difference shown), SPEC-CFG-003 (policy gate before execution), gaps E-022, E-049, E-120
+// Supports: SPEC-HOK-010 (EF-03 input changed by a hook validated again, ERR-01, ERR-02), SPEC-SES-006 (backup before a write, EF-01), SPEC-PER-001 (decision then resolution of `ask`, CA-05 persisted answer, CA-21 context revalidation), SPEC-PER-003 (CA-08 revalidation), SPEC-OUT-003 (EF-06 difference shown), SPEC-CFG-003 (policy gate before execution), gaps E-022, E-049, E-120, E-131
 
 import type { PermissionMode } from "../config/settings-schema";
 import type { HookBus } from "../extension-points/hooks";
@@ -231,18 +231,20 @@ export class ResponseExecution {
 
       // Hook, decision and resolution (steps 2 and 3 of § 5.3). Parameters replaced by a control host go through them
       // again, as if they came from the model (SPEC-MOD-006 FA-05, SPEC-PER-001 EF-11); its approval covers exactly them.
-      let approvedByHost: string | undefined;
+      let approvedByHost: { input: string; context: string } | undefined;
       let replacedByHost = false;
       let preview: Awaited<ReturnType<NonNullable<typeof tool.preview>>> | undefined;
       let subject: RuleSubject;
       let query: PermissionQuery;
       let decision: Decision;
       let pctx: ReturnType<ExecutorDeps["permissionContext"]>;
+      let evaluatedContext: string;
       for (let round = 0; ; round++) {
         const blocked = policyBlocked();
         if (blocked) return blocked;
         // Hook first (step 2 of § 5.3): a changed input is the one shown, decided and executed (SPEC-HOK-010 EF-03, CA-03).
         const hook = await this.#deps.hooks.beforeTool(call);
+        if (signal.aborted) return finish(textOutcome("Not executed: the turn was interrupted.", true, "interrupted"), false);
         const afterHook = policyBlocked();
         if (afterHook) return afterHook;
         if (hook.stopTurn) this.#stopTurnRequested = true;
@@ -263,6 +265,7 @@ export class ResponseExecution {
 
         // Permission decision, then resolution of an `ask` (step 3 of § 5.3).
         pctx = this.#deps.permissionContext();
+        evaluatedContext = canonical(pctx);
         subject = tool.ruleSubject(call.input as never, ctx);
         const target = subject;
         query = {
@@ -277,7 +280,7 @@ export class ResponseExecution {
         };
         decision = decide(query, pctx);
         // The host already approved these very parameters: a decision `ask` on them is its answer (RG-06 of SPEC-MOD-006).
-        if (decision.kind === "ask" && approvedByHost === canonical(call.input)) {
+        if (decision.kind === "ask" && approvedByHost?.input === canonical(call.input) && approvedByHost.context === evaluatedContext) {
           this.#deps.emit({ type: "permission", callId: call.callId, decision: "allow", reason: "approved by control_host (parameters replaced)", step: decision.step });
           break;
         }
@@ -291,7 +294,7 @@ export class ResponseExecution {
           return finish(textOutcome(`Blocked: the parameters given by the control host are invalid: ${[...errors, ...(business ? [business] : [])].join("; ")}.`, true, "invalid_input"), false);
         }
         call = { ...call, input: resolved.input };
-        approvedByHost = canonical(resolved.input);
+        approvedByHost = { input: canonical(resolved.input), context: evaluatedContext };
         replacedByHost = true;
       }
 
@@ -303,17 +306,23 @@ export class ResponseExecution {
         if (signal.aborted) return finish(textOutcome("Not executed: the turn was interrupted.", true, "interrupted"));
         const blocked = policyBlocked();
         if (blocked) return blocked;
-        // Revalidation before execution (CA-08 of SPEC-MOT-002 and SPEC-PER-003, gap E-049): a mode change since the decision is applied.
-        const now = this.#deps.permissionContext();
-        if (now.mode !== pctx.mode) {
+        // Any security-context change is relevant, including rules changed without a mode change.
+        // An unchanged approval remains bound to this call; changed contexts are resolved again, at most three times.
+        for (let revision = 0; ; revision++) {
+          const now = this.#deps.permissionContext();
           const again = decide(query, now);
-          const byMode = decision.kind === "allow" && (decision.step === 3 || decision.step === 7);
           if (again.kind === "deny") return finish(await this.#refuse(call, again.reason, again.step), false);
-          if (again.kind === "ask" && byMode) {
-            const second = await this.#resolve(call, tool, again, now.mode, preview && "diff" in preview ? preview : undefined, signal, subject);
-            if (!second.allowed) return finish(await this.#refuse(call, second.reason, again.step), false);
-          }
+          const currentContext = canonical(now);
+          if (again.kind !== "ask" || currentContext === evaluatedContext) break;
+          if (revision >= MAX_HOST_REVISIONS) return finish(await this.#refuse(call, "The permission context keeps changing. Submit this call again after it stabilizes.", again.step), false);
+          const second = await this.#resolve(call, tool, again, now.mode, preview && "diff" in preview ? preview : undefined, signal, subject);
+          if (!second.allowed) return finish(await this.#refuse(call, second.reason, again.step), false);
+          // A replacement at this late stage needs the complete hook, preview and business-validation pipeline.
+          if (second.input) return finish(await this.#refuse(call, "The permission context changed and the new approval replaced the input. Submit those parameters as a fresh call for full validation.", again.step), false);
+          pctx = now;
+          evaluatedContext = currentContext;
         }
+        if (signal.aborted) return finish(textOutcome("Not executed: the turn was interrupted.", true, "interrupted"));
         // SPEC-SES-006 EF-01, ERR-01: the files a tool changes are saved first; without a backup, no change.
         const afterApproval = policyBlocked();
         if (afterApproval) return afterApproval;
@@ -377,6 +386,7 @@ export class ResponseExecution {
     signal: AbortSignal,
     subject: RuleSubject,
   ): Promise<{ allowed: boolean; reason: string; input?: Record<string, unknown> }> {
+    if (signal.aborted) return { allowed: false, reason: "The call was cancelled." };
     if (decision.kind === "allow") {
       this.#deps.emit({ type: "permission", callId: call.callId, decision: "allow", reason: decision.why, step: decision.step });
       return { allowed: true, reason: decision.why };
@@ -402,6 +412,7 @@ export class ResponseExecution {
       signal,
     );
     const policyRefusal = this.#deps.policyRefusal?.();
+    if (signal.aborted) return { allowed: false, reason: "The call was cancelled; its approval is no longer valid." };
     if (policyRefusal) return { allowed: false, reason: policyRefusal };
     if (resolution.decision === "deny") {
       if (resolution.stopTurn) this.#stopTurnRequested = true;

@@ -118,3 +118,21 @@ describe("SPEC-PER-002 rules", () => {
     expect((parseRule("teleport(x)", "allow", "user", ws.project) as { code: string }).code).toBe("ERR-01");
   });
 });
+
+test("TECH — cancellation during a decision authority rejects late grants and skips the following authority", async () => {
+  const controller = new AbortController();
+  const d = decide(readQuery(join(ws.home, "elsewhere.txt")), ctx("ask"));
+  let humans = 0;
+  const result = await resolveAsk(d as Extract<typeof d, { kind: "ask" }>, { callId: "cancelled", toolName: "read_file", summary: "Read outside.", reason: "Outside.", origin: "default", suggestions: [] }, "ask", {
+    habilitatedHook: { decide: async () => { controller.abort(); return "allow"; } },
+    human: { request: async () => { humans++; return { answer: "yes_always", scope: "session", rule: "read_file" }; } },
+  }, controller.signal);
+  expect(result).toMatchObject({ decision: "deny", by: "none" });
+  expect(humans).toBe(0);
+  const lateHuman = new AbortController();
+  const humanResult = await resolveAsk(d as Extract<typeof d, { kind: "ask" }>, { callId: "late", toolName: "read_file", summary: "Read outside.", reason: "Outside.", origin: "default", suggestions: [] }, "ask", {
+    human: { request: async () => { lateHuman.abort(); return { answer: "yes_always", scope: "session", rule: "read_file" }; } },
+  }, lateHuman.signal);
+  expect(humanResult).toMatchObject({ decision: "deny", by: "none" });
+  expect("persist" in humanResult).toBe(false);
+});
