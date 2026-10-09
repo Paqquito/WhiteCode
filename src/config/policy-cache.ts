@@ -1,20 +1,27 @@
 // Implements: SPEC-CFG-003 (§ 5.7 points 4, 6 and 7, CA-08, CA-09, authorised offline cache rejection), gaps E-127, E-128.
-// Supports: SPEC-CFG-003 (CA-03, offline interface preferences and permission restrictions); sensitive adoption remains separate.
+// Supports: SPEC-CFG-003 (CA-03, CA-10), SPEC-PER-021 (human consent, protected per-account attestation), gap E-129.
 import { dirname, join } from "node:path";
 import { parse, visit } from "jsonc-parser";
 import type { PolicyAnchor } from "../identity/resolver";
-import type { PolicyFileProtectionReader } from "../platform/policy-file";
+import { inspectPolicyConsentProtection, type PolicyFileProtectionReader } from "../platform/policy-file";
 import { fingerprint } from "../shared/fingerprint";
 import { readPolicyEnrollment } from "./policy-enrollment";
 import { readPolicySource } from "./protected-policy-source";
 import { validateManagedPolicy, type PolicyCapability, type PolicyValidation } from "./managed-policy";
 import { flattenSettings, type ConfigIssue } from "./settings";
+import { policyConsentFileName, policyConsentPrincipal, policyConsentProposal, type PolicyConsentProposal } from "./policy-consent";
+import { writeAtomic } from "../tools/text-file";
+import { currentPlatform } from "../platform/system";
 
 export interface PolicyCacheSource {
   readonly name: string;
   readonly authorizationFile: string;
-  read(capability?: PolicyCapability): PolicyValidation;
+  readonly receiptFile: string;
+  accept(proposal: PolicyConsentProposal): void;
+  read(capability?: PolicyCapability): PolicyCacheValidation;
 }
+
+export interface PolicyCacheValidation extends PolicyValidation { readonly proposal?: PolicyConsentProposal }
 
 /** Both envelopes are flat strict JSON; settings remain a separately validated JSON/JSONC string. */
 function strictObject(text: string): Record<string, unknown> {
@@ -36,11 +43,20 @@ function instant(value: unknown): number {
 export function policyCacheSource(policyFile: string, configDir: string, distribution?: PolicyAnchor, protection?: PolicyFileProtectionReader, now: () => number = Date.now): PolicyCacheSource {
   const name = join(configDir, "remote-policy-cache.json");
   const authorizationFile = join(dirname(policyFile), "cache-authorization.json");
-  return { name, authorizationFile, read(capability) {
+  const receiptFile = join(configDir, "remote-policy-consent-receipt.json");
+  let grant: PolicyConsentProposal | undefined;
+  const result: PolicyCacheSource = { name, authorizationFile, receiptFile, accept(proposal) {
+    const fresh = result.read().proposal;
+    if (!fresh || fingerprint(fresh) !== fingerprint(proposal)) throw new Error("La politique a changé pendant le dialogue ; aucun accord n'est enregistré. Redémarrez pour vérifier la nouvelle version.");
+    const principal = policyConsentPrincipal();
+    // Informational receipt only: no read of this model-writable file can grant consent.
+    writeAtomic(receiptFile, Buffer.from(JSON.stringify({ schemaVersion: 1, principal, organizationId: proposal.organizationId, perimeter: proposal.perimeter, fingerprints: proposal.fingerprints }, null, 2) + "\n"), currentPlatform());
+    grant = proposal;
+  }, read(capability) {
     let perimeter: "remote" | undefined;
     const reject = (reason: string): PolicyValidation => ({ required: true, perimeter, settingsText: undefined, issues: [{ code: "ERR-04", severity: "error", kind: "policy", scope: "managed",
       message: `Copie en cache de politique invalide : ${name} — ${reason}. ${perimeter === "remote" ? "Sessions distantes bloquées." : "Périmètre inconnu ; fonctions d'agent bloquées."}` }] });
-    const read = (): PolicyValidation => {
+    const read = (): PolicyCacheValidation => {
       const source = readPolicySource(authorizationFile, undefined, protection);
       if (source.issue) return reject(source.issue.message);
       if (source.text === undefined) return { required: false, issues: [], settingsText: undefined };
@@ -75,18 +91,38 @@ export function policyCacheSource(policyFile: string, configDir: string, distrib
         const values = new Map<string, unknown>();
         const unknown: string[] = [];
         flattenSettings(parse(envelope["settings"]) as Record<string, unknown>, "", values, unknown);
-        // Sensitive adoption needs a human dialog; this slice accepts only interface preferences and permission controls.
-        if ([...values.keys(), ...unknown].some((key) => !["ui.", "permissions.", "policy."].some((prefix) => key.startsWith(prefix)))) return reject("contenu nécessitant une adoption supplémentaire ; dialogue de sécurité non disponible pour cette version du cache");
+        if (unknown.some((key) => !["ui.", "permissions.", "policy."].some((prefix) => key.startsWith(prefix)))) return reject("clé en cache non prise en charge ; aucune adoption partielle de cette version");
+        const principal = policyConsentPrincipal();
+        const consent = readPolicySource(join(dirname(policyFile), policyConsentFileName(principal, authorization["organizationId"], authorization["perimeter"] as string)), undefined, protection ?? inspectPolicyConsentProtection);
+        if (consent.issue || (consent.text !== undefined && consent.protection?.writable !== false)) return reject("attestation d'accord modifiable ou invérifiable");
+        let attestation: Record<string, unknown> | undefined;
+        if (consent.text !== undefined) {
+          const data: unknown = JSON.parse(consent.text);
+          const stack: Set<string>[] = [];
+          let duplicate = false;
+          visit(consent.text, { onObjectBegin: () => { stack.push(new Set()); }, onObjectEnd: () => { stack.pop(); }, onObjectProperty: (key) => { const keys = stack.at(-1)!; if (keys.has(key) || key === "__proto__") duplicate = true; keys.add(key); } });
+          if (duplicate || typeof data !== "object" || data === null || Array.isArray(data)) return reject("attestation d'accord invalide");
+          attestation = data as Record<string, unknown>;
+          const fingerprints = attestation["fingerprints"];
+          if (!only(attestation, ["schemaVersion", "principal", "organizationId", "perimeter", "fingerprints"]) || attestation["schemaVersion"] !== 1 ||
+            attestation["principal"] !== principal || attestation["organizationId"] !== authorization["organizationId"] || attestation["perimeter"] !== authorization["perimeter"] ||
+            typeof fingerprints !== "object" || fingerprints === null || Array.isArray(fingerprints) || Object.values(fingerprints).some((v) => typeof v !== "string" || !/^sha256:[a-f0-9]{64}$/.test(v))) return reject("attestation d'accord d'un autre compte, organisation, périmètre ou format");
+        }
+        const digest = fingerprint({ authorization, attestation });
+        const approved = grant?.authorityDigest === digest ? grant.fingerprints : attestation?.["fingerprints"] as Readonly<Record<string, string>> | undefined;
+        const proposal = policyConsentProposal(envelope["settings"], authorization["organizationId"], authorization["perimeter"] as "all" | "remote", digest, approved);
         const after = readPolicySource(authorizationFile, undefined, protection);
         if (after.issue || after.protection?.writable !== false || after.text !== source.text) return reject("autorité modifiée ou devenue invérifiable pendant la lecture du cache");
         const checkedAt = now();
         if (!Number.isFinite(checkedAt) || checkedAt < from || checkedAt >= until) return reject("validité hors ligne perdue pendant la lecture du cache");
+        if (proposal) return { ...reject("contenu nécessitant une adoption supplémentaire ; lancez une session interactive pour accepter les paramètres sensibles"), digest, proposal };
         const warning: ConfigIssue = { code: "FA-01", severity: "warning", kind: "policy", scope: "managed", message: `Politique en cache autorisée hors ligne jusqu'au ${authorization["validUntil"]}. Une révocation inconnue n'est pas détectable hors ligne.` };
-        return { ...validated, required: true, perimeter, digest: fingerprint(authorization), issues: [...validated.issues, warning] };
+        return { ...validated, required: true, perimeter, digest, issues: [...validated.issues, warning] };
       } catch { return reject("document JSON strict d'autorisation ou de cache invalide, ou lecture invérifiable"); }
     };
     const policy = read();
     if (policy.perimeter !== "remote" || capability !== "local") return policy;
     return { ...policy, required: false, settingsText: policy.preferencesText, issues: policy.issues.map((issue) => ({ ...issue, severity: "warning", message: `${issue.message} Fonctions locales conservées.` })) };
   } };
+  return result;
 }

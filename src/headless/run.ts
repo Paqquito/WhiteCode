@@ -21,6 +21,8 @@ import { ManagedPolicyGuard, readManagedPolicy, type PolicyCapability } from "..
 import { managedSystemPolicy } from "../config/managed-system-policy";
 import { readPolicyEnrollment } from "../config/policy-enrollment";
 import { policyCacheSource } from "../config/policy-cache";
+import { acceptPolicyConsent } from "../config/policy-consent";
+import { askPolicyConsent } from "../interactive/policy-consent-dialog";
 import type { RegistryPolicyReader } from "../platform/registry";
 import type { ProfilePolicyReader } from "../platform/managed-profile";
 import type { PolicyFileProtectionReader } from "../platform/policy-file";
@@ -425,6 +427,19 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   if (policyGuard.check().length > 0 && parsed.prompt?.trim() === "/diagnose" && !opt("control-channel") && !opt("control-listen") && !opt("control-connect")) {
     streams.writeOut(localPolicyDiagnostic() + "\n");
     return policyGuard.check(policyCapability).length > 0 ? ExitCode.BlockedByPolicy : ExitCode.Success;
+  }
+  const pendingPolicy = cachePolicy.read().proposal;
+  if (pendingPolicy && !serve && streams.terminal && streams.stdinIsTTY && streams.stdoutIsTTY &&
+    !opt("non-interactive") && !opt("control-channel") && !opt("control-listen") && !opt("control-connect") && !opt("restore-files")) {
+    if (await askPolicyConsent(streams.terminal, pendingPolicy, deps.signal)) {
+      try { acceptPolicyConsent(cachePolicy, pendingPolicy); }
+      catch (error) { throw new RunError((error as Error).message, ExitCode.BlockedByPolicy); }
+      err(`Accord valable pour cette exécution. Reçu destiné à l'administrateur : ${cachePolicy.receiptFile}`);
+    } else {
+      const message = "Paramètres de l'organisation refusés : capacités concernées suspendues, sans application de l'ancienne politique.";
+      if (pendingPolicy.perimeter !== "remote" || policyCapability !== "local" || deps.signal?.aborted) throw new RunError(message, ExitCode.BlockedByPolicy);
+      err(message + " Fonctions locales conservées.");
+    }
   }
   assertPolicy();
   const undelivered = undeliveredOptions(parsed);

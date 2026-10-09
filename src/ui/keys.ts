@@ -1,6 +1,7 @@
 // Implements: SPEC-IHM-014 (§ 5.3 combinations sent by most terminals, FA-04), SPEC-IHM-007 (EF-08 typed content never interpreted as a control sequence), SPEC-IHM-010 (§ 5.1 paste framed by the terminal)
 // Raw terminal input to key events: printable text, control combinations, cursor and editing keys, modifiers, and pasted
 // text framed by the terminal, delivered whole and never as a series of keys.
+// Supports: SPEC-PER-021 (EF-01 standalone Escape timing cannot convert paste contents into consent keys), gap E-129.
 
 export interface KeyEvent {
   readonly kind: "key";
@@ -59,6 +60,9 @@ function controlKey(c: string, alt: boolean): KeyEvent {
 export class KeyParser {
   #buffer = "";
   #paste: string | undefined;
+
+  /** Only a standalone Escape may time out in a consent dialog; never flush an unfinished paste. */
+  get pendingEscape(): boolean { return this.#paste === undefined && this.#buffer === "\u001b"; }
 
   feed(data: string): InputEvent[] {
     const out: InputEvent[] = [];
