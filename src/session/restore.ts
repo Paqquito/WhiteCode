@@ -133,6 +133,10 @@ export function applyPlan(plan: RestorePlan, o: { readonly blobs: BlobStore; rea
         failed.push({ path: f.path, reason: `un ${describe(now.state)} occupe l'emplacement : non remplacé` });
         continue;
       }
+      if (now.state.kind === "too_large") {
+        failed.push({ path: f.path, reason: `Impossible de sauvegarder ${f.path} : taille supérieure à la limite, restauration bloquée.` });
+        continue;
+      }
       if (now.state.kind === "file") {
         try {
           o.blobs.put(now.state.hash, now.bytes!);

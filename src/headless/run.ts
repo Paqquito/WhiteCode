@@ -7,6 +7,7 @@
 // Supports: SPEC-MOT-005 (loading per segment, files touched), SPEC-MOT-007 (reminder producers), SPEC-CFG-001, SPEC-CFG-007 (RG-02, FA-01), SPEC-OUT-008, SPEC-OUT-009 (EF-07), SPEC-PER-001 (CA-05), SPEC-PER-003, SPEC-PER-010, SPEC-MOD-003 (CA-02, CA-04, CA-05), SPEC-SES-001, SPEC-API-006, decisions D-03, D-05, D-09, D-10, D-13, gaps E-013, E-017, E-018, E-045, E-050, E-094
 // Supports: SPEC-CFG-003 (FA-02, CA-05, CA-06, CA-08, file, enrolment, cache and native authority checks before composition and every action), gaps E-124 to E-127.
 // Supports: SPEC-PER-001 (CA-09, CA-11, CA-18, CA-20 to CA-23, CA-33), SPEC-PER-028 (CA-03), gap E-131.
+// Supports: SPEC-SES-015 (CA-02), SPEC-OUT-037 (CA-01), SPEC-HOK-001 (CA-04), SPEC-CFG-007 (CA-04), gap E-132.
 // Composition root of a session: options → identity and settings → provider → engine → automated output, or the
 // interactive application (lot 5).
 
@@ -403,6 +404,12 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   if (!serve && looksLikeSubcommand(argv)) {
     const env = new EnvironmentView(identity.get("ENV_PREFIX"), deps.environment);
     identity.applyOverrides(env.identityOverrides(identity.overridableCandidates));
+    if (env.ownBoolean("OFFLINE_MINIMAL") === true) {
+      const command = parseSubcommand(argv);
+      if (["extension", "catalog", "connector", "remote-access", "ssh-session"].includes(command.family) && command.operation !== undefined && !command.options.has("help") && !(["extension", "catalog", "connector"].includes(command.family) && ["validate", "list"].includes(command.operation))) {
+        throw new RunError("Opération indisponible en mode minimal hors ligne.", ExitCode.UsageOrConfiguration);
+      }
+    }
     return runSubcommand(argv, { streams, identity, catalog: deps.catalog, env, cwd: deps.cwd, system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, profilePolicyReader: deps.profilePolicyReader, policyFileProtection: deps.policyFileProtection, cachePolicy });
   }
   const parsed = parseCommandLine(argv);
@@ -504,6 +511,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   if (Object.keys(imposed).length > 0) {
     env = new EnvironmentView(identity.get("ENV_PREFIX"), { ...deps.environment, ...imposed });
     loaded = loadAll(env);
+  }
+  const offlineMinimal = env.ownBoolean("OFFLINE_MINIMAL") === true;
+  if (offlineMinimal && (serve?.transport === "network" || ["control-listen", "control-connect", "remote-session", "reopen-remote"].some((name) => parsed.options.has(name)))) {
+    throw new RunError("Transport distant indisponible en mode minimal hors ligne.", ExitCode.UsageOrConfiguration);
   }
   // SPEC-PER-016 § 5.3: the first interactive launch in a folder whose project holds active elements asks for trust,
   // before anything of the project is loaded (EF-01); the answer is kept for the folder (EF-02). A folder without active
@@ -937,7 +948,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   try {
     registry = ToolRegistry.build(
       toolEnv,
-      { toolset, deniedWholeTools: new Set(rules.filter((r) => r.decision === "deny" && r.pattern === undefined).map((r) => r.tool)) },
+      { toolset, deniedWholeTools: new Set([...rules.filter((r) => r.decision === "deny" && r.pattern === undefined).map((r) => r.tool), ...(offlineMinimal ? ["run_shell", "run_powershell", "monitor_process"] : [])]) },
     );
   } catch (e) {
     if (e instanceof UnknownToolsetEntryError) throw new RunError(e.message, ExitCode.UsageOrConfiguration);
@@ -945,7 +956,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   }
 
   // SPEC-MOD-009: the minimal mode, from the launch option only (§ 11); permission rules and managed policies stay (EF-02).
-  const minimal = opt("minimal") === true;
+  const minimal = opt("minimal") === true || offlineMinimal;
   if (minimal) {
     err(
       "Session minimale : instructions de projet et d'utilisateur, extensions, compétences et commandes personnalisées, connecteurs et crochets (sauf ceux de l'organisation) ne sont pas chargés ; le contexte d'environnement est réduit au dossier courant et à la plateforme.",
@@ -1100,12 +1111,15 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     { source: "managed", dir: join(locations.managedDir, "agents") },
   ];
   const agentWarnings = new Set<string>();
-  const agentCatalog = () =>
-    loadAgents(agentLocations, settings.get<string[]>("agents.disabledBuiltIns"), (m) => {
+  const agentCatalog = () => {
+    const catalog = loadAgents(agentLocations, settings.get<string[]>("agents.disabledBuiltIns"), (m) => {
       if (agentWarnings.has(m)) return;
       agentWarnings.add(m);
       err(`avertissement : ${m}`);
     });
+    for (const def of extensions.agents) if (!catalog.has(def.name)) catalog.set(def.name, def);
+    return catalog;
+  };
   agentCatalog();
   const maxAgentDepth = settings.get<number>("agents.maxDepth");
   // SPEC-OUT-016: one instance per depth, so that the delegation stops at `agents.maxDepth` (FA-03, EF-05).
@@ -1141,7 +1155,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     fetch: network,
   };
   const fetchTool = createFetchUrlTool(() => webAccess) as never;
-  if (inToolset("fetch_url")) registry.addStatic(fetchTool);
+  if (!offlineMinimal && inToolset("fetch_url")) registry.addStatic(fetchTool);
   // SPEC-OUT-024, SPEC-OUT-033: planning and questions need someone to answer: the interface (FA-03 of SPEC-OUT-024), or a
   // control host that handles the question (FA-02 of SPEC-OUT-033, added once it has declared it).
   let approvedPlan: string | undefined;
@@ -1334,6 +1348,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       noHooks: opt("no-hooks") === true,
       maxTimeoutMs: 600_000,
     });
+    if (offlineMinimal) {
+      if (snapshot.declarations.some((d) => d.mandatory)) throw new RunError("Le mode minimal hors ligne est incompatible avec un crochet obligatoire : arrêt avant tout trafic annexe.", ExitCode.UsageOrConfiguration);
+      return { ...snapshot, declarations: [], habilitated: new Set() };
+    }
     // SPEC-PER-001 § 5.3 point c: `approval_needed` hooks habilitated by their qualified identity (user or managed scope only).
     return habilitate(snapshot, s.get<unknown[]>("permissions.decisionHooks"), [...new Set([projectReal, cwd])]);
   };
@@ -1436,7 +1454,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       arch: system.arch,
       osRelease: system.release,
       shellTool: shellToolLine(registry, toolEnv),
-      skills: skillsSection(modelSkills(skillSet), settings.get<number>("skills.maxDescriptionsTokens"), estimateTokens),
+      skills: skillsSection(modelSkills(skillSet), Math.min(settings.get<number>("skills.maxDescriptionsTokens"), Math.floor(resolvedModel.contextWindow * settings.get<number>("skills.listingBudgetRatio"))), estimateTokens, settings.get<number>("skills.maxDescriptionChars")),
       date: now(),
       promptFamily: settings.get<string>("context.promptFamily"),
       budgetTokens: settings.get<number>("context.systemInstructionsBudget"),
@@ -2231,12 +2249,12 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     }
     return answer || "(The analysis of the page gave no answer.)";
   };
-  const labelled = (a: Authorities, requester: string): Authorities => ({
+  const labelled = (a: Authorities, requester: string, agentScope: () => { agent: { id: string; type: string }; approvalMode: PermissionMode }): Authorities => ({
     ...a,
     ...(a.human ? { human: { request: (r, s) => a.human!.request({ ...r, requester }, s), ...(a.human.loopDetected ? { loopDetected: (i, s) => a.human!.loopDetected!(i, s) } : {}) } } : {}),
     ...(a.controlHost ? { controlHost: { decide: (r, s) => a.controlHost!.decide({ ...r, requester }, s) } } : {}),
     ...(a.delegate ? { delegate: { decide: (r, s) => a.delegate!.decide({ ...r, requester }, s) } } : {}),
-    ...(a.habilitatedHook ? { habilitatedHook: { decide: (r, s) => a.habilitatedHook!.decide({ ...r, requester }, s) } } : {}),
+    ...(a.habilitatedHook ? { habilitatedHook: { decide: (r, s) => a.habilitatedHook!.decide({ ...r, requester, ...agentScope() }, s) } } : {}),
   });
   const runSubagent = async (input: SpawnAgentInput, definition: AgentDefinition | undefined, signal: AbortSignal, depth: number, caller: ToolLookup, parentContext: AgentPermissionContext): Promise<{ text: string; isError: boolean }> => {
     let agent: { readonly name: string; readonly deps: LoopDeps; readonly caller: ToolLookup; readonly skillAllows: Rule[] };
@@ -2325,14 +2343,15 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       });
       id = `agent-${randomUUID().slice(0, 8)}`;
       const agentId = id;
+      const agentScope = () => ({ agent: { id: agentId, type: def.name }, approvalMode: childMode() });
       // The hooks of the session apply to its actions; its end is `subagent_finished`, never `turn_completed` (§ 5.3 step 5).
       const agentHooks: HookBus = {
         promptSubmitted: async () => ({}),
-        beforeTool: (call) => hooks.beforeTool(call),
-        afterTool: (call, isError, output) => hooks.afterTool(call, isError, output),
-        approvalRefused: (call, reason) => hooks.approvalRefused(call, reason),
+        beforeTool: (call) => hooks.beforeTool(call, agentScope()),
+        afterTool: (call, isError, output) => hooks.afterTool(call, isError, output, agentScope()),
+        approvalRefused: (call, reason) => hooks.approvalRefused(call, reason, agentScope()),
         turnCompleted: async (finalText) => {
-          const r = await hooks.fire("subagent_finished", { agentType: def.name, agentId, result: finalText });
+          const r = await hooks.fire("subagent_finished", { ...agentScope(), agentType: def.name, agentId, result: finalText });
           return r?.decision === "continue" && r.reasons.length > 0 ? { continueWith: r.reasons.join("\n") } : {}; // FA-02
         },
         turnFailed: async () => {},
@@ -2368,14 +2387,15 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           executor: {
             ...loopDeps.executor,
             registry: view,
-            authorities: labelled(loopDeps.executor.authorities, def.name), // EF-04
+            hooks: agentHooks,
+            authorities: labelled(loopDeps.executor.authorities, def.name, agentScope), // EF-04
             loopGuard: new LoopGuard(settings.get<number>("engine.loopGuard.threshold"), settings.get<boolean>("engine.loopGuard.enabled")),
             permissionContext: childContext,
           },
         },
       };
       subagents.set(id, agent);
-      void hooks.fire("subagent_launched", { agentType: def.name, agentId: id, description: input.description });
+      void hooks.fire("subagent_launched", { ...agentScope(), agentType: def.name, agentId: id, description: input.description });
       debug.log("agents", "launched", { agent: def.name, id, depth: depth + 1, model: model.id, mode });
     }
     // FA-03 of SPEC-AGT-001: the startup instruction of the definition comes before the prompt of the caller.
@@ -2706,6 +2726,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   };
   // The internal commands of this version (SPEC-CMD-001 rank 1): help, exit, key bindings.
   const runInternalCommand = async (command: InternalCommand, args: string): Promise<RequestOutcome> => {
+    if (offlineMinimal && ((command.name === "extensions" && args.trim() !== "" && args.trim() !== "installées") || (command.name === "connectors" && args.trim() !== "") || (command.name === "shortcuts" && args.trim() === "edit"))) {
+      return { refused: "Opération indisponible en mode minimal hors ligne." };
+    }
     if (command.name === "diagnose" && policyGuard.check().length > 0) return { note: localPolicyDiagnostic() };
     if (policyGuard.check(policyCapability).length > 0) {
       if (command.name === "diagnose") return { note: localPolicyDiagnostic() };
@@ -3419,13 +3442,22 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     if (controller.signal.aborted) onSignal();
     else controller.signal.addEventListener("abort", onSignal, { once: true });
     const started = Date.now();
+    let recoveredPrompt: string | undefined;
+    if (reopened?.history.unanswered && !parsed.prompt) {
+      const last = reopened.history.messages.at(-1);
+      const text = last?.role === "user" ? last.parts.filter((p) => p.type === "text").map((p) => p.text).join("\n") : undefined;
+      if (text && await interactiveApp.confirm("Relancer le dernier message resté sans réponse ?", "relancer", "garder l'historique")) recoveredPrompt = text;
+    }
     await runInteractiveLoop({
       app: interactiveApp,
-      initialPrompt: parsed.prompt,
+      initialPrompt: parsed.prompt ?? recoveredPrompt,
+      ...(recoveredPrompt ? { initialMeta: { literal: true, pasted: [recoveredPrompt] } } : {}),
+      initialQueueHeld: recoveredPrompt !== undefined,
       queueAutoSend: settings.get<boolean>("ui.queue.autoSend"),
       process: async (text, signal, meta) => {
         // SPEC-IHM-012: a shell line goes to the interpreter, never to the model (EF-01).
         if (!meta.literal && isShellLine(text) && settings.get<boolean>("ui.shellMode.enabled") && shellRuntime) {
+          if (offlineMinimal) { interactiveApp.notice("error", "Commande shell indisponible en mode minimal hors ligne."); return { kind: "shown" }; }
           assertPolicy();
           const command = shellCommand(text);
           if (command === "") return { kind: "shown" };

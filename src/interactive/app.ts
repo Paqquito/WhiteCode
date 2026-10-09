@@ -168,6 +168,7 @@ export class InteractiveApp {
   /** Last shape of the cursor written, so that it is written only on a change (CA-01 of SPEC-IHM-013). */
   #cursorShape = "";
   readonly #queue: string[];
+  #queueHeld = false;
   readonly #stash: string[];
   readonly #approvals: PendingApproval[] = [];
   #confirm: Confirm | undefined;
@@ -390,6 +391,7 @@ export class InteractiveApp {
    * commands and the shell lines stay, to run at the end of the turn (FA-01, FA-04).
    */
   takeForSafePoint(): string[] {
+    if (this.#queueHeld) return [];
     const taken = this.#queue.filter((m) => !/^\s*[/!]/.test(m));
     if (taken.length === 0) return [];
     this.#queue.splice(0, this.#queue.length, ...this.#queue.filter((m) => /^\s*[/!]/.test(m)));
@@ -405,10 +407,14 @@ export class InteractiveApp {
 
   /** Next message of the queue, removed from it (SPEC-IHM-011 § 5.2: one per turn, in order). */
   takeQueued(): string | undefined {
+    if (this.#queueHeld) return undefined;
     const next = this.#queue.shift();
     if (next !== undefined) this.#saveState();
     return next;
   }
+
+  /** Recovery of one interrupted message does not release the saved queue (gap E-132). */
+  setQueueHeld(held: boolean): void { this.#queueHeld = held; }
 
   // ---- Turn ----------------------------------------------------------------------------------------------------
 

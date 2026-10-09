@@ -8,6 +8,7 @@ import { cli, workspace, type Workspace } from "./helpers/env";
 import { Host } from "./helpers/control";
 import { PROJECT_DIR } from "./helpers/hooks";
 import { ScriptedProvider } from "./helpers/scripted-provider";
+import { productEnv, record } from "./helpers/hooks";
 
 const header = (h: Record<string, unknown>, body: string) =>
   `---\n${Object.entries(h)
@@ -23,6 +24,19 @@ const lastResults = (r: ModelRequest | undefined) => JSON.stringify(r?.history.a
 const run = (ws: Workspace, p: ScriptedProvider, args: string[] = []) => cli(["--non-interactive", ...args, "go"], ws, { provider: p });
 
 describe("SPEC-AGT-001 sub-agents", () => {
+  test("SPEC-HOK-001/CA-04 — before_tool identifies the actual child and its effective permission mode", async () => {
+    const ws = workspace();
+    const file = ws.write("project/read.txt", "READ CONTENT");
+    userAgent(ws, "cautious", { description: "Read without asking.", approvalMode: "no_prompt" }, "Read pre-approved files only.");
+    const before = record(ws, "agent-before");
+    const p = new ScriptedProvider([{ toolCalls: [spawn({ role: "cautious" })] }, { text: "Parent finished." }], [{ toolCalls: [{ name: "read_file", input: { path: file } }] }, { text: "Child finished." }]);
+    await cli(["--non-interactive", "--approval-mode", "auto_edit", "Delegate."], ws, { provider: p, env: productEnv(ws), userConfig: { hooks: { before_tool: [{ actions: [{ type: "command", command: before.command }] }] } } });
+    const calls = before.read();
+    const child = calls.find((call) => call.toolId === "read_file");
+    expect(child.agent).toEqual({ id: sub(p)[0]?.agent, type: "cautious" });
+    expect(child.approvalMode).toBe("no_prompt");
+    expect(calls.find((call) => call.toolId === "spawn_agent").agent).toBeUndefined();
+  });
   test("SPEC-AGT-001/CA-01 — a definition allowing every tool and a caller without writing tool: the agent has no writing tool", async () => {
     const ws = workspace();
     const p = new ScriptedProvider([{ toolCalls: [spawn({})] }, { text: "rapport" }, { text: "fini" }]);

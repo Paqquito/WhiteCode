@@ -20,6 +20,20 @@ const run = (ws: Workspace, provider: ScriptedProvider, args: string[], userConf
 const system = (p: ScriptedProvider) => JSON.stringify(p.requests[0]?.system ?? []);
 
 describe("SPEC-EXT-001 and SPEC-EXT-012 format and validation", () => {
+  test("SPEC-EXT-011/CA-03 — an invalid extension agent is reported while its valid skill and hook still load", async () => {
+    const ws = workspace();
+    const opened = record(ws, "mixed-opened");
+    const path = extension(ws, "partial", { "extension.json": manifest("partial"), "agent-profiles/bad.md": '---\nname: [broken\n---\n', "skills/good/definition.md": skill("A valid skill."), "event-hooks.json": { hooks: { session_opened: [{ actions: [{ type: "command", command: opened.command }] }] } } });
+    ws.write("ext/partial/agent-profiles/good.md", '---\nname: good\ndescription: A valid extension agent.\n---\nEXTENSION AGENT INSTRUCTIONS\n');
+    const p = new ScriptedProvider([{ toolCalls: [{ name: "spawn_agent", input: { role: "partial:good", description: "Check the project.", prompt: "Report." } }] }, { text: "Finished." }], [{ text: "Agent report." }]);
+    const r = await run(ws, p, ["--extension-dir", path, "Work."]);
+    expect(r.code).toBe(0);
+    expect(r.stderr).toContain("agent");
+    expect(r.stderr).toContain("bad");
+    expect(system(p)).toContain("partial:good");
+    expect(opened.read()).toHaveLength(1);
+    expect(p.requests.some((r) => r.purpose === "subagent" && JSON.stringify(r.system).includes("EXTENSION AGENT INSTRUCTIONS"))).toBe(true);
+  });
   test("SPEC-EXT-001/CA-01 — SPEC-EXT-012/CA-01 — a conforming extension with a skill and a hook: validation succeeds, lists both, exit code 0", async () => {
     const ws = workspace();
     const path = extension(ws, "outils", {

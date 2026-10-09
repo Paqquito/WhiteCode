@@ -2,6 +2,7 @@
 // The agents a session can launch: the built-in ones, then those of the user, of the project and of the organisation,
 // the most specific source winning a name. Definitions are read again at each launch, so that a change is used at the
 // next one (EF-04, CA-02).
+// Supports: SPEC-EXT-011 (CA-03: individually validated extension agents), gap E-132.
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -11,7 +12,7 @@ import generalInstructions from "../../prompts/agents/general.md" with { type: "
 import usageGuideInstructions from "../../prompts/agents/usage-guide.md" with { type: "text" };
 import footerLineInstructions from "../../prompts/agents/footer-line-setup.md" with { type: "text" };
 
-export type AgentSource = "built-in" | "user" | "project" | "managed";
+export type AgentSource = "built-in" | "user" | "project" | "managed" | "extension";
 
 export interface AgentDefinition {
   readonly name: string;

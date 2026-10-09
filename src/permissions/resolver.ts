@@ -31,6 +31,8 @@ export interface ApprovalRequest {
   readonly change?: FileChange;
   /** Identity of the requesting agent when relayed (sub-agent, teammate). */
   readonly requester?: string;
+  readonly agent?: { readonly id: string; readonly type: string };
+  readonly approvalMode?: PermissionMode;
   /** Why the action is dangerous, if it is (SPEC-IHM-027 § 5.3 point 1). */
   readonly danger?: string;
 }

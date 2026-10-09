@@ -8,6 +8,7 @@ import { INTERRUPTED_RESULT } from "../src/session/sessions";
 import { projectKey, TranscriptWriter, type TranscriptRecord } from "../src/session/transcript";
 import { cli, workspace, type Workspace } from "./helpers/env";
 import { ScriptedProvider } from "./helpers/scripted-provider";
+import { interactive, KEY, sleep } from "./helpers/interactive";
 
 const sessionsDir = (ws: Workspace) => join(ws.configHome, "sessions");
 const transcriptPath = (ws: Workspace, id: string) => join(sessionsDir(ws), projectKey(realpathSync(ws.project)), `${id}.jsonl`);
@@ -219,6 +220,34 @@ describe("SPEC-SES-012 sessions without persistence", () => {
 });
 
 describe("SPEC-SES-015 recovery of an interrupted conversation", () => {
+  for (const accepted of [true, false]) test("SPEC-SES-015/CA-02 — an unanswered user message is proposed for relaunch and waits for the human choice", async () => {
+    const ws = workspace();
+    const writer = new TranscriptWriter({ sessionsDir: sessionsDir(ws), projectRealPath: realpathSync(ws.project) });
+    writer.append("session_meta", { formatVersion: 1, cwd: realpathSync(ws.project), provider: "openai_compatible", model: "test-medium", permissionMode: "ask" });
+    writer.append("user", { content: [{ type: "text", text: "/clear @a.txt RECOVER THIS MESSAGE" }] });
+    ws.write("project/a.txt", "ATTACHMENT MUST NOT BE READ ON RELAUNCH");
+    writer.close();
+    const provider = new ScriptedProvider([{ text: "Recovered answer." }]);
+    mkdirSync(writer.sessionDir, { recursive: true });
+    writeFileSync(join(writer.sessionDir, "input-state.json"), JSON.stringify({ draft: "", queue: ["QUEUED MESSAGE MUST STAY"], stash: [] }));
+    const run = interactive([`--reopen=${writer.sessionId}`], ws, { provider });
+    await run.waitFor((text) => text.includes("Relancer le dernier message resté sans réponse ?"));
+    expect(provider.requests).toHaveLength(0);
+    await sleep(370); run.type(accepted ? "o" : "n");
+    if (accepted) await run.waitFor((text) => text.includes("Recovered answer."));
+    else await run.idle();
+    await sleep(200);
+    expect(provider.requests).toHaveLength(accepted ? 1 : 0);
+    expect(run.all().join("\n")).toContain("1 message en attente");
+    if (accepted) {
+      const history = JSON.stringify(provider.requests[0]?.history);
+      expect(history).toContain("/clear @a.txt RECOVER THIS MESSAGE");
+      expect(history).not.toContain("ATTACHMENT MUST NOT BE READ ON RELAUNCH");
+    }
+    run.type(KEY.altX);
+    run.type(KEY.ctrlD); run.type(KEY.ctrlD);
+    expect((await run.done).code).toBe(0);
+  }, 12000);
   test("SPEC-SES-015/CA-01 — SPEC-MOT-001/CA-08 — a transcript ending with a call without result: the call gets a synthetic result and the next request is valid", async () => {
     const ws = workspace();
     const file = ws.write("project/a.txt", "a\n");

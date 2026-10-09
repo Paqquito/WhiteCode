@@ -4,6 +4,7 @@
 //             SPEC-PER-001 (§ 5.3 point c habilitated hook, CA-12, CA-19)
 // Supports: SPEC-MOT-001 (EF-08 hooks of the loop), SPEC-MOT-005 (`instructions_read`), SPEC-CFG-005 (`settings_modified`), SPEC-CFG-003 (raw policy checks), gap E-120.
 // The hooks of a session: payloads, selection, execution in parallel, aggregation and the effects of the decisions.
+// Supports: SPEC-HOK-001 (CA-04: scoped agent identity and effective mode), gap E-132.
 
 import type { HookBus, BeforeToolResult } from "../extension-points/hooks";
 import type { ApprovalHook, ApprovalRequest } from "../permissions/resolver";
@@ -47,6 +48,11 @@ export interface HookRuntimeOptions {
 interface Started {
   readonly d: HookDeclaration;
   readonly outcome: Promise<ActionOutcome>;
+}
+
+interface AgentScope {
+  readonly agent: { readonly id: string; readonly type: string };
+  readonly approvalMode: string;
 }
 
 export class HookRuntime implements HookBus {
@@ -285,7 +291,7 @@ export class HookRuntime implements HookBus {
     decide: async (request: ApprovalRequest) => {
       if (this.#o.policyRefusal?.()) return "deny";
       const event = "approval_needed";
-      const fields = { toolId: request.toolName, toolArguments: request.input ?? {}, suggestions: request.suggestions, reason: request.reason, origin: request.origin };
+      const fields = { toolId: request.toolName, toolArguments: request.input ?? {}, suggestions: request.suggestions, reason: request.reason, origin: request.origin, ...(request.agent ? { agent: request.agent, approvalMode: request.approvalMode } : {}) };
       const started = this.#start(event, fields, this.#select(event, fields));
       if (started.length === 0) return undefined;
       const habilitated = this.#snapshot.habilitated ?? new Set<HookDeclaration>();
@@ -313,8 +319,8 @@ export class HookRuntime implements HookBus {
     return r?.decision === "block" ? { block: `Message bloqué par un crochet : ${r.reasons.join(" ; ")}` } : r?.stopTurn ? { block: r.stopTurn } : {};
   }
 
-  async beforeTool(call: ToolCall): Promise<BeforeToolResult> {
-    const r = await this.fire("before_tool", { toolId: call.name, toolArguments: call.input, toolCallId: call.callId });
+  async beforeTool(call: ToolCall, scope?: AgentScope): Promise<BeforeToolResult> {
+    const r = await this.fire("before_tool", { ...scope, toolId: call.name, toolArguments: call.input, toolCallId: call.callId });
     if (!r) return {};
     if (r.modifiedInput) this.#o.report(`Paramètres de ${call.name} modifiés par un crochet : ${JSON.stringify(r.modifiedInput)}`); // CA-03: shown
     return {
@@ -326,15 +332,15 @@ export class HookRuntime implements HookBus {
     };
   }
 
-  async afterTool(call: ToolCall, isError: boolean, output?: string) {
+  async afterTool(call: ToolCall, isError: boolean, output?: string, scope?: AgentScope) {
     const r = isError
-      ? await this.fire("after_tool_failure", { toolId: call.name, toolArguments: call.input, error: output ?? "" })
-      : await this.fire("after_tool", { toolId: call.name, toolArguments: call.input, toolResult: output ?? "" });
+      ? await this.fire("after_tool_failure", { ...scope, toolId: call.name, toolArguments: call.input, error: output ?? "" })
+      : await this.fire("after_tool", { ...scope, toolId: call.name, toolArguments: call.input, toolResult: output ?? "" });
     return { stopTurn: r?.stopTurn !== undefined };
   }
 
-  async approvalRefused(call: ToolCall, reason: string): Promise<void> {
-    await this.fire("approval_refused", { toolId: call.name, toolArguments: call.input, reason, source: "permission" });
+  async approvalRefused(call: ToolCall, reason: string, scope?: AgentScope): Promise<void> {
+    await this.fire("approval_refused", { ...scope, toolId: call.name, toolArguments: call.input, reason, source: "permission" });
   }
 
   async turnCompleted(finalText: string) {

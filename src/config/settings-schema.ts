@@ -199,6 +199,8 @@ export const SETTINGS: readonly SettingDef[] = [
   // SPEC-EXT-019: skills (lot 4).
   { key: "skills.batch.maxAgents", schema: int(1, 100), default: 20, scopes: [U, G], owner: "SPEC-EXT-021" },
   { key: "skills.maxDescriptionsTokens", schema: int(100, 100_000), default: 4_000, scopes: [U, G], owner: "SPEC-EXT-019" },
+  { key: "skills.listingBudgetRatio", schema: Type.Number({ minimum: 0, maximum: 1 }), default: 0.01, scopes: [U], owner: "SPEC-OUT-037" },
+  { key: "skills.maxDescriptionChars", schema: int(1, 10_000), default: 250, scopes: [U], owner: "SPEC-OUT-037" },
   // SPEC-MCP-001 to 022, SPEC-PER-019: connectors (lot 3).
   { key: "mcp.enableProjectServers", schema: bool(), default: false, scopes: [U], owner: "SPEC-PER-019", widening: true },
   { key: "mcp.enabledProjectServers", schema: strList(), default: [], scopes: [U], owner: "SPEC-PER-019", widening: true },

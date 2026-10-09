@@ -2,6 +2,7 @@
 //             SPEC-EXT-011 (§ 5.1 names of the skills and commands of an extension, FA-01, EF-01, EF-02)
 // The skills of a session: folders holding a `definition.md` (a YAML header, then Markdown instructions), and the
 // simple commands (`commands/*.md`, invoked by the user only). Only the headers are read before an invocation.
+// Supports: SPEC-OUT-037 (EF-01, CA-01), gap E-132: the listing never exceeds its assigned budget.
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -210,14 +211,25 @@ export function modelSkills(set: SkillSet): Skill[] {
  * Section 8 of the system instructions (SPEC-MOT-003): name and description of each skill the model may invoke, the
  * descriptions shortened to stay within `skills.maxDescriptionsTokens` (EF-01: never the content).
  */
-export function skillsSection(skills: readonly Skill[], maxTokens: number, estimate: (text: string) => number): string | undefined {
-  if (skills.length === 0) return undefined;
+export function skillsSection(skills: readonly Skill[], maxTokens: number, estimate: (text: string) => number, maxChars = 250): string | undefined {
+  if (skills.length === 0 || maxTokens <= 0) return undefined;
   const head = "# Skills\nSkills are instructions prepared for a kind of task. When the task matches a skill, load it with use_skill before you start, then follow it.";
-  let limit = 1_024;
+  const ordered = [...skills].sort((a, b) => PRIORITY.indexOf(a.scope) - PRIORITY.indexOf(b.scope) || a.name.localeCompare(b.name));
+  let limit = maxChars;
   for (;;) {
-    const lines = skills.map((s) => `- ${s.name}: ${s.description.length > limit ? `${s.description.slice(0, limit)}…` : s.description}`);
+    const lines = ordered.map((s) => limit === 0 ? `- ${s.name}` : `- ${s.name}: ${s.description.length > limit ? `${s.description.slice(0, limit)}…` : s.description}`);
     const text = `${head}\n${lines.join("\n")}`;
-    if (estimate(text) <= maxTokens || limit <= 40) return text;
+    if (estimate(text) <= maxTokens) return text;
+    if (limit === 0) {
+      const note = `\nMore skills are installed (${skills.length} total). Any installed skill remains callable by name with use_skill.`;
+      const kept: string[] = [];
+      for (const line of lines) {
+        if (estimate(`${head}\n${[...kept, line].join("\n")}${note}`) > maxTokens) break;
+        kept.push(line);
+      }
+      const bounded = `${head}\n${kept.join("\n")}${note}`;
+      return estimate(bounded) <= maxTokens ? bounded : undefined;
+    }
     limit = Math.floor(limit / 2);
   }
 }

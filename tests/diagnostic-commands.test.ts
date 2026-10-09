@@ -26,6 +26,17 @@ const quit = async (run: Run) => {
 };
 
 describe("SPEC-CMD-020 /diagnose", () => {
+  test("SPEC-MOD-012/CA-10 — diagnostic repair applies its proposal only after explicit agreement", async () => {
+    for (const accepted of [false, true]) {
+      const ws = workspace();
+      const p = new ScriptedProvider([]);
+      const r = await cli(["diagnostic", "repair"], ws, { provider: p, env: productEnv(ws), userConfig: BROKEN, tty: true, stdin: accepted ? "o\n" : "n\n" });
+      expect(r.code).toBe(0);
+      expect(r.stderr).toContain("Appliquer : retirer `ui.colorMode`");
+      expect(userConfig(ws).ui?.colorMode).toBe(accepted ? undefined : 42);
+      expect(p.requests).toHaveLength(0);
+    }
+  });
   test("SPEC-CMD-020/CA-01 — an invalid settings file: the error is reported with its place and the correction proposed", async () => {
     const ws = workspace();
     const r = await cli(["--non-interactive", "/diagnose"], ws, { provider: new ScriptedProvider([]), userConfig: BROKEN });

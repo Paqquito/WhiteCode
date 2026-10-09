@@ -1,6 +1,7 @@
 // Implements: SPEC-SES-006 (§ 5.1, § 5.3 steps 1 and 2, FA-02, EF-01, EF-02, EF-04, EF-05, EF-08, ERR-01, RG-01, RG-02, CA-03), SPEC-SES-012 (EF-02 copies kept in memory)
 // File history of a session: the content of each file the agent changes is saved, by content fingerprint, before its
 // first change in a turn; every user message records a checkpoint. Shell commands are not followed (RG-02).
+// Supports: SPEC-SES-006 (CA-09, RG-01), SPEC-MOD-002 (CA-07), gap E-132: an existing blob must be recoverable.
 
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
@@ -65,14 +66,24 @@ export class BlobStore {
   }
 
   put(hash: string, bytes: Buffer): void {
+    if (hashBytes(bytes) !== hash) throw new Error("Backup fingerprint does not match its content.");
     if (this.#dir === undefined) {
       this.#memory.set(hash, bytes);
       return;
     }
     const path = join(this.#dir, hash);
-    if (existsSync(path)) return;
+    const valid = () => lstatSync(path).isFile() && this.get(hash) !== undefined;
+    if (existsSync(path)) {
+      if (!valid()) throw new Error("The existing backup is not a recoverable regular file.");
+      return;
+    }
     mkdirSync(this.#dir, { recursive: true, mode: 0o700 });
-    writeFileSync(path, bytes, { mode: 0o600 });
+    try { writeFileSync(path, bytes, { mode: 0o600, flag: "wx" }); }
+    catch (error) {
+      // A concurrent identical backup may have won creation; no existing content is overwritten.
+      if (!existsSync(path) || !valid()) throw error;
+    }
+    if (!valid()) throw new Error("The backup could not be verified after creation.");
   }
 
   get(hash: string): Buffer | undefined {

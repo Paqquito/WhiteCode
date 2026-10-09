@@ -2,6 +2,7 @@
 // The loop of the interactive session: one entry at a time, a turn at a time (RG-01). The initial request is the first
 // message, commands included (EF-07); the messages queued during a turn are sent one per turn, in order; an interruption
 // or an error never sends the queue by itself.
+// Supports: SPEC-SES-015 (CA-02: recovery releases only the explicitly accepted message), gap E-132.
 
 import type { TurnResult } from "../engine/events";
 import type { InteractiveApp } from "./app";
@@ -22,6 +23,8 @@ export interface EntryMeta {
 export interface InteractiveLoopOptions {
   readonly app: InteractiveApp;
   readonly initialPrompt?: string;
+  readonly initialMeta?: EntryMeta;
+  readonly initialQueueHeld?: boolean;
   /** Handles one entry: a built-in command, a skill or command, or a message to the model. */
   readonly process: (text: string, signal: AbortSignal, meta: EntryMeta) => Promise<EntryOutcome>;
   readonly queueAutoSend: boolean;
@@ -36,8 +39,10 @@ export async function runInteractiveLoop(o: InteractiveLoopOptions): Promise<{ t
   for (;;) {
     let text: string | undefined;
     let meta: EntryMeta = {};
+    const holdQueue = pending !== undefined && o.initialQueueHeld === true;
     if (pending !== undefined) {
       text = pending;
+      meta = o.initialMeta ?? {};
       pending = undefined;
     } else if (release && app.queue.length > 0) {
       text = app.takeQueued();
@@ -49,6 +54,7 @@ export async function runInteractiveLoop(o: InteractiveLoopOptions): Promise<{ t
       meta = { literal: entry.literal, pasted: entry.pasted };
     }
     const controller = new AbortController();
+    app.setQueueHeld(holdQueue);
     app.beginTurn(controller);
     let outcome: EntryOutcome;
     try {
@@ -58,6 +64,8 @@ export async function runInteractiveLoop(o: InteractiveLoopOptions): Promise<{ t
       app.endTurn({ stopCause: "error", message: (error as Error)?.message ?? String(error) });
       release = false;
       continue;
+    } finally {
+      app.setQueueHeld(false);
     }
     if (outcome.kind === "exit") {
       app.endTurn({ stopCause: "completed" });
@@ -66,13 +74,14 @@ export async function runInteractiveLoop(o: InteractiveLoopOptions): Promise<{ t
     }
     if (outcome.kind === "shown") {
       app.endTurn({ stopCause: "completed" });
-      release = o.queueAutoSend;
+      release = !holdQueue && o.queueAutoSend;
       continue;
     }
     turns++;
     app.endTurn(outcome.result);
     const cause = outcome.result.stopCause;
-    if (cause === "interrupted" && app.queue.length > 0) {
+    if (holdQueue) release = false;
+    else if (cause === "interrupted" && app.queue.length > 0) {
       // FA-01, EF-04, CA-04: after an interruption, the user decides what becomes of the queue.
       release = await app.confirm(`${app.queue.length} message${app.queue.length > 1 ? "s" : ""} en attente : les envoyer maintenant ?`, "envoyer", "garder en attente");
     } else if (cause !== "completed" && cause !== "interrupted" && app.queue.length > 0) {

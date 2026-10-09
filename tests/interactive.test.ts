@@ -377,6 +377,9 @@ describe("SPEC-IHM-011 queue of messages", () => {
     const p2 = new ScriptedProvider([]);
     const again = interactive(["--reopen-last"], ws, { provider: p2 });
     await again.waitFor((t) => t.includes("1 message en attente") && t.includes("1. gardé pour plus tard"), "queue restored");
+    await again.waitFor((t) => t.includes("Relancer le dernier message resté sans réponse ?"));
+    await sleep(370);
+    again.type("n");
     await sleep(150);
     expect(p2.requests.length).toBe(0);
     again.type(KEY.altX);

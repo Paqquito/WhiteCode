@@ -3,10 +3,11 @@
 // The components of the active extensions, each under the namespace of its extension: skills and commands, hooks
 // (scope `extension`), connectors (`<extension>-<name>`), with the variables of the extension substituted.
 
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ConnectorSource } from "../connectors/declarations";
 import type { SkillLocation } from "../skills/registry";
+import { parseAgent, type AgentDefinition } from "../agents/definitions";
 import { compileRaw, describeErrors } from "../shared/schema";
 import { describeExtension, readJsonFile, substituteVariables, type Extension } from "./extension";
 
@@ -21,6 +22,7 @@ export interface ActiveExtension {
 export interface ExtensionContributions {
   readonly loaded: ReadonlyArray<{ readonly id: string; readonly extension: Extension }>;
   readonly skillLocations: readonly SkillLocation[];
+  readonly agents: readonly AgentDefinition[];
   readonly hookSources: ReadonlyArray<{ readonly origin: "extension"; readonly value: unknown; readonly file: string; readonly labelScope: string }>;
   readonly connectorSources: readonly ConnectorSource[];
   /** Load report: one line per extension (step 4)… */
@@ -91,6 +93,7 @@ export function loadExtensions(active: readonly ActiveExtension[], inputs: LoadI
   for (const { a, ext } of kept) byName.set(ext.name, [...(byName.get(ext.name) ?? []), a.root]);
   const loaded: Array<{ id: string; extension: Extension }> = [];
   const skillLocations: SkillLocation[] = [];
+  const agents: AgentDefinition[] = [];
   const hookSources: Array<{ origin: "extension"; value: unknown; file: string; labelScope: string }> = [];
   const connectorSources: ConnectorSource[] = [];
   for (const { a, ext } of [...kept].sort((x, y) => (x.ext.name < y.ext.name ? -1 : 1))) {
@@ -113,6 +116,22 @@ export function loadExtensions(active: readonly ActiveExtension[], inputs: LoadI
     // Skills and commands (namespace `<extension>:`).
     for (const d of ext.skillsDirs) skillLocations.push({ scope: "extension", skillsDir: d, namespace: ext.name });
     for (const d of ext.commandsDirs) skillLocations.push({ scope: "extension", commandsDir: d, namespace: ext.name });
+    for (const dir of ext.agentsDirs) {
+      let files: string[];
+      try { files = readdirSync(dir).filter((f) => f.endsWith(".md")).sort(); } catch { continue; }
+      for (const name of files) {
+        const file = join(dir, name);
+        try {
+          const missing = new Set<string>();
+          const text = substituteVariables(readFileSync(file, "utf8"), vars, missing) as string;
+          const blocked = blockedBy(missing);
+          if (blocked.length) { report.push(`Extension ${id} : agent ${file} désactivé : option requise ${blocked.join(", ")} non renseignée.`); continue; }
+          const def = parseAgent(text, file, "extension", (m) => report.push(`Extension ${id} : ${m}`));
+          if (typeof def === "string") report.push(`Extension ${id} : agent invalide (${file}) : ${def}.`);
+          else agents.push({ ...def, name: `${ext.name}:${def.name}` });
+        } catch { report.push(`Extension ${id} : agent illisible (${file}).`); }
+      }
+    }
     // Hooks (format of SPEC-HOK-002), one declaration at a time.
     let hookCount = 0;
     if (ext.hooksFile) {
@@ -160,5 +179,5 @@ export function loadExtensions(active: readonly ActiveExtension[], inputs: LoadI
     summaries.push({ origin: a.origin, text: `${a.origin === "session" ? "Extension de développement active" : "Extension active"} : ${id} (${ext.version}) — ${skills} compétence(s), ${commands} commande(s), ${hookCount} crochet(s), ${connectorCount} connecteur(s).` });
     loaded.push({ id, extension: ext });
   }
-  return { loaded, skillLocations, hookSources, connectorSources, summaries, report };
+  return { loaded, skillLocations, agents, hookSources, connectorSources, summaries, report };
 }

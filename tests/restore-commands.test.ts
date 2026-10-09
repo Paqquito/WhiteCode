@@ -89,7 +89,7 @@ describe("SPEC-CMD-061 /restore", () => {
     await quit(run);
   }, 30_000);
 
-  test("SPEC-CMD-061/CA-02 — a file changed by hand after the point, mode unrestricted: a confirmation of the conflict is asked despite the mode", async () => {
+  test("SPEC-CMD-061/CA-02 SPEC-SES-006/CA-02 — a file changed by hand after the point, mode unrestricted: a confirmation of the conflict is asked despite the mode", async () => {
     const ws = workspace();
     ws.write("project/x.txt", "origine\n");
     const steps: ScriptedResponse[] = [{ toolCalls: [readTool(ws, "x.txt")] }, { toolCalls: [write(ws, "x.txt", "agent\n")] }, { text: "t1" }];

@@ -10,6 +10,7 @@ import { projectKey, TranscriptWriter } from "../src/session/transcript";
 import { currentPlatform } from "../src/platform/system";
 import { cli, workspace, type Workspace } from "./helpers/env";
 import { ScriptedProvider } from "./helpers/scripted-provider";
+import { BUN, productEnv, record } from "./helpers/hooks";
 
 const platform = currentPlatform();
 const line = (content: string) => JSON.stringify({ type: "user", content });
@@ -40,6 +41,56 @@ const restore = (ws: Workspace, session: string, point: string, args: string[] =
 const text = (path: string) => readFileSync(path, "utf8");
 
 describe("SPEC-SES-006 file history and checkpoints", () => {
+  test("TECH — an external file above the backup size limit is never overwritten after conflict consent", async () => {
+    const ws = workspace();
+    const s = await editingSession(ws);
+    const current = "EXTERNAL CONTENT ABOVE THE BACKUP LIMIT\n";
+    writeFileSync(s.a, current);
+    const config = { sessions: { snapshotMaxFileSize: 8 } };
+    const plan = JSON.parse((await restore(ws, s.session, s.message2, ["--dry-run", "--result-format", "json"], config)).stdout);
+    const result = await restore(ws, s.session, s.message2, ["--allow-external-overwrite", plan.fingerprint], config);
+    expect(result.code).toBe(6);
+    expect(text(s.a)).toBe(current);
+    expect(result.stdout).toContain("Impossible de sauvegarder");
+  });
+  for (const kind of ["directory", "corrupt"]) test("SPEC-SES-006/CA-09 SPEC-MOD-002/CA-07 — unusable backup entries block replacement and deletion while other files restore, with code 6", async () => {
+    const ws = workspace();
+    const s = await editingSession(ws);
+    const blobDir = join(ws.configHome, "sessions", projectKey(realpathSync(ws.project)), s.session, "file-history");
+    for (const bytes of ["A2\n", "D2\n"]) {
+      const file = join(blobDir, hashBytes(Buffer.from(bytes)));
+      if (kind === "directory") mkdirSync(file);
+      else writeFileSync(file, "CORRUPTED BACKUP");
+    }
+    const result = await restore(ws, s.session, s.message2, ["--result-format", "json"]);
+    expect(result.code).toBe(6);
+    const report = JSON.parse(result.stdout).outcome;
+    expect([...report.restored].sort()).toEqual([s.b, s.c].sort());
+    expect(report.failed.map((item: { path: string }) => item.path).sort()).toEqual([s.a, s.d].sort());
+    expect([text(s.a), text(s.d)]).toEqual(["A2\n", "D2\n"]);
+    expect([text(s.b), text(s.c)]).toEqual(["B1\n", "C1\n"]);
+  });
+
+  test("SPEC-MOD-010/CA-08 — restore dry-run skips provider, hooks, extensions and connector processes", async () => {
+    const ws = workspace();
+    const s = await editingSession(ws);
+    const opened = record(ws, "opened");
+    const started = join(ws.root, "connector-started");
+    const connector = ws.write("connector.ts", `await Bun.write(${JSON.stringify(started)}, "started"); await Bun.sleep(10000);`);
+    const extension = ws.write("extension/extension.json", JSON.stringify({ name: "dry", version: "1.0.0" }));
+    ws.write("extension/event-hooks.json", JSON.stringify({ hooks: { session_opened: [{ actions: [{ type: "command", command: opened.command }] }] } }));
+    let providers = 0;
+    const r = await cli(["--non-interactive", `--reopen=${s.session}`, "--restore-files", s.message2, "--dry-run", "--extension-dir", join(extension, ".."), "--connectors", JSON.stringify({ servers: { slow: { transport: "stdio", command: BUN, args: [connector] } } })], ws, {
+      env: productEnv(ws), userConfig: { hooks: { session_opened: [{ actions: [{ type: "command", command: opened.command }] }] } },
+      extra: { providerFactory: () => { providers++; throw new Error("Dry-run started a provider"); } },
+    });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("Plan de restauration");
+    expect(providers).toBe(0);
+    expect(opened.read()).toHaveLength(0);
+    expect(existsSync(started)).toBe(false);
+    expect([text(s.a), text(s.d)]).toEqual(["A2\n", "D2\n"]);
+  });
   test("SPEC-SES-006/CA-01 — SPEC-SES-007/CA-01 — three files changed and one created after message 2: restored at message 2, the three get their content back and the created one is deleted", async () => {
     const ws = workspace();
     const s = await editingSession(ws);

@@ -54,9 +54,10 @@ export interface Extension {
   readonly manifest?: Record<string, unknown>;
   readonly skillsDirs: readonly string[];
   readonly commandsDirs: readonly string[];
+  readonly agentsDirs: readonly string[];
   readonly hooksFile?: string;
   readonly connectorsFile?: string;
-  /** Components present but not loaded by this version (agents, language servers, response styles). */
+  /** Components present but not loaded by this version (language servers, response styles). */
   readonly unsupported: readonly string[];
   /** JSON Schema of the options (SPEC-EXT-015). */
   readonly optionsSchema?: Record<string, unknown>;
@@ -136,7 +137,7 @@ export function describeExtension(root: string, development: boolean): Extension
   const hooksFile = declared("hooks")[0] ?? join(root, "event-hooks.json");
   const connectorsFile = declared("connectors")[0] ?? join(root, "connectors.json");
   const unsupported: string[] = [];
-  for (const [kind, conventional] of [["agents", "agent-profiles"], ["languageServers", "language-servers.json"], ["responseStyles", "response-styles"]] as const) {
+  for (const [kind, conventional] of [["languageServers", "language-servers.json"], ["responseStyles", "response-styles"]] as const) {
     if (existsSync(join(root, conventional)) || declared(kind).length > 0) unsupported.push(kind);
   }
   return {
@@ -147,6 +148,7 @@ export function describeExtension(root: string, development: boolean): Extension
     manifest,
     skillsDirs,
     commandsDirs,
+    agentsDirs: existing([join(root, "agent-profiles"), ...declared("agents")]),
     hooksFile: existsSync(hooksFile) ? hooksFile : undefined,
     connectorsFile: existsSync(connectorsFile) ? connectorsFile : undefined,
     unsupported,
