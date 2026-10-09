@@ -1,5 +1,5 @@
 // Implements: SPEC-CFG-001 (CA-06), SPEC-CFG-003 (§ 5.7 points 2, 3, 5, 10, 11, CA-07, CA-13, CA-14, CA-16), SPEC-HOK-002 (CA-06)
-// Supports: SPEC-MOD-010 (CA-07, CA-09), SPEC-PER-001 (CA-30), SPEC-CFG-003 (FA-02, protected system file and registry), gaps E-120 to E-124. Dynamic version adoption remains separate.
+// Supports: SPEC-MOD-010 (CA-07, CA-09), SPEC-PER-001 (CA-30), SPEC-CFG-003 (FA-02, protected file and native system channels), gaps E-120 to E-125. Dynamic version adoption remains separate.
 
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
@@ -12,7 +12,7 @@ import { fingerprint } from "../shared/fingerprint";
 import { flattenSettings, validateSettingValue, type ConfigIssue } from "./settings";
 import { SETTING_BY_KEY } from "./settings-schema";
 import { parseDuration } from "./units";
-import type { ManagedRegistry } from "./managed-registry";
+import type { ManagedSystemPolicy } from "./managed-system-policy";
 import { inspectPolicyFileProtection, type PolicyFileProtection, type PolicyFileProtectionReader } from "../platform/policy-file";
 
 const RULES: Readonly<Record<string, RuleDecision>> = {
@@ -199,12 +199,12 @@ export class ManagedPolicyGuard {
   readonly #protection?: PolicyFileProtectionReader;
   #observedDigest?: string;
   #changed = false;
-  readonly #registry?: ManagedRegistry;
-  readonly #registryDigest?: string;
-  #registryChanged = false;
-  constructor(file: string, anchor?: PolicyAnchor, registry?: ManagedRegistry, protection?: PolicyFileProtectionReader) {
-    this.#registry = registry;
-    this.#registryDigest = registry?.read().digest;
+  readonly #systemPolicy?: ManagedSystemPolicy;
+  readonly #systemPolicyDigest?: string;
+  #systemPolicyChanged = false;
+  constructor(file: string, anchor?: PolicyAnchor, systemPolicy?: ManagedSystemPolicy, protection?: PolicyFileProtectionReader) {
+    this.#systemPolicy = systemPolicy;
+    this.#systemPolicyDigest = systemPolicy?.read().digest;
     this.#file = file;
     this.#anchor = anchor ? Object.freeze({ ...anchor }) : undefined;
     this.#protection = protection;
@@ -213,11 +213,11 @@ export class ManagedPolicyGuard {
   }
   check(capability?: PolicyCapability): readonly ConfigIssue[] {
     const issues = this.#check();
-    const registry = this.#registry?.read();
-    if (registry?.digest !== this.#registryDigest) this.#registryChanged = true;
-    const registryIssues = registry?.issues.filter((issue) => issue.severity === "error") ?? [];
-    if (this.#registryChanged && registryIssues.length === 0) registryIssues.push({ code: "ERR-03", severity: "error", kind: "policy", scope: "managed", message: "La politique obligatoire du registre a changé ou disparu ; session suspendue. Faites vérifier la source par votre administrateur, puis redémarrez." });
-    return [...(outsidePerimeter(this.#anchor, capability) ? [] : issues), ...registryIssues];
+    const systemPolicy = this.#systemPolicy?.read();
+    if (systemPolicy?.digest !== this.#systemPolicyDigest) this.#systemPolicyChanged = true;
+    const systemIssues = systemPolicy?.issues.filter((issue) => issue.severity === "error") ?? [];
+    if (this.#systemPolicyChanged && systemIssues.length === 0) systemIssues.push({ code: "ERR-03", severity: "error", kind: "policy", scope: "managed", message: `La politique obligatoire ${this.#systemPolicy?.kind === "registry" ? "du registre" : "du profil macOS"} a changé ou disparu ; session suspendue. Faites vérifier la source par votre administrateur, puis redémarrez.` });
+    return [...(outsidePerimeter(this.#anchor, capability) ? [] : issues), ...systemIssues];
   }
   #check(): readonly ConfigIssue[] {
     const policy = readManagedPolicy(this.#file, this.#anchor, undefined, this.#protection);

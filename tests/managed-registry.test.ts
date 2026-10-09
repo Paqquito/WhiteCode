@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { ManagedPolicyGuard } from "../src/config/managed-policy";
 import { loadConfiguration } from "../src/config/load";
 import { SettingsReloader } from "../src/config/reload";
-import { managedRegistry } from "../src/config/managed-registry";
+import { managedRegistry } from "../src/config/managed-system-policy";
 import { loadIdentity } from "./helpers/env";
 import { EnvironmentView } from "../src/config/environment";
 import type { RegistryPolicy } from "../src/platform/registry";
@@ -81,7 +81,7 @@ test("TECH — registry preferences reload before use and deletion restores the 
   const identity = loadIdentity();
   let source: RegistryPolicy = { text: JSON.stringify({ ui: { history: { maxEntries: 456 } } }) };
   const loaded = loadConfiguration({ identity, cwd: ws.project, system: windows, managedDir: ws.managed, registryPolicyReader: () => source, env: new EnvironmentView(identity.get("ENV_PREFIX"), {}) });
-  const reloader = new SettingsReloader({ files: loaded.sources.filter((s) => s.name !== loaded.registry?.name), fixed: [], base: { projectTrusted: false }, current: loaded.settings, warn: () => {}, registry: loaded.registry, registryText: source.text });
+  const reloader = new SettingsReloader({ files: loaded.sources.filter((s) => s.name !== loaded.systemPolicy?.name), fixed: [], base: { projectTrusted: false }, current: loaded.settings, warn: () => {}, systemPolicy: loaded.systemPolicy, systemPolicyText: source.text });
   expect(reloader.current.get<number>("ui.history.maxEntries")).toBe(456);
   source = { text: JSON.stringify({ ui: { history: { maxEntries: 654 } } }) };
   expect(reloader.check()!.settings.get<number>("ui.history.maxEntries")).toBe(654);

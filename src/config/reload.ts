@@ -1,7 +1,7 @@
 // Implements: SPEC-CFG-005 (§ 5.3 steps 1 to 5, FA-02, FA-03, EF-01 to EF-04, ERR-01, CA-01 to CA-03)
 // Detection of changes in the settings files during a session: checked before each request (a periodic check, which
 // also covers the file systems without change notification, ERR-01); an invalid file keeps its last valid version.
-// Supports: SPEC-CFG-003 (CA-02, CA-13, CA-14, FA-02), gaps E-121 to E-124: unauthorised managed bytes never enter the reloaded configuration.
+// Supports: SPEC-CFG-003 (CA-02, CA-13, CA-14, FA-02, macOS profile reload), gaps E-121 to E-125: unauthorised managed bytes never enter the reloaded configuration.
 
 import { statSync } from "node:fs";
 import { parse, type ParseError } from "jsonc-parser";
@@ -9,7 +9,7 @@ import { readSettingsFile, Settings, type LoadOptions, type ScopeSource } from "
 import { SETTINGS } from "./settings-schema";
 import { readManagedPolicy, type PolicyCapability } from "./managed-policy";
 import type { PolicyAnchor } from "../identity/resolver";
-import type { ManagedRegistry } from "./managed-registry";
+import type { ManagedSystemPolicy } from "./managed-system-policy";
 import type { PolicyFileProtectionReader } from "../platform/policy-file";
 
 export interface ReloadResult {
@@ -45,13 +45,13 @@ export class SettingsReloader {
   readonly #policyCapability: PolicyCapability;
   readonly #policyFileProtection?: PolicyFileProtectionReader;
   #current: Settings;
-  readonly #registry?: ManagedRegistry;
-  #registryText?: string;
+  readonly #systemPolicy?: ManagedSystemPolicy;
+  #systemPolicyText?: string;
 
   /** `files`: the sources read from disk (managed, user, project, local); `fixed`: the others (`--config-source`). */
-  constructor(o: { files: readonly ScopeSource[]; fixed: readonly ScopeSource[]; base: Omit<LoadOptions, "sources">; current: Settings; warn: (message: string) => void; policyAnchor?: PolicyAnchor; policyCapability?: PolicyCapability; policyFileProtection?: PolicyFileProtectionReader; registry?: ManagedRegistry; registryText?: string }) {
-    this.#registry = o.registry;
-    this.#registryText = o.registryText;
+  constructor(o: { files: readonly ScopeSource[]; fixed: readonly ScopeSource[]; base: Omit<LoadOptions, "sources">; current: Settings; warn: (message: string) => void; policyAnchor?: PolicyAnchor; policyCapability?: PolicyCapability; policyFileProtection?: PolicyFileProtectionReader; systemPolicy?: ManagedSystemPolicy; systemPolicyText?: string }) {
+    this.#systemPolicy = o.systemPolicy;
+    this.#systemPolicyText = o.systemPolicyText;
     this.#files = o.files.map((f) => ({ ...f }));
     this.#fixed = o.fixed;
     this.#base = o.base;
@@ -71,12 +71,12 @@ export class SettingsReloader {
   check(): ReloadResult | undefined {
     let touched = false;
     const scopes: string[] = [];
-    const registry = this.#registry?.read();
-    if (registry?.issues.some((issue) => issue.severity === "error")) {
-      for (const issue of registry.issues) this.#warn(issue.message);
-    } else if (registry && registry.settingsText !== this.#registryText) {
-      for (const issue of registry.issues) this.#warn(issue.message);
-      this.#registryText = registry.settingsText;
+    const systemPolicy = this.#systemPolicy?.read();
+    if (systemPolicy?.issues.some((issue) => issue.severity === "error")) {
+      for (const issue of systemPolicy.issues) this.#warn(issue.message);
+    } else if (systemPolicy && systemPolicy.settingsText !== this.#systemPolicyText) {
+      for (const issue of systemPolicy.issues) this.#warn(issue.message);
+      this.#systemPolicyText = systemPolicy.settingsText;
       touched = true;
       scopes.push("managed");
     }
@@ -103,7 +103,7 @@ export class SettingsReloader {
       scopes.push(f.scope);
     }
     if (!touched) return undefined;
-    const next = Settings.load({ ...this.#base, sources: [...this.#files, ...this.#fixed, ...(this.#registry ? [{ scope: "managed" as const, name: this.#registry.name, text: this.#registryText }] : [])] });
+    const next = Settings.load({ ...this.#base, sources: [...this.#files, ...this.#fixed, ...(this.#systemPolicy ? [{ scope: "managed" as const, name: this.#systemPolicy.name, text: this.#systemPolicyText }] : [])] });
     const changed = SETTINGS.map((d) => d.key).filter((k) => JSON.stringify(next.get(k)) !== JSON.stringify(this.#current.get(k)));
     this.#current = next;
     return { settings: next, changed, scopes };

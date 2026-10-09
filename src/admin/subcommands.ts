@@ -1,6 +1,6 @@
 // Implements: SPEC-MOD-012 (§ 5.5, § 5.6 FA-04, EF-01, EF-02, EF-04 to EF-07, ERR-01, ERR-02, ERR-04, RG-03, CA-01, CA-02, CA-05, CA-07, CA-08, CA-12),
 //             SPEC-API-006 (EF-03, EF-04, CA-03, CA-05), SPEC-CFG-002 (§ 5.2 `config validate`, CA-03)
-// Supports: SPEC-CFG-003 (FA-02, local and registry policy validation), gaps E-066, E-120 to E-124. Administration operations never start a session nor contact the model service (EF-04).
+// Supports: SPEC-CFG-003 (FA-02, file and native system policy validation), gaps E-066, E-120 to E-125. Administration operations never start a session nor contact the model service (EF-04).
 
 import { lstatSync, readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
@@ -10,6 +10,7 @@ import type { EnvironmentView } from "../config/environment";
 import { loadConfiguration } from "../config/load";
 import { readManagedPolicy } from "../config/managed-policy";
 import type { RegistryPolicyReader } from "../platform/registry";
+import type { ProfilePolicyReader } from "../platform/managed-profile";
 import type { PolicyFileProtectionReader } from "../platform/policy-file";
 import { Settings, type ConfigIssue } from "../config/settings";
 import type { Scope } from "../config/settings-schema";
@@ -33,6 +34,7 @@ export interface AdminDependencies {
   readonly system: SystemInfo;
   readonly managedDir?: string;
   readonly registryPolicyReader?: RegistryPolicyReader;
+  readonly profilePolicyReader?: ProfilePolicyReader;
   readonly policyFileProtection?: PolicyFileProtectionReader;
 }
 
@@ -182,7 +184,7 @@ type Writer = (document: unknown, text: () => string) => void;
 
 /** What the `catalog` and `extension` operations need: settings, the files of the writable scopes, Git, a confirmation. */
 function extensionContext(deps: AdminDependencies, write: Writer, out: (t: string) => void, err: (t: string) => void): ExtensionAdminContext {
-  const { settings, locations } = loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, policyFileProtection: deps.policyFileProtection });
+  const { settings, locations } = loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, profilePolicyReader: deps.profilePolicyReader, policyFileProtection: deps.policyFileProtection });
   return {
     configDir: locations.configDir,
     cwd: deps.cwd,
@@ -232,10 +234,10 @@ export function diagnosticInputs(o: {
  * only after the agreement of the user, on a terminal; elsewhere nothing is changed, EF-01).
  */
 async function diagnostic(deps: AdminDependencies, repair: boolean, write: Writer, out: (t: string) => void): Promise<number> {
-  const { locations, sources, settings, registry } = loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, policyFileProtection: deps.policyFileProtection });
+  const { locations, sources, settings, systemPolicy } = loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, profilePolicyReader: deps.profilePolicyReader, policyFileProtection: deps.policyFileProtection });
   const findings = await runDiagnostics(diagnosticInputs({ sources, settings, configDir: locations.configDir, sessionsDir: locations.sessionsDir, platform: deps.system.platform }),
     [...readManagedPolicy(locations.managedSettingsFile, deps.identity.resolved.policyAnchor, undefined, deps.policyFileProtection).issues.map((issue) => ({ status: issue.severity, area: "Fichier de politique", message: issue.message, location: locations.managedSettingsFile })),
-      ...(registry?.read().issues.map((issue) => ({ status: issue.severity, area: "Politique de registre", message: issue.message, location: registry.name })) ?? [])]);
+      ...(systemPolicy?.read().issues.map((issue) => ({ status: issue.severity, area: systemPolicy.kind === "registry" ? "Politique de registre" : "Politique de profil macOS", message: issue.message, location: systemPolicy.name })) ?? [])]);
   const title = `Diagnostic — ${deps.identity.get("PRODUCT")} ${deps.identity.version}`;
   const errors = findings.filter((f) => f.status === "error").length;
   if (!repair) {
@@ -267,7 +269,7 @@ async function diagnostic(deps: AdminDependencies, repair: boolean, write: Write
 }
 
 function settingsOf(deps: AdminDependencies): Settings {
-  return loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, policyFileProtection: deps.policyFileProtection }).settings;
+  return loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, profilePolicyReader: deps.profilePolicyReader, policyFileProtection: deps.policyFileProtection }).settings;
 }
 
 /** Stable structured form of a catalogue entry (RG-03): the model family is always present (CA-05). */
@@ -375,7 +377,7 @@ function modelShow(deps: AdminDependencies, name: string, write: Writer, err: (t
 
 /** `config validate [<fichier>]` (SPEC-CFG-002 CA-03): every error listed, a non-zero exit code when there is one. */
 function configValidate(deps: AdminDependencies, file: string | undefined, scopeOption: string | true | undefined, write: Writer, err: (t: string) => void): number {
-  const { locations, sources, registry } = loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, policyFileProtection: deps.policyFileProtection });
+  const { locations, sources, systemPolicy } = loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, profilePolicyReader: deps.profilePolicyReader, policyFileProtection: deps.policyFileProtection });
   let targets: Array<{ scope: Scope; name: string; text: string | undefined }>;
   if (file !== undefined) {
     const path = resolvePath(deps.cwd, file);
@@ -406,11 +408,11 @@ function configValidate(deps: AdminDependencies, file: string | undefined, scope
 
   const reports = targets.map((t) => {
     // Each file is checked alone, in its scope, as if the project were trusted: every key is examined.
-    const registryPolicy = t.name === registry?.name ? registry.read() : undefined;
-    const filePolicy = t.scope === "managed" && !registryPolicy ? readManagedPolicy(t.name, deps.identity.resolved.policyAnchor, undefined, deps.policyFileProtection) : undefined;
-    const text = registryPolicy ? registryPolicy.settingsText : filePolicy ? filePolicy.settingsText : t.text;
+    const systemPolicyValue = t.name === systemPolicy?.name ? systemPolicy.read() : undefined;
+    const filePolicy = t.scope === "managed" && !systemPolicyValue ? readManagedPolicy(t.name, deps.identity.resolved.policyAnchor, undefined, deps.policyFileProtection) : undefined;
+    const text = systemPolicyValue ? systemPolicyValue.settingsText : filePolicy ? filePolicy.settingsText : t.text;
     const issues: ConfigIssue[] = text === undefined ? [] : Settings.load({ sources: [{ scope: t.scope, name: t.name, text }], projectTrusted: true }).issues;
-    if (registryPolicy) issues.push(...registryPolicy.issues);
+    if (systemPolicyValue) issues.push(...systemPolicyValue.issues);
     else if (filePolicy) issues.push(...filePolicy.issues);
     // File validation remains strict; the protection warning on an optional system source stays a warning (FA-02).
     const severity = (i: ConfigIssue): "error" | "warning" => t.scope === "managed" && i.kind === "policy" ? i.severity : i.kind === "unknown-key" || i.kind === "untrusted" ? "warning" : "error";

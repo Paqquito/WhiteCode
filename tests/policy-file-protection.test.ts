@@ -121,7 +121,7 @@ test("TECH — reload checks protection without a timestamp change and keeps the
   const identity = loadIdentity();
   const loaded = loadConfiguration({ identity, cwd: ws.project, system: systemInfo(), managedDir: ws.managed, policyFileProtection, env: new EnvironmentView(identity.get("ENV_PREFIX"), {}) });
   const warnings: string[] = [];
-  const reloader = new SettingsReloader({ files: loaded.sources.filter((s) => s.name !== loaded.registry?.name), fixed: [], base: { projectTrusted: false }, current: loaded.settings, warn: (message) => warnings.push(message), policyFileProtection });
+  const reloader = new SettingsReloader({ files: loaded.sources.filter((s) => s.name !== loaded.systemPolicy?.name), fixed: [], base: { projectTrusted: false }, current: loaded.settings, warn: (message) => warnings.push(message), policyFileProtection });
   writable = true;
   expect(reloader.check()).toBeUndefined();
   expect(warnings.join("\n")).toContain("modifiable");

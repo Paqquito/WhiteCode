@@ -1,5 +1,5 @@
 // Implements: SPEC-CFG-001 (§ 5.1 sources by scope, § 5.3 loading with the project trust), SPEC-PER-016 (trust decision before the project settings)
-// Supports: SPEC-CFG-003 (CA-02, CA-07, CA-13, CA-14, FA-02, reject the mandatory version as a whole), gaps E-120 to E-124.
+// Supports: SPEC-CFG-003 (CA-02, CA-07, CA-13, CA-14, FA-02, validate file and native system channels as a whole), gaps E-120 to E-125.
 // Shared by the agent run and the administration sub-commands.
 
 import type { Identity } from "../identity/identity";
@@ -7,8 +7,9 @@ import type { SystemInfo } from "../platform/system";
 import type { EnvironmentView } from "./environment";
 import { computeLocations, type Locations } from "./locations";
 import { readManagedPolicy, type PolicyCapability } from "./managed-policy";
-import { managedRegistry, type ManagedRegistry } from "./managed-registry";
+import { managedSystemPolicy, type ManagedSystemPolicy } from "./managed-system-policy";
 import type { RegistryPolicyReader } from "../platform/registry";
+import type { ProfilePolicyReader } from "../platform/managed-profile";
 import type { PolicyFileProtectionReader } from "../platform/policy-file";
 import { readSettingsFile, Settings, type ScopeSource } from "./settings";
 import type { Scope } from "./settings-schema";
@@ -21,6 +22,7 @@ export interface LoadRequest {
   readonly system: SystemInfo;
   readonly managedDir?: string;
   readonly registryPolicyReader?: RegistryPolicyReader;
+  readonly profilePolicyReader?: ProfilePolicyReader;
   readonly policyFileProtection?: PolicyFileProtectionReader;
   readonly policyCapability?: PolicyCapability;
   /** `cli` scope source (`--config-source`). */
@@ -32,7 +34,7 @@ export interface LoadRequest {
 }
 
 export interface LoadedConfiguration {
-  readonly registry?: ManagedRegistry;
+  readonly systemPolicy?: ManagedSystemPolicy;
   readonly locations: Locations;
   readonly sources: readonly ScopeSource[];
   /** Settings without the project scopes: the managed policy used before the trust decision. */
@@ -57,13 +59,13 @@ export function loadConfiguration(r: LoadRequest): LoadedConfiguration {
   if (r.cliSource) sources.push(r.cliSource);
   const policy = readManagedPolicy(locations.managedSettingsFile, r.identity.resolved.policyAnchor, r.policyCapability ?? "local", r.policyFileProtection);
   const validatedSources = sources.map((s) => s.scope === "managed" ? { ...s, text: policy.settingsText } : s);
-  const registry = managedRegistry(r.identity, r.system, r.registryPolicyReader);
-  const registryPolicy = registry?.read();
-  if (registry) validatedSources.push({ scope: "managed", name: registry.name, text: registryPolicy?.settingsText });
+  const systemPolicy = managedSystemPolicy(r.identity, r.system, r.registryPolicyReader, r.profilePolicyReader);
+  const systemPolicyValue = systemPolicy?.read();
+  if (systemPolicy) validatedSources.push({ scope: "managed", name: systemPolicy.name, text: systemPolicyValue?.settingsText });
   const loadOptions = { sources: validatedSources, environment: r.env.settingsLayer(), cliValues: r.cliValues ?? {}, allowedScopes: r.allowedScopes };
   const firstPass = Settings.load({ ...loadOptions, projectTrusted: false });
   firstPass.issues.push(...policy.issues);
-  firstPass.issues.push(...(registryPolicy?.issues ?? []));
+  firstPass.issues.push(...(systemPolicyValue?.issues ?? []));
   const trust = decideTrust({
     projectRoot: locations.projectRoot,
     userState: readUserState(locations.userStateFile),
@@ -73,6 +75,6 @@ export function loadConfiguration(r: LoadRequest): LoadedConfiguration {
   });
   const settings = Settings.load({ ...loadOptions, projectTrusted: trust.trusted });
   settings.issues.push(...policy.issues);
-  settings.issues.push(...(registryPolicy?.issues ?? []));
-  return { locations, sources: validatedSources, firstPass, settings, trust, registry };
+  settings.issues.push(...(systemPolicyValue?.issues ?? []));
+  return { locations, sources: validatedSources, firstPass, settings, trust, systemPolicy };
 }
