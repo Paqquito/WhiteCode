@@ -17,6 +17,8 @@ import { EnvironmentView, PUBLIC_SECRET_VARIABLES } from "../config/environment"
 import { readSettingsFile, validateSettingValue, Settings, type ScopeSource } from "../config/settings";
 import { computeLocations } from "../config/locations";
 import { ManagedPolicyGuard, readManagedPolicy, type PolicyCapability } from "../config/managed-policy";
+import { managedRegistry } from "../config/managed-registry";
+import type { RegistryPolicyReader } from "../platform/registry";
 import { isHotKey, SettingsReloader } from "../config/reload";
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import { loadConfiguration, scopeSources } from "../config/load";
@@ -195,6 +197,8 @@ export interface RunDependencies {
   readonly providerFactory?: (options: ProviderFactoryOptions) => ModelProvider;
   /** Folder of the managed settings, for tests; defaults to the identity location of the platform. */
   readonly managedDir?: string;
+  /** Native channel replacement for tests, never a launch option or configuration key. */
+  readonly registryPolicyReader?: RegistryPolicyReader;
   /** Inherited by nested server requests; launch options can widen this to remote, never reduce it. */
   readonly policyCapability?: PolicyCapability;
   /** External interruption (termination signal). */
@@ -319,7 +323,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const { streams, identity, system } = deps;
   const policyEnv = new EnvironmentView(identity.get("ENV_PREFIX"), deps.environment);
   const policyLocations = computeLocations(identity, policyEnv, deps.cwd, system, deps.managedDir);
-  const policyGuard = new ManagedPolicyGuard(policyLocations.managedSettingsFile, identity.resolved.policyAnchor);
+  const policyRegistry = managedRegistry(identity, system, deps.registryPolicyReader);
+  const policyGuard = new ManagedPolicyGuard(policyLocations.managedSettingsFile, identity.resolved.policyAnchor, policyRegistry);
   let policyCapability: PolicyCapability = deps.policyCapability ?? "local";
   if (serve?.transport === "network" || argv[0] === "remote-access" || argv[0] === "ssh-session") policyCapability = "remote";
   const assertPolicy = () => {
@@ -330,9 +335,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const localPolicyDiagnostic = () => {
     const preferences = Settings.load({ sources: [
       { scope: "managed", name: policyLocations.managedSettingsFile, text: readManagedPolicy(policyLocations.managedSettingsFile, identity.resolved.policyAnchor).settingsText },
+      ...(policyRegistry ? [{ scope: "managed" as const, name: policyRegistry.name, text: policyRegistry.read().settingsText }] : []),
       { scope: "user", name: policyLocations.userSettingsFile, text: readSettingsFile(policyLocations.userSettingsFile) },
     ], projectTrusted: false });
-    return ["Diagnostic local de politique", `Source : ${policyLocations.managedSettingsFile}`,
+    return ["Diagnostic local de politique", `Source : ${policyLocations.managedSettingsFile}`, ...(policyRegistry ? [`Canal : ${policyRegistry.name}`, "Périmètre du registre : toutes les capacités d'agent si ce canal porte une politique obligatoire."] : []),
       `Périmètre : ${identity.resolved.policyAnchor?.perimeter === "remote" ? "sessions distantes ; fonctions locales conservées" : "inconnu ; fonctions d'agent bloquées"}`,
       ...policyGuard.check().map((i) => i.message),
       "Faites vérifier la source par votre administrateur, puis redémarrez.", "Préférences d'interface valides :",
@@ -379,7 +385,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   if (!serve && looksLikeSubcommand(argv)) {
     const env = new EnvironmentView(identity.get("ENV_PREFIX"), deps.environment);
     identity.applyOverrides(env.identityOverrides(identity.overridableCandidates));
-    return runSubcommand(argv, { streams, identity, catalog: deps.catalog, env, cwd: deps.cwd, system, managedDir: deps.managedDir });
+    return runSubcommand(argv, { streams, identity, catalog: deps.catalog, env, cwd: deps.cwd, system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader });
   }
   const parsed = parseCommandLine(argv);
   // SPEC-MOD-010 EF-05: the duration of each phase of the start-up, for the journal.
@@ -450,6 +456,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       cwd,
       system,
       managedDir: deps.managedDir,
+      registryPolicyReader: deps.registryPolicyReader,
       cliSource,
       cliValues,
       allowedScopes,
@@ -493,13 +500,15 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // SPEC-CFG-005: the settings files are checked before each request; `liveSettings` holds the effective values.
   let liveSettings = settings;
   const reloader = new SettingsReloader({
-    files: loaded.sources.filter((source) => source.scope !== "cli"),
+    files: loaded.sources.filter((source) => source.scope !== "cli" && source.name !== policyRegistry?.name),
     fixed: cliSource ? [cliSource] : [],
     base: { environment: env.settingsLayer(), cliValues, allowedScopes, projectTrusted: trust.trusted },
     current: settings,
     warn: (message) => err(`avertissement : ${message}`),
     policyAnchor: identity.resolved.policyAnchor,
     policyCapability,
+    registry: policyRegistry,
+    registryText: loaded.sources.find((source) => source.name === policyRegistry?.name)?.text,
   });
   // SPEC-MOD-011 ERR-04: options forbidden by the managed policy.
   const forbidden = firstPass.get<string[]>("policy.forbiddenOptions").map((o) => o.replace(/^--/, ""));
@@ -3058,7 +3067,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         const repair = args.trim() === "repair";
         if (args.trim() !== "" && !repair) return { refused: "Usage : /diagnose [repair]." };
         const states: Record<string, string> = { error: "en échec", unavailable: "indisponible", pending: "en attente", connecting: "connexion en cours" };
+        const registryPolicy = policyRegistry?.read();
         const extra: Finding[] = [
+          ...(registryPolicy?.issues.map((issue): Finding => ({ status: issue.severity, area: "Politique de registre", message: issue.message, location: policyRegistry?.name })) ?? []),
           ...(connectors?.status() ?? []).map((s): Finding =>
             s.state === "connected" ? { status: "ok", area: "Connecteurs", message: `${s.name} connecté`, location: s.source } : { status: s.state === "error" || s.state === "unavailable" ? "error" : "warning", area: "Connecteurs", message: `${s.name} ${states[s.state] ?? s.state}${s.error ? ` : ${s.error}` : ""}`, location: s.source, fix: { description: `/connectors reconnect ${s.name}` } },
           ),
@@ -3068,7 +3079,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           ...maskedRules(rules).map((m): Finding => ({ status: "warning", area: "Règles d'accès", message: describeMasking(m, ruleSource) })), // SPEC-PER-012 § 5.2
         ];
         const findings = await runDiagnostics(
-          diagnosticInputs({ sources: scopeSources(locations), settings: liveSettings, configDir: locations.configDir, sessionsDir: locations.sessionsDir, platform: system.platform }),
+          diagnosticInputs({ sources: [...scopeSources(locations), ...(policyRegistry ? [{ scope: "managed" as const, name: policyRegistry.name, text: registryPolicy?.settingsText }] : [])], settings: liveSettings, configDir: locations.configDir, sessionsDir: locations.sessionsDir, platform: system.platform }),
           extra,
         );
         const lines = renderDiagnostics(findings, `Diagnostic — ${identity.get("PRODUCT")} ${identity.version}`);

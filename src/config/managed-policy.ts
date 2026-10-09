@@ -1,5 +1,5 @@
 // Implements: SPEC-CFG-001 (CA-06), SPEC-CFG-003 (§ 5.7 points 2, 3, 5, 10, 11, CA-07, CA-13, CA-14, CA-16), SPEC-HOK-002 (CA-06)
-// Supports: SPEC-MOD-010 (CA-07, CA-09), SPEC-PER-001 (CA-30), gaps E-120 to E-122. Dynamic version adoption remains separate.
+// Supports: SPEC-MOD-010 (CA-07, CA-09), SPEC-PER-001 (CA-30), SPEC-CFG-003 (Windows registry channel), gaps E-120 to E-123. Dynamic version adoption remains separate.
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -12,6 +12,7 @@ import { fingerprint } from "../shared/fingerprint";
 import { flattenSettings, readSettingsFile, validateSettingValue, type ConfigIssue } from "./settings";
 import { SETTING_BY_KEY } from "./settings-schema";
 import { parseDuration } from "./units";
+import type { ManagedRegistry } from "./managed-registry";
 
 const RULES: Readonly<Record<string, RuleDecision>> = {
   "permissions.allowRules": "allow", "permissions.askRules": "ask", "permissions.denyRules": "deny",
@@ -172,7 +173,12 @@ export class ManagedPolicyGuard {
   #validation: PolicyValidation;
   #observedDigest?: string;
   #changed = false;
-  constructor(file: string, anchor?: PolicyAnchor) {
+  readonly #registry?: ManagedRegistry;
+  readonly #registryDigest?: string;
+  #registryChanged = false;
+  constructor(file: string, anchor?: PolicyAnchor, registry?: ManagedRegistry) {
+    this.#registry = registry;
+    this.#registryDigest = registry?.read().digest;
     this.#file = file;
     this.#anchor = anchor ? Object.freeze({ ...anchor }) : undefined;
     const source = readPolicySource(file, this.#anchor);
@@ -182,7 +188,11 @@ export class ManagedPolicyGuard {
   }
   check(capability?: PolicyCapability): readonly ConfigIssue[] {
     const issues = this.#check();
-    return outsidePerimeter(this.#anchor, capability) ? [] : issues;
+    const registry = this.#registry?.read();
+    if (registry?.digest !== this.#registryDigest) this.#registryChanged = true;
+    const registryIssues = registry?.issues.filter((issue) => issue.severity === "error") ?? [];
+    if (this.#registryChanged && registryIssues.length === 0) registryIssues.push({ code: "ERR-03", severity: "error", kind: "policy", scope: "managed", message: "La politique obligatoire du registre a changé ou disparu ; session suspendue. Faites vérifier la source par votre administrateur, puis redémarrez." });
+    return [...(outsidePerimeter(this.#anchor, capability) ? [] : issues), ...registryIssues];
   }
   #check(): readonly ConfigIssue[] {
     const source = readPolicySource(this.#file, this.#anchor);

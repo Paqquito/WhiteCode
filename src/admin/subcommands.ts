@@ -1,6 +1,6 @@
 // Implements: SPEC-MOD-012 (§ 5.5, § 5.6 FA-04, EF-01, EF-02, EF-04 to EF-07, ERR-01, ERR-02, ERR-04, RG-03, CA-01, CA-02, CA-05, CA-07, CA-08, CA-12),
 //             SPEC-API-006 (EF-03, EF-04, CA-03, CA-05), SPEC-CFG-002 (§ 5.2 `config validate`, CA-03)
-// Supports: SPEC-CFG-003 (local policy validation), gaps E-066, E-120, E-121. Administration operations never start a session nor contact the model service (EF-04).
+// Supports: SPEC-CFG-003 (local and registry policy validation), gaps E-066, E-120 to E-123. Administration operations never start a session nor contact the model service (EF-04).
 
 import { readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
@@ -9,6 +9,7 @@ import { familyHelp, FAMILY_BY_NAME, FAMILY_CATALOG, parseSubcommand, Subcommand
 import type { EnvironmentView } from "../config/environment";
 import { loadConfiguration } from "../config/load";
 import { readManagedPolicy } from "../config/managed-policy";
+import type { RegistryPolicyReader } from "../platform/registry";
 import { readSettingsFile, Settings, type ConfigIssue } from "../config/settings";
 import type { Scope } from "../config/settings-schema";
 import type { Identity } from "../identity/identity";
@@ -30,6 +31,7 @@ export interface AdminDependencies {
   readonly cwd: string;
   readonly system: SystemInfo;
   readonly managedDir?: string;
+  readonly registryPolicyReader?: RegistryPolicyReader;
 }
 
 const TIER_ALIASES = ["large", "medium", "small"] as const;
@@ -178,7 +180,7 @@ type Writer = (document: unknown, text: () => string) => void;
 
 /** What the `catalog` and `extension` operations need: settings, the files of the writable scopes, Git, a confirmation. */
 function extensionContext(deps: AdminDependencies, write: Writer, out: (t: string) => void, err: (t: string) => void): ExtensionAdminContext {
-  const { settings, locations } = loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir });
+  const { settings, locations } = loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader });
   return {
     configDir: locations.configDir,
     cwd: deps.cwd,
@@ -228,8 +230,9 @@ export function diagnosticInputs(o: {
  * only after the agreement of the user, on a terminal; elsewhere nothing is changed, EF-01).
  */
 async function diagnostic(deps: AdminDependencies, repair: boolean, write: Writer, out: (t: string) => void): Promise<number> {
-  const { locations, sources, settings } = loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir });
-  const findings = await runDiagnostics(diagnosticInputs({ sources, settings, configDir: locations.configDir, sessionsDir: locations.sessionsDir, platform: deps.system.platform }));
+  const { locations, sources, settings, registry } = loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader });
+  const findings = await runDiagnostics(diagnosticInputs({ sources, settings, configDir: locations.configDir, sessionsDir: locations.sessionsDir, platform: deps.system.platform }),
+    registry?.read().issues.map((issue) => ({ status: issue.severity, area: "Politique de registre", message: issue.message, location: registry.name })) ?? []);
   const title = `Diagnostic — ${deps.identity.get("PRODUCT")} ${deps.identity.version}`;
   const errors = findings.filter((f) => f.status === "error").length;
   if (!repair) {
@@ -261,7 +264,7 @@ async function diagnostic(deps: AdminDependencies, repair: boolean, write: Write
 }
 
 function settingsOf(deps: AdminDependencies): Settings {
-  return loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir }).settings;
+  return loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader }).settings;
 }
 
 /** Stable structured form of a catalogue entry (RG-03): the model family is always present (CA-05). */
@@ -369,7 +372,7 @@ function modelShow(deps: AdminDependencies, name: string, write: Writer, err: (t
 
 /** `config validate [<fichier>]` (SPEC-CFG-002 CA-03): every error listed, a non-zero exit code when there is one. */
 function configValidate(deps: AdminDependencies, file: string | undefined, scopeOption: string | true | undefined, write: Writer, err: (t: string) => void): number {
-  const { locations, sources } = loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir });
+  const { locations, sources, registry } = loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader });
   let targets: Array<{ scope: Scope; name: string; text: string | undefined }>;
   if (file !== undefined) {
     const path = resolvePath(deps.cwd, file);
@@ -397,11 +400,13 @@ function configValidate(deps: AdminDependencies, file: string | undefined, scope
 
   const reports = targets.map((t) => {
     // Each file is checked alone, in its scope, as if the project were trusted: every key is examined.
-    const text = t.scope === "managed" ? readSettingsFile(t.name) : t.text;
+    const registryPolicy = t.name === registry?.name ? registry.read() : undefined;
+    const text = registryPolicy ? registryPolicy.settingsText : t.scope === "managed" ? readSettingsFile(t.name) : t.text;
     const issues: ConfigIssue[] = text === undefined ? [] : Settings.load({ sources: [{ scope: t.scope, name: t.name, text }], projectTrusted: true }).issues;
-    if (t.scope === "managed") issues.push(...readManagedPolicy(t.name, deps.identity.resolved.policyAnchor).issues);
-    // In a file under validation, only an unknown key is a warning (accepted, SPEC-MOD-012 § 8); every other problem is an error.
-    const severity = (i: ConfigIssue): "error" | "warning" => (i.kind === "unknown-key" || i.kind === "untrusted" ? "warning" : "error");
+    if (registryPolicy) issues.push(...registryPolicy.issues);
+    else if (t.scope === "managed") issues.push(...readManagedPolicy(t.name, deps.identity.resolved.policyAnchor).issues);
+    // File validation remains strict; the protection warning on an optional system source stays a warning (FA-02).
+    const severity = (i: ConfigIssue): "error" | "warning" => registryPolicy && i.kind === "policy" ? i.severity : i.kind === "unknown-key" || i.kind === "untrusted" ? "warning" : "error";
     return { path: t.name, scope: t.scope, exists: text !== undefined, issues: issues.map((i) => ({ severity: severity(i), code: i.code, message: i.message, ...(i.kind ? { kind: i.kind } : {}), ...(i.key ? { key: i.key } : {}) })) };
   });
   const errors = reports.reduce((k, r) => k + r.issues.filter((i) => i.severity === "error").length, 0);
