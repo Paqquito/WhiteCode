@@ -4,6 +4,7 @@
 import type { CliRun, Workspace } from "./env";
 import { cli } from "./env";
 import type { ModelProvider } from "../../src/providers/types";
+import type { Identity } from "../../src/identity/identity";
 
 /** A live line source: lines pushed by the test, until `end()`. */
 export class LineFeed implements AsyncIterable<string> {
@@ -39,6 +40,7 @@ export type Message = Record<string, unknown> & { type: string };
 export type DemandHandler = (params: Record<string, unknown>, message: Message) => unknown | Promise<unknown> | undefined;
 
 export interface HostOptions {
+  readonly identity?: Identity;
   readonly argv?: string[];
   readonly provider: ModelProvider;
   readonly userConfig?: Record<string, unknown>;
@@ -62,6 +64,7 @@ export class Host {
     this.#answers = o.answers ?? {};
     this.run = cli(["--non-interactive", "--control-channel", "--request-format", "jsonl", "--result-format", "jsonl", ...(o.argv ?? [])], ws, {
       provider: o.provider,
+      identity: o.identity,
       stdinSource: this.feed,
       onOut: (t) => this.#onOut(t),
       ...(o.userConfig ? { userConfig: o.userConfig } : {}),

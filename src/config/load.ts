@@ -1,12 +1,12 @@
 // Implements: SPEC-CFG-001 (§ 5.1 sources by scope, § 5.3 loading with the project trust), SPEC-PER-016 (trust decision before the project settings)
-// Supports: SPEC-CFG-003 (CA-07, CA-14, reject the mandatory version as a whole), gaps E-120, E-121.
+// Supports: SPEC-CFG-003 (CA-07, CA-13, CA-14, reject the mandatory version as a whole), gaps E-120 to E-122.
 // Shared by the agent run and the administration sub-commands.
 
 import type { Identity } from "../identity/identity";
 import type { SystemInfo } from "../platform/system";
 import type { EnvironmentView } from "./environment";
 import { computeLocations, type Locations } from "./locations";
-import { readManagedPolicy } from "./managed-policy";
+import { readManagedPolicy, type PolicyCapability } from "./managed-policy";
 import { readSettingsFile, Settings, type ScopeSource } from "./settings";
 import type { Scope } from "./settings-schema";
 import { decideTrust, readUserState } from "./trust";
@@ -17,6 +17,7 @@ export interface LoadRequest {
   readonly cwd: string;
   readonly system: SystemInfo;
   readonly managedDir?: string;
+  readonly policyCapability?: PolicyCapability;
   /** `cli` scope source (`--config-source`). */
   readonly cliSource?: ScopeSource;
   readonly cliValues?: Record<string, unknown>;
@@ -48,7 +49,7 @@ export function loadConfiguration(r: LoadRequest): LoadedConfiguration {
   const locations = computeLocations(r.identity, r.env, r.cwd, r.system, r.managedDir);
   const sources = scopeSources(locations);
   if (r.cliSource) sources.push(r.cliSource);
-  const policy = readManagedPolicy(locations.managedSettingsFile, r.identity.resolved.policyAnchor);
+  const policy = readManagedPolicy(locations.managedSettingsFile, r.identity.resolved.policyAnchor, r.policyCapability ?? "local");
   const validatedSources = sources.map((s) => s.scope === "managed" ? { ...s, text: policy.settingsText } : s);
   const loadOptions = { sources: validatedSources, environment: r.env.settingsLayer(), cliValues: r.cliValues ?? {}, allowedScopes: r.allowedScopes };
   const firstPass = Settings.load({ ...loadOptions, projectTrusted: false });

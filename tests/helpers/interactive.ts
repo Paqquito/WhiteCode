@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { runCli } from "../../src/headless/run";
 import { systemInfo } from "../../src/platform/system";
 import type { ModelProvider } from "../../src/providers/types";
+import type { Identity } from "../../src/identity/identity";
 import { captureStreams, loadCatalog, loadIdentity, TEST_USER_CONFIG, type Workspace } from "./env";
 import { fakeTerminal } from "./vterm";
 
@@ -63,9 +64,9 @@ const ESC = String.fromCharCode(27);
 export function interactive(
   argv: string[],
   ws: Workspace,
-  o: { provider?: ModelProvider; columns?: number; rows?: number; userConfig?: Record<string, unknown>; env?: Record<string, string>; signal?: AbortSignal } = {},
+  o: { provider?: ModelProvider; columns?: number; rows?: number; userConfig?: Record<string, unknown>; env?: Record<string, string>; signal?: AbortSignal; identity?: Identity } = {},
 ): InteractiveRun {
-  const identity = loadIdentity();
+  const identity = o.identity ?? loadIdentity();
   writeFileSync(join(ws.configHome, "config.json"), JSON.stringify(deepMerge(TEST_USER_CONFIG, { ui: { maxFramesPerSecond: 240 }, ...(o.userConfig ?? {}) })));
   const term = fakeTerminal(o.columns ?? 100, o.rows ?? 30);
   const streams = { ...captureStreams({ tty: true }), terminal: term };

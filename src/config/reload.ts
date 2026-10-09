@@ -1,13 +1,13 @@
 // Implements: SPEC-CFG-005 (§ 5.3 steps 1 to 5, FA-02, FA-03, EF-01 to EF-04, ERR-01, CA-01 to CA-03)
 // Detection of changes in the settings files during a session: checked before each request (a periodic check, which
 // also covers the file systems without change notification, ERR-01); an invalid file keeps its last valid version.
-// Supports: SPEC-CFG-003 (CA-14), gap E-121: unauthorised managed bytes never enter the reloaded configuration.
+// Supports: SPEC-CFG-003 (CA-13, CA-14), gaps E-121, E-122: unauthorised managed bytes never enter the reloaded configuration.
 
 import { statSync } from "node:fs";
 import { parse, type ParseError } from "jsonc-parser";
 import { readSettingsFile, Settings, type LoadOptions, type ScopeSource } from "./settings";
 import { SETTINGS } from "./settings-schema";
-import { readManagedPolicy } from "./managed-policy";
+import { readManagedPolicy, type PolicyCapability } from "./managed-policy";
 import type { PolicyAnchor } from "../identity/resolver";
 
 export interface ReloadResult {
@@ -40,16 +40,18 @@ export class SettingsReloader {
   readonly #stamps = new Map<string, string>();
   readonly #warn: (message: string) => void;
   readonly #policyAnchor?: PolicyAnchor;
+  readonly #policyCapability: PolicyCapability;
   #current: Settings;
 
   /** `files`: the sources read from disk (managed, user, project, local); `fixed`: the others (`--config-source`). */
-  constructor(o: { files: readonly ScopeSource[]; fixed: readonly ScopeSource[]; base: Omit<LoadOptions, "sources">; current: Settings; warn: (message: string) => void; policyAnchor?: PolicyAnchor }) {
+  constructor(o: { files: readonly ScopeSource[]; fixed: readonly ScopeSource[]; base: Omit<LoadOptions, "sources">; current: Settings; warn: (message: string) => void; policyAnchor?: PolicyAnchor; policyCapability?: PolicyCapability }) {
     this.#files = o.files.map((f) => ({ ...f }));
     this.#fixed = o.fixed;
     this.#base = o.base;
     this.#current = o.current;
     this.#warn = o.warn;
     this.#policyAnchor = o.policyAnchor ? Object.freeze({ ...o.policyAnchor }) : undefined;
+    this.#policyCapability = o.policyCapability ?? "local";
     for (const f of this.#files) this.#stamps.set(f.name, stamp(f.name));
   }
 
@@ -68,8 +70,9 @@ export class SettingsReloader {
       this.#stamps.set(f.name, now);
       let text: string | undefined;
       if (f.scope === "managed" && this.#policyAnchor) {
-        const policy = readManagedPolicy(f.name, this.#policyAnchor);
-        if (policy.issues.length > 0) { for (const issue of policy.issues) this.#warn(issue.message); continue; }
+        const policy = readManagedPolicy(f.name, this.#policyAnchor, this.#policyCapability);
+        for (const issue of policy.issues) this.#warn(issue.message);
+        if (policy.issues.some((issue) => issue.severity === "error")) continue;
         text = policy.settingsText;
       } else text = readSettingsFile(f.name);
       if (text !== undefined && !valid(text)) {

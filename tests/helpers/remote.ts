@@ -3,6 +3,7 @@
 
 import { cli, loadIdentity, type CliRun, type Workspace } from "./env";
 import type { ModelProvider } from "../../src/providers/types";
+import type { Identity } from "../../src/identity/identity";
 
 export const PREFIX = loadIdentity().get("ENV_PREFIX");
 export const TOKEN = "jeton-de-test";
@@ -13,13 +14,14 @@ export type Frame = Record<string, unknown> & { type: string };
 export async function listeningEngine(
   ws: Workspace,
   provider: ModelProvider,
-  o: { argv?: string[]; env?: Record<string, string>; userConfig?: Record<string, unknown>; signal?: AbortSignal } = {},
+  o: { argv?: string[]; env?: Record<string, string>; userConfig?: Record<string, unknown>; signal?: AbortSignal; identity?: Identity } = {},
 ): Promise<{ url: string; run: Promise<CliRun>; stderr: () => string }> {
   let err = "";
   let announced: (url: string) => void;
   const url = new Promise<string>((r) => (announced = r));
   const run = cli(["--non-interactive", "--control-listen=127.0.0.1:0", ...(o.argv ?? [])], ws, {
     provider,
+    identity: o.identity,
     env: { [`${PREFIX}CONTROL_TOKEN`]: TOKEN, ...(o.env ?? {}) },
     ...(o.userConfig ? { userConfig: o.userConfig } : {}),
     ...(o.signal ? { signal: o.signal } : {}),

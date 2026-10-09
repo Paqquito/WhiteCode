@@ -1,6 +1,6 @@
 // Implements: SPEC-CAD-002 (EF-01 to EF-15, RG-04, RG-05, ERR-02 to ERR-09, ERR-14, ERR-17, Q-05)
 // Validates an identity file and computes the resolved identity (derivations, transforms, cycles).
-// Supports: SPEC-CFG-003 (§ 5.7 points 2, 3), gap E-121: the distribution pins its authorised policy independently of session settings.
+// Supports: SPEC-CFG-003 (§ 5.7 points 2, 3, 11), gaps E-121, E-122: the distribution pins its authorised policy and perimeter independently of session settings.
 
 import { createHash } from "node:crypto";
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
@@ -46,6 +46,8 @@ export interface ResolvedIdentity {
 
 export interface PolicyAnchor {
   readonly organizationId: string;
+  /** Omission means unknown: every agent capability is covered. */
+  readonly perimeter?: "remote";
   /** SHA-256 of the exact authorised bytes of the distribution's managed policy.json. */
   readonly policySha256: string;
 }
@@ -158,11 +160,12 @@ export function resolveIdentity(data: unknown, options: ResolveOptions): Resolve
   let policyAnchor: PolicyAnchor | undefined;
   if (Object.hasOwn(data, "policyAnchor")) {
     const anchor = data["policyAnchor"];
-    if (!isPlainObject(anchor) || Object.keys(anchor).some((key) => key !== "organizationId" && key !== "policySha256") ||
+    if (!isPlainObject(anchor) || Object.keys(anchor).some((key) => key !== "organizationId" && key !== "policySha256" && key !== "perimeter") ||
+      (Object.hasOwn(anchor, "perimeter") && anchor["perimeter"] !== "remote") ||
       typeof anchor["organizationId"] !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(anchor["organizationId"]) ||
       typeof anchor["policySha256"] !== "string" || !/^[a-f0-9]{64}$/.test(anchor["policySha256"])) {
-      error("ERR-05", "`policyAnchor` exige un identifiant d'organisation (1 à 128 caractères alphanumériques, point, tiret ou soulignement) et une empreinte SHA-256 minuscule, sans autre champ.", "$.policyAnchor");
-    } else policyAnchor = { organizationId: anchor["organizationId"], policySha256: anchor["policySha256"] };
+      error("ERR-05", "`policyAnchor` exige un identifiant d'organisation (1 à 128 caractères alphanumériques, point, tiret ou soulignement) et une empreinte SHA-256 minuscule ; son périmètre facultatif vaut `remote`, sans autre champ.", "$.policyAnchor");
+    } else policyAnchor = { organizationId: anchor["organizationId"], policySha256: anchor["policySha256"], ...(anchor["perimeter"] === "remote" ? { perimeter: "remote" as const } : {}) };
   }
 
   // Collect provided values, checking that each variable sits in its own section.

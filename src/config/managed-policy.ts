@@ -1,5 +1,5 @@
-// Implements: SPEC-CFG-001 (CA-06), SPEC-CFG-003 (§ 5.7 points 2, 3, 5, 10, CA-07, CA-14, CA-16), SPEC-HOK-002 (CA-06)
-// Supports: SPEC-MOD-010 (CA-07), gaps E-120, E-121. Dynamic version adoption and known perimeters are separate increments.
+// Implements: SPEC-CFG-001 (CA-06), SPEC-CFG-003 (§ 5.7 points 2, 3, 5, 10, 11, CA-07, CA-13, CA-14, CA-16), SPEC-HOK-002 (CA-06)
+// Supports: SPEC-MOD-010 (CA-07, CA-09), SPEC-PER-001 (CA-30), gaps E-120 to E-122. Dynamic version adoption remains separate.
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -17,6 +17,7 @@ const RULES: Readonly<Record<string, RuleDecision>> = {
   "permissions.allowRules": "allow", "permissions.askRules": "ask", "permissions.denyRules": "deny",
 };
 const REQUIRED = [...Object.keys(RULES), "permissions.managedRulesOnly", "permissions.disableUnrestrictedMode", "permissions.disableAutoApproveMode"];
+export type PolicyCapability = "local" | "remote";
 const object = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 export interface PolicyValidation {
@@ -25,13 +26,17 @@ export interface PolicyValidation {
   readonly digest?: string;
   /** On a rejected version, only independently validated preferences may be loaded for local diagnosis. */
   readonly settingsText: string | undefined;
+  /** Authorised preferences outside the mandatory perimeter, without its controls. */
+  readonly preferencesText?: string;
 }
+
+const outsidePerimeter = (anchor: PolicyAnchor | undefined, capability: PolicyCapability | undefined) => anchor?.perimeter === "remote" && capability === "local";
 
 /** The file carries policy bytes; the distribution, not this file, supplies the authority. */
 function readPolicySource(file: string, anchor?: PolicyAnchor): { text?: string; issue?: ConfigIssue } {
   if (!anchor) return { text: readSettingsFile(file) };
   const rejected = (reason: string): ConfigIssue => ({ code: "ERR-03", severity: "error", kind: "policy", scope: "managed",
-    message: `Politique obligatoire de l'organisation ${anchor.organizationId} : ${reason}. Périmètre inconnu ; fonctions d'agent bloquées.` });
+    message: `Politique obligatoire de l'organisation ${anchor.organizationId} : ${reason}. ${anchor.perimeter === "remote" ? "Périmètre distant ; sessions distantes bloquées." : "Périmètre inconnu ; fonctions d'agent bloquées."}` });
   try {
     const bytes = readFileSync(file);
     if (createHash("sha256").update(bytes).digest("hex") !== anchor.policySha256) return { issue: rejected("empreinte non autorisée par la distribution") };
@@ -41,9 +46,11 @@ function readPolicySource(file: string, anchor?: PolicyAnchor): { text?: string;
   }
 }
 
-export function readManagedPolicy(file: string, anchor?: PolicyAnchor): PolicyValidation {
+export function readManagedPolicy(file: string, anchor?: PolicyAnchor, capability?: PolicyCapability): PolicyValidation {
   const source = readPolicySource(file, anchor);
-  return source.issue ? { required: true, issues: [source.issue], settingsText: undefined } : validateManagedPolicy(source.text);
+  const policy: PolicyValidation = source.issue ? { required: true, issues: [source.issue], settingsText: undefined } : validateManagedPolicy(source.text);
+  if (!outsidePerimeter(anchor, capability)) return policy;
+  return { required: false, issues: policy.issues.map((issue) => ({ ...issue, severity: "warning", message: `${issue.message} Sessions distantes indisponibles ; fonctions locales conservées.` })), settingsText: policy.preferencesText };
 }
 
 /** No action is run here. Incomplete JSON cannot establish that the source contains preferences only. */
@@ -144,10 +151,16 @@ export function validateManagedPolicy(text: string | undefined): PolicyValidatio
   const isRequired = required.size > 0 || Object.keys(mandatoryHooks).length > 0 || issues.length > 0;
   const projection = [...required].sort().map((key) => [key, values.get(key)]);
   const preferences = [...values].filter(([key]) => !required.has(key) && key !== "hooks");
+  let optionalHooks: unknown = rawHooks;
+  if (allHooksRequired) optionalHooks = undefined;
+  else if (object(rawHooks)) optionalHooks = Object.fromEntries(Object.entries(rawHooks).map(([event, list]) => [event,
+    Array.isArray(list) ? list.filter((declaration) => !object(declaration) || declaration["mandatory"] !== true) : list,
+  ]));
   return {
     required: isRequired, issues,
     digest: isRequired ? fingerprint({ projection, mandatoryHooks }) : undefined,
     settingsText: issues.length > 0 ? JSON.stringify(Object.fromEntries(preferences)) : text,
+    preferencesText: JSON.stringify({ ...Object.fromEntries(preferences), ...(issues.length === 0 && optionalHooks !== undefined ? { hooks: optionalHooks } : {}) }),
   };
 }
 
@@ -167,7 +180,11 @@ export class ManagedPolicyGuard {
     this.#validation = source.issue ? { required: true, issues: [source.issue], settingsText: undefined } : validateManagedPolicy(source.text);
     if (this.#validation.issues.length === 0) this.#observedDigest = this.#validation.digest;
   }
-  check(): readonly ConfigIssue[] {
+  check(capability?: PolicyCapability): readonly ConfigIssue[] {
+    const issues = this.#check();
+    return outsidePerimeter(this.#anchor, capability) ? [] : issues;
+  }
+  #check(): readonly ConfigIssue[] {
     const source = readPolicySource(this.#file, this.#anchor);
     if (source.issue) return [source.issue];
     const text = source.text;

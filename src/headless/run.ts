@@ -1,7 +1,7 @@
 // Implements: SPEC-MOD-002 (§ 5.1, § 5.2, FA-01, FA-02, FA-05, FA-06, EF-01 to EF-08, ERR-01 to ERR-04, CA-01 to CA-06, CA-08), SPEC-MOD-011 (§ 5.4 start-up, EF-03, EF-04, EF-07, ERR-04),
 //             SPEC-MOT-004 (§ 5.3 steps 1 to 4, EF-01, EF-02, ERR-01 to ERR-05, RG-01, RG-02, ENF-01, CA-03, CA-04),
 //             SPEC-SES-002 (§ 5.1, § 5.3 steps 4 to 6, FA-02, EF-01, EF-05, ERR-01, CA-01 to CA-05), SPEC-SES-003 (§ 5.3, EF-01, EF-02, ERR-01, ERR-02, CA-01, CA-02),
-//             SPEC-CFG-001 (CA-03, CA-06), SPEC-CFG-003 (CA-07, CA-14, CA-16), SPEC-MOD-010 (CA-07), SPEC-HOK-002 (CA-06), SPEC-CFG-004 (ERR-01), SPEC-CFG-005 (steps 4 and 5, EF-02, EF-03), SPEC-CFG-008 (§ 5.3, EF-01, EF-02, ERR-01),
+//             SPEC-CFG-001 (CA-03, CA-06), SPEC-CFG-003 (CA-07, CA-13, CA-14, CA-16), SPEC-MOD-010 (CA-07, CA-09), SPEC-HOK-002 (CA-06), SPEC-CFG-004 (ERR-01), SPEC-CFG-005 (steps 4 and 5, EF-02, EF-03), SPEC-CFG-008 (§ 5.3, EF-01, EF-02, ERR-01),
 //             SPEC-SES-004 (ERR-03, CA-01, CA-02), SPEC-SES-008 (FA-01, EF-03), SPEC-SES-012 (§ 5.3, EF-01, EF-03, ERR-01, ERR-02, CA-01, CA-02), SPEC-SES-015 (steps 2 to 4, FA-01),
 //             SPEC-MOD-001 (§ 5.1, EF-01, EF-04, ERR-01, FA-04 summary at exit, FA-06, CA-05), SPEC-MOD-006 (§ 5.1, § 5.4 steps 1 and 7, FA-03, § 11), SPEC-MOD-007 (§ 5.1, § 6, EF-01, EF-02, EF-08, ERR-02, ERR-03, CA-04, CA-06), SPEC-MOD-008 (§ 5.1, § 6, § 10, FA-02, FA-05, EF-02 to EF-07, RG-01 to RG-03, CA-01 to CA-06), SPEC-CMD-002 (§ 5.3, FA-01, ERR-01, CA-01)
 // Supports: SPEC-MOT-005 (loading per segment, files touched), SPEC-MOT-007 (reminder producers), SPEC-CFG-001, SPEC-CFG-007 (RG-02, FA-01), SPEC-OUT-008, SPEC-OUT-009 (EF-07), SPEC-PER-001 (CA-05), SPEC-PER-003, SPEC-PER-010, SPEC-MOD-003 (CA-02, CA-04, CA-05), SPEC-SES-001, SPEC-API-006, decisions D-03, D-05, D-09, D-10, D-13, gaps E-013, E-017, E-018, E-045, E-050, E-094
@@ -16,7 +16,7 @@ import { CliUsageError, dangerOptions, parseCommandLine, splitList, undeliveredO
 import { EnvironmentView, PUBLIC_SECRET_VARIABLES } from "../config/environment";
 import { readSettingsFile, validateSettingValue, Settings, type ScopeSource } from "../config/settings";
 import { computeLocations } from "../config/locations";
-import { ManagedPolicyGuard, readManagedPolicy } from "../config/managed-policy";
+import { ManagedPolicyGuard, readManagedPolicy, type PolicyCapability } from "../config/managed-policy";
 import { isHotKey, SettingsReloader } from "../config/reload";
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import { loadConfiguration, scopeSources } from "../config/load";
@@ -195,6 +195,8 @@ export interface RunDependencies {
   readonly providerFactory?: (options: ProviderFactoryOptions) => ModelProvider;
   /** Folder of the managed settings, for tests; defaults to the identity location of the platform. */
   readonly managedDir?: string;
+  /** Inherited by nested server requests; launch options can widen this to remote, never reduce it. */
+  readonly policyCapability?: PolicyCapability;
   /** External interruption (termination signal). */
   readonly signal?: AbortSignal;
   /** Approval authorities (none in a non-interactive run of lot 1). */
@@ -318,17 +320,20 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const policyEnv = new EnvironmentView(identity.get("ENV_PREFIX"), deps.environment);
   const policyLocations = computeLocations(identity, policyEnv, deps.cwd, system, deps.managedDir);
   const policyGuard = new ManagedPolicyGuard(policyLocations.managedSettingsFile, identity.resolved.policyAnchor);
+  let policyCapability: PolicyCapability = deps.policyCapability ?? "local";
+  if (serve?.transport === "network" || argv[0] === "remote-access" || argv[0] === "ssh-session") policyCapability = "remote";
   const assertPolicy = () => {
-    const issues = policyGuard.check();
+    const issues = policyGuard.check(policyCapability);
     if (issues.length > 0) throw new RunError(issues.map((i) => i.message).join("\n"), ExitCode.BlockedByPolicy);
   };
-  const policyRefusal = () => policyGuard.check().length > 0 ? "Blocked: the mandatory organisation policy is invalid, missing or changed. Ask your administrator to verify it and restart the session." : undefined;
+  const policyRefusal = () => policyGuard.check(policyCapability).length > 0 ? "Blocked: the mandatory organisation policy is invalid, missing or changed. Ask your administrator to verify it and restart the session." : undefined;
   const localPolicyDiagnostic = () => {
     const preferences = Settings.load({ sources: [
       { scope: "managed", name: policyLocations.managedSettingsFile, text: readManagedPolicy(policyLocations.managedSettingsFile, identity.resolved.policyAnchor).settingsText },
       { scope: "user", name: policyLocations.userSettingsFile, text: readSettingsFile(policyLocations.userSettingsFile) },
     ], projectTrusted: false });
     return ["Diagnostic local de politique", `Source : ${policyLocations.managedSettingsFile}`,
+      `Périmètre : ${identity.resolved.policyAnchor?.perimeter === "remote" ? "sessions distantes ; fonctions locales conservées" : "inconnu ; fonctions d'agent bloquées"}`,
       ...policyGuard.check().map((i) => i.message),
       "Faites vérifier la source par votre administrateur, puis redémarrez.", "Préférences d'interface valides :",
       ...SETTINGS.filter((s) => s.key.startsWith("ui.") && !s.secret && preferences.origin(s.key) !== "default").map((s) => `${s.key} = ${JSON.stringify(preferences.get(s.key))}`),
@@ -338,7 +343,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   if (!serve && looksLikeSubcommand(argv) && argv.length > 1 && !argv.includes("--help") && !(argv[0] === "config" && argv[1] === "validate")) {
     if (argv[0] === "diagnostic" && argv[1] === "validate" && policyGuard.check().length > 0) {
       streams.writeOut(localPolicyDiagnostic() + "\n");
-      return ExitCode.BlockedByPolicy;
+      return policyGuard.check(policyCapability).length > 0 ? ExitCode.BlockedByPolicy : ExitCode.Success;
     }
     assertPolicy();
   }
@@ -386,6 +391,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     phaseStart = t;
   };
   const opt = (name: string) => parsed.options.get(name);
+  if (["control-listen", "control-connect", "remote-session", "reopen-remote"].some((name) => parsed.options.has(name))) policyCapability = "remote";
 
   if (opt("help")) {
     streams.writeOut(helpText(identity));
@@ -397,7 +403,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   }
   if (policyGuard.check().length > 0 && parsed.prompt?.trim() === "/diagnose" && !opt("control-channel") && !opt("control-listen") && !opt("control-connect")) {
     streams.writeOut(localPolicyDiagnostic() + "\n");
-    return ExitCode.BlockedByPolicy;
+    return policyGuard.check(policyCapability).length > 0 ? ExitCode.BlockedByPolicy : ExitCode.Success;
   }
   assertPolicy();
   const undelivered = undeliveredOptions(parsed);
@@ -448,6 +454,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       cliValues,
       allowedScopes,
       trustOption: opt("allow-project-trust") === true,
+      policyCapability,
     });
   let loaded = loadAll(env);
   // SPEC-CFG-008: the variables imposed by the administrator replace those of the user before anything depends on them,
@@ -492,6 +499,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     current: settings,
     warn: (message) => err(`avertissement : ${message}`),
     policyAnchor: identity.resolved.policyAnchor,
+    policyCapability,
   });
   // SPEC-MOD-011 ERR-04: options forbidden by the managed policy.
   const forbidden = firstPass.get<string[]>("policy.forbiddenOptions").map((o) => o.replace(/^--/, ""));
@@ -592,7 +600,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const format = (opt("result-format") ?? (remote ? "jsonl" : settings.get<string>("engine.output.format"))) as ResultFormat;
   // SPEC-MOD-007: the connection, opened before anything is written, so that the initialization is its first message.
   const remoteLog: { log: (event: string, data: Record<string, unknown>) => void } = { log: () => {} };
-  const link = remote ? await openRemoteLink(opt, settings, env, err, holder, remoteLog) : undefined;
+  assertPolicy();
+  const link = remote ? await openRemoteLink(opt, settings, env, err, holder, remoteLog, policyRefusal) : undefined;
+  assertPolicy();
   const now = deps.now ?? (() => new Date());
   const stream =
     format === "jsonl"
@@ -809,6 +819,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     idleTimeoutMs: settings.get<number>("api.streamIdleTimeout"),
     headers: { "User-Agent": identity.get("USER_AGENT"), [`${prefix}version`]: identity.version, [`${prefix}entrypoint`]: nonInteractive ? "non-interactive" : "interactive" },
   };
+  assertPolicy();
   assertPolicy();
   const loggedProvider = withRequestLog((deps.providerFactory ?? createProvider)(providerOptions), providerOptions, (m, d) => debug.log("api", m, d));
   const provider: ModelProvider = { id: loggedProvider.id, async *stream(request, signal) { assertPolicy(); yield* loggedProvider.stream(request, signal); } };
@@ -2110,6 +2121,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         cwd,
         home: system.home,
         platform: system.platform,
+        policyRefusal: policyRefusal(),
       }),
       toolContext: (signal): ToolContext => ({
         platform: system.platform,
@@ -2470,11 +2482,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const processRequest = async (original: string | readonly ContentPart[], signal: AbortSignal, literal = false): Promise<RequestOutcome> => {
     let content = original;
     const first = typeof content === "string" ? content : content.find((p) => p.type === "text")?.text;
-    if (policyGuard.check().length > 0) {
+    if (policyGuard.check(policyCapability).length > 0) {
       if (!literal && first?.trim() === "/diagnose") return { note: localPolicyDiagnostic() };
       if (!literal && first?.trim() === "/help") return { note: helpText(identity) };
       if (!literal && ["/quit", "/exit"].includes(first?.trim() ?? "")) return { exit: true };
-      return { refused: policyGuard.check().map((i) => i.message).join("\n") };
+      return { refused: policyGuard.check(policyCapability).map((i) => i.message).join("\n") };
     }
     // EF-08, ERR-05, CA-07 of SPEC-IHM-012: the shell mode is not available in an automated run.
     if (!app && first !== undefined && isShellLine(first)) return { refused: "Le mode shell n'est pas disponible dans ce mode." };
@@ -2615,10 +2627,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   };
   // The internal commands of this version (SPEC-CMD-001 rank 1): help, exit, key bindings.
   const runInternalCommand = async (command: InternalCommand, args: string): Promise<RequestOutcome> => {
-    if (policyGuard.check().length > 0) {
+    if (command.name === "diagnose" && policyGuard.check().length > 0) return { note: localPolicyDiagnostic() };
+    if (policyGuard.check(policyCapability).length > 0) {
       if (command.name === "diagnose") return { note: localPolicyDiagnostic() };
       if (command.name === "help") return { note: helpText(identity) };
-      if (command.name !== "quit" && command.name !== "exit") return { refused: policyGuard.check().map((i) => i.message).join("\n") };
+      if (command.name !== "quit" && command.name !== "exit") return { refused: policyGuard.check(policyCapability).map((i) => i.message).join("\n") };
     }
     switch (command.name) {
       case "exit":
@@ -3340,7 +3353,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
             toolContext: (s) => loopDeps.executor.toolContext(s),
             permissionContext: () => loopDeps.executor.permissionContext(),
             authorities: loopDeps.executor.authorities,
-            policyRefusal: () => policyGuard.check().length > 0 ? localPolicyDiagnostic() : undefined,
+            policyRefusal: () => policyGuard.check(policyCapability).length > 0 ? localPolicyDiagnostic() : undefined,
             persistRule,
             timeoutMs: settings.get<number>("ui.shellMode.timeoutMs"),
           });
@@ -3451,6 +3464,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       return { text: (part?.content ?? []).map((c) => (c.type === "text" ? c.text : `[${c.mediaType}]`)).join("\n"), isError: part?.isError ?? true };
     };
     const runAgent = async (input: Record<string, unknown>, signal: AbortSignal, progress: (message: string) => void): Promise<CallOutcome> => {
+      const blocked = policyRefusal();
+      if (blocked !== undefined) return { text: blocked, isError: true };
       const prompt = input["prompt"];
       if (typeof prompt !== "string" || prompt.trim() === "") return { text: "Invalid parameters: prompt is required.", isError: true }; // ERR-03
       if (depth + 1 > maxDepth) return { text: "Nesting too deep.", isError: true }; // EF-05, ERR-04, CA-05
@@ -3489,6 +3504,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         {
           ...deps,
           streams: nested,
+          policyCapability,
           cwd: dir,
           environment: { ...deps.environment, [`${env.prefix}AGENT_DEPTH`]: String(depth + 1) },
           signal,
@@ -3499,6 +3515,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           },
         },
       );
+      if (code === ExitCode.BlockedByPolicy) return { text: policyRefusal() ?? "Blocked: the mandatory organisation policy could not be validated.", isError: true };
       let doc: Record<string, unknown> = {};
       try {
         doc = JSON.parse(out.join("")) as Record<string, unknown>;
@@ -3524,6 +3541,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     let where = "processus (entrée et sortie standard)";
     let server: WsServer | undefined;
     if (serve.transport === "network") {
+      assertPolicy();
       const token = env.own("CONTROL_TOKEN");
       if (!token) throw new RunError(`Jeton d'authentification requis : variable ${env.prefix}CONTROL_TOKEN.`, ExitCode.UsageOrConfiguration); // EF-07
       const sessions = new Map<WsPeer, ConnectorServerSession>();
@@ -3533,6 +3551,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         env,
         err,
         token,
+        policyRefusal,
         maxPayloadLength: settings.get<number>("remote.transport.maxFrameBytes"),
         log: (event, data) => debug.log("serve", event, data),
         onOpen: (peer) => sessions.set(peer, new ConnectorServerSession(handlers, (m) => peer.send(JSON.stringify(m)), gate)),
@@ -3763,6 +3782,7 @@ async function openRemoteLink(
   err: (text: string) => void,
   holder: RunHolder,
   log: { log: (event: string, data: Record<string, unknown>) => void },
+  policyRefusal: () => string | undefined,
 ): Promise<FramedLink> {
   const usage = (message: string) => new RunError(message, ExitCode.UsageOrConfiguration);
   const token = env.own("CONTROL_TOKEN");
@@ -3785,6 +3805,7 @@ async function openRemoteLink(
       env,
       err,
       token,
+      policyRefusal,
       maxPayloadLength: maxFrameBytes * 2 + 65_536,
       log: (event, data) => log.log(event, data),
       onOpen: (peer) => link.open(peer),
@@ -3808,9 +3829,11 @@ async function openRemoteLink(
   // FA-01: after a cut, the engine connects again during the resumption window and presents its token.
   const connect = () =>
     new Promise<boolean>((resolve) => {
+      if (policyRefusal() !== undefined) return resolve(false);
       let peer: WsPeer | undefined;
       connectWebSocket(url.href, { Authorization: `Bearer ${token}` }, {
         onOpen: (p) => {
+          if (policyRefusal() !== undefined) { p.close(); resolve(false); return; }
           peer = p;
           link.openOutgoing(p);
           resolve(true);
@@ -3826,12 +3849,16 @@ async function openRemoteLink(
   const reconnect = async () => {
     while (!link.ended && !link.attached) {
       await new Promise((r) => setTimeout(r, 1_000));
-      if (link.ended || link.attached) return;
+      if (link.ended || link.attached || policyRefusal() !== undefined) return;
       if (await connect()) return;
     }
   };
   (holder.finalizers ??= []).push(() => link.drain());
-  if (!(await connect())) throw usage(`Connexion impossible : ${url.origin}.`);
+  if (!(await connect())) {
+    const refused = policyRefusal();
+    if (refused !== undefined) throw new RunError(refused, ExitCode.BlockedByPolicy);
+    throw usage(`Connexion impossible : ${url.origin}.`);
+  }
   return link;
 }
 
@@ -3846,6 +3873,7 @@ function listenSecurely(o: {
   readonly env: EnvironmentView;
   readonly err: (text: string) => void;
   readonly token: string;
+  readonly policyRefusal: () => string | undefined;
   readonly maxPayloadLength: number;
   readonly log: (event: string, data: Record<string, unknown>) => void;
   readonly onOpen: (peer: WsPeer) => void;
@@ -3880,7 +3908,7 @@ function listenSecurely(o: {
       maxPayloadLength: o.maxPayloadLength,
       authorize: ({ headers, remoteAddress }) => {
         // The refusal says nothing of its cause (ERR-01).
-        const ok = originAllowed(remoteAddress, headers.get("origin"), allowed) && bearerMatches(headers, o.token);
+        const ok = o.policyRefusal() === undefined && originAllowed(remoteAddress, headers.get("origin"), allowed) && bearerMatches(headers, o.token);
         if (!ok) o.log("connection_refused", { origin: remoteAddress });
         return ok;
       },

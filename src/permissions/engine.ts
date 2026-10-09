@@ -1,4 +1,4 @@
-// Implements: SPEC-PER-001 (§ 5.3 steps 1 to 8, EF-01 to EF-05, EF-08, EF-09, RG-01, RG-03, ENF-02), SPEC-PER-003 (RG-01, RG-02)
+// Implements: SPEC-PER-001 (§ 5.3 steps 1 to 8, EF-01 to EF-05, EF-08, EF-09, RG-01, RG-03, ENF-02, CA-30), SPEC-PER-003 (RG-01, RG-02)
 // Pure decision function: the same call and context always yield the same decision.
 
 import type { PermissionMode } from "../config/settings-schema";
@@ -37,6 +37,8 @@ export interface PermissionContext {
   readonly cwd: string;
   readonly home: string;
   readonly platform: PlatformName;
+  /** Policy invariant for the capability of this execution context, already evaluated against the raw source. */
+  readonly policyRefusal?: string;
 }
 
 /** The tool that leaves planning mode is the only non-read-only tool allowed in `planning` (step 1). */
@@ -47,6 +49,7 @@ export function decide(q: PermissionQuery, ctx: PermissionContext): Decision {
   const match = (r: Rule) => ruleMatches(r, q.toolName, q.subject, ctx);
 
   // Step 1: invariants. Nothing lifts these refusals (EF-02, EF-09).
+  if (ctx.policyRefusal !== undefined) return { kind: "deny", step: 1, reason: ctx.policyRefusal };
   if (!q.available) return { kind: "deny", step: 1, reason: "Tool not available in this session." };
   const deny = rules.find((r) => r.decision === "deny" && match(r));
   if (deny) return { kind: "deny", step: 1, reason: `Denied by the rule ${deny.raw} (${deny.scope} scope).` };
