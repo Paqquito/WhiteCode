@@ -1,11 +1,14 @@
 // Implements: SPEC-CFG-005 (§ 5.3 steps 1 to 5, FA-02, FA-03, EF-01 to EF-04, ERR-01, CA-01 to CA-03)
 // Detection of changes in the settings files during a session: checked before each request (a periodic check, which
 // also covers the file systems without change notification, ERR-01); an invalid file keeps its last valid version.
+// Supports: SPEC-CFG-003 (CA-14), gap E-121: unauthorised managed bytes never enter the reloaded configuration.
 
 import { statSync } from "node:fs";
 import { parse, type ParseError } from "jsonc-parser";
 import { readSettingsFile, Settings, type LoadOptions, type ScopeSource } from "./settings";
 import { SETTINGS } from "./settings-schema";
+import { readManagedPolicy } from "./managed-policy";
+import type { PolicyAnchor } from "../identity/resolver";
 
 export interface ReloadResult {
   readonly settings: Settings;
@@ -36,15 +39,17 @@ export class SettingsReloader {
   readonly #files: ScopeSource[];
   readonly #stamps = new Map<string, string>();
   readonly #warn: (message: string) => void;
+  readonly #policyAnchor?: PolicyAnchor;
   #current: Settings;
 
   /** `files`: the sources read from disk (managed, user, project, local); `fixed`: the others (`--config-source`). */
-  constructor(o: { files: readonly ScopeSource[]; fixed: readonly ScopeSource[]; base: Omit<LoadOptions, "sources">; current: Settings; warn: (message: string) => void }) {
+  constructor(o: { files: readonly ScopeSource[]; fixed: readonly ScopeSource[]; base: Omit<LoadOptions, "sources">; current: Settings; warn: (message: string) => void; policyAnchor?: PolicyAnchor }) {
     this.#files = o.files.map((f) => ({ ...f }));
     this.#fixed = o.fixed;
     this.#base = o.base;
     this.#current = o.current;
     this.#warn = o.warn;
+    this.#policyAnchor = o.policyAnchor ? Object.freeze({ ...o.policyAnchor }) : undefined;
     for (const f of this.#files) this.#stamps.set(f.name, stamp(f.name));
   }
 
@@ -61,7 +66,12 @@ export class SettingsReloader {
       const now = stamp(f.name);
       if (now === this.#stamps.get(f.name)) continue;
       this.#stamps.set(f.name, now);
-      const text = readSettingsFile(f.name);
+      let text: string | undefined;
+      if (f.scope === "managed" && this.#policyAnchor) {
+        const policy = readManagedPolicy(f.name, this.#policyAnchor);
+        if (policy.issues.length > 0) { for (const issue of policy.issues) this.#warn(issue.message); continue; }
+        text = policy.settingsText;
+      } else text = readSettingsFile(f.name);
       if (text !== undefined && !valid(text)) {
         // FA-02, EF-04, CA-03: the previous valid version of this scope stays applied.
         this.#warn(`Paramètres invalides dans ${f.name} : la configuration précédente reste appliquée.`);

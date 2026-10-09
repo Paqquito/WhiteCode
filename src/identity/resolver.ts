@@ -1,5 +1,6 @@
 // Implements: SPEC-CAD-002 (EF-01 to EF-15, RG-04, RG-05, ERR-02 to ERR-09, ERR-14, ERR-17, Q-05)
 // Validates an identity file and computes the resolved identity (derivations, transforms, cycles).
+// Supports: SPEC-CFG-003 (§ 5.7 points 2, 3), gap E-121: the distribution pins its authorised policy independently of session settings.
 
 import { createHash } from "node:crypto";
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
@@ -38,8 +39,15 @@ export interface ResolvedIdentity {
     readonly forbiddenTerms: readonly string[];
     readonly allowLegacyReads: boolean;
   };
+  readonly policyAnchor?: PolicyAnchor;
   /** SHA-256 of the canonical form of everything above (EF-15, ENF-04). */
   readonly hash: string;
+}
+
+export interface PolicyAnchor {
+  readonly organizationId: string;
+  /** SHA-256 of the exact authorised bytes of the distribution's managed policy.json. */
+  readonly policySha256: string;
 }
 
 export interface ResolveResult {
@@ -56,7 +64,7 @@ export interface ResolveOptions {
 }
 
 const SECTIONS: readonly Section[] = ["identity", "locations", "identifiers", "profiles", "models", "services", "git", "visual", "texts"];
-const TOP_LEVEL_KEYS = new Set(["$schema", "schemaVersion", "defaultLanguage", ...SECTIONS, "compatibility"]);
+const TOP_LEVEL_KEYS = new Set(["$schema", "schemaVersion", "defaultLanguage", ...SECTIONS, "compatibility", "policyAnchor"]);
 const SECRET_MARKERS = ["apikey", "secret", "token", "password", "passwd", "privatekey", "credential"];
 /** RG-05: prefixes of public API providers and common system prefixes. */
 const RESERVED_ENV_PREFIXES = ["ANTHROPIC_", "OPENAI_", "AWS_", "GOOGLE_", "AZURE_", "OTEL_", "XDG_", "LC_", "NODE_", "BUN_", "NPM_", "GIT_", "SSH_", "HTTP_", "HTTPS_", "NO_", "PATH_", "SYSTEM_", "WINDOWS_", "PS_"];
@@ -145,6 +153,16 @@ export function resolveIdentity(data: unknown, options: ResolveOptions): Resolve
 
   for (const key of Object.keys(data)) {
     if (!TOP_LEVEL_KEYS.has(key)) warn("ERR-06", `Section inconnue \`${key}\`.`, `$.${key}`);
+  }
+
+  let policyAnchor: PolicyAnchor | undefined;
+  if (Object.hasOwn(data, "policyAnchor")) {
+    const anchor = data["policyAnchor"];
+    if (!isPlainObject(anchor) || Object.keys(anchor).some((key) => key !== "organizationId" && key !== "policySha256") ||
+      typeof anchor["organizationId"] !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(anchor["organizationId"]) ||
+      typeof anchor["policySha256"] !== "string" || !/^[a-f0-9]{64}$/.test(anchor["policySha256"])) {
+      error("ERR-05", "`policyAnchor` exige un identifiant d'organisation (1 à 128 caractères alphanumériques, point, tiret ou soulignement) et une empreinte SHA-256 minuscule, sans autre champ.", "$.policyAnchor");
+    } else policyAnchor = { organizationId: anchor["organizationId"], policySha256: anchor["policySha256"] };
   }
 
   // Collect provided values, checking that each variable sits in its own section.
@@ -375,6 +393,7 @@ export function resolveIdentity(data: unknown, options: ResolveOptions): Resolve
     modelDefault,
     modelBackground,
     compatibility: { forbiddenTerms, allowLegacyReads },
+    ...(policyAnchor ? { policyAnchor } : {}),
   };
   const hash = createHash("sha256").update(canonicalJson(body)).digest("hex");
   return { identity: { ...body, hash }, issues };

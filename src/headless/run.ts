@@ -1,7 +1,7 @@
 // Implements: SPEC-MOD-002 (§ 5.1, § 5.2, FA-01, FA-02, FA-05, FA-06, EF-01 to EF-08, ERR-01 to ERR-04, CA-01 to CA-06, CA-08), SPEC-MOD-011 (§ 5.4 start-up, EF-03, EF-04, EF-07, ERR-04),
 //             SPEC-MOT-004 (§ 5.3 steps 1 to 4, EF-01, EF-02, ERR-01 to ERR-05, RG-01, RG-02, ENF-01, CA-03, CA-04),
 //             SPEC-SES-002 (§ 5.1, § 5.3 steps 4 to 6, FA-02, EF-01, EF-05, ERR-01, CA-01 to CA-05), SPEC-SES-003 (§ 5.3, EF-01, EF-02, ERR-01, ERR-02, CA-01, CA-02),
-//             SPEC-CFG-001 (CA-03, CA-06), SPEC-CFG-003 (CA-07, CA-16), SPEC-HOK-002 (CA-06), SPEC-CFG-004 (ERR-01), SPEC-CFG-005 (steps 4 and 5, EF-02, EF-03), SPEC-CFG-008 (§ 5.3, EF-01, EF-02, ERR-01),
+//             SPEC-CFG-001 (CA-03, CA-06), SPEC-CFG-003 (CA-07, CA-14, CA-16), SPEC-MOD-010 (CA-07), SPEC-HOK-002 (CA-06), SPEC-CFG-004 (ERR-01), SPEC-CFG-005 (steps 4 and 5, EF-02, EF-03), SPEC-CFG-008 (§ 5.3, EF-01, EF-02, ERR-01),
 //             SPEC-SES-004 (ERR-03, CA-01, CA-02), SPEC-SES-008 (FA-01, EF-03), SPEC-SES-012 (§ 5.3, EF-01, EF-03, ERR-01, ERR-02, CA-01, CA-02), SPEC-SES-015 (steps 2 to 4, FA-01),
 //             SPEC-MOD-001 (§ 5.1, EF-01, EF-04, ERR-01, FA-04 summary at exit, FA-06, CA-05), SPEC-MOD-006 (§ 5.1, § 5.4 steps 1 and 7, FA-03, § 11), SPEC-MOD-007 (§ 5.1, § 6, EF-01, EF-02, EF-08, ERR-02, ERR-03, CA-04, CA-06), SPEC-MOD-008 (§ 5.1, § 6, § 10, FA-02, FA-05, EF-02 to EF-07, RG-01 to RG-03, CA-01 to CA-06), SPEC-CMD-002 (§ 5.3, FA-01, ERR-01, CA-01)
 // Supports: SPEC-MOT-005 (loading per segment, files touched), SPEC-MOT-007 (reminder producers), SPEC-CFG-001, SPEC-CFG-007 (RG-02, FA-01), SPEC-OUT-008, SPEC-OUT-009 (EF-07), SPEC-PER-001 (CA-05), SPEC-PER-003, SPEC-PER-010, SPEC-MOD-003 (CA-02, CA-04, CA-05), SPEC-SES-001, SPEC-API-006, decisions D-03, D-05, D-09, D-10, D-13, gaps E-013, E-017, E-018, E-045, E-050, E-094
@@ -16,7 +16,7 @@ import { CliUsageError, dangerOptions, parseCommandLine, splitList, undeliveredO
 import { EnvironmentView, PUBLIC_SECRET_VARIABLES } from "../config/environment";
 import { readSettingsFile, validateSettingValue, Settings, type ScopeSource } from "../config/settings";
 import { computeLocations } from "../config/locations";
-import { ManagedPolicyGuard, validateManagedPolicy } from "../config/managed-policy";
+import { ManagedPolicyGuard, readManagedPolicy } from "../config/managed-policy";
 import { isHotKey, SettingsReloader } from "../config/reload";
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import { loadConfiguration, scopeSources } from "../config/load";
@@ -317,16 +317,15 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const { streams, identity, system } = deps;
   const policyEnv = new EnvironmentView(identity.get("ENV_PREFIX"), deps.environment);
   const policyLocations = computeLocations(identity, policyEnv, deps.cwd, system, deps.managedDir);
-  const policyGuard = new ManagedPolicyGuard(policyLocations.managedSettingsFile);
+  const policyGuard = new ManagedPolicyGuard(policyLocations.managedSettingsFile, identity.resolved.policyAnchor);
   const assertPolicy = () => {
     const issues = policyGuard.check();
     if (issues.length > 0) throw new RunError(issues.map((i) => i.message).join("\n"), ExitCode.BlockedByPolicy);
   };
   const policyRefusal = () => policyGuard.check().length > 0 ? "Blocked: the mandatory organisation policy is invalid, missing or changed. Ask your administrator to verify it and restart the session." : undefined;
   const localPolicyDiagnostic = () => {
-    const managedText = readSettingsFile(policyLocations.managedSettingsFile);
     const preferences = Settings.load({ sources: [
-      { scope: "managed", name: policyLocations.managedSettingsFile, text: validateManagedPolicy(managedText).settingsText },
+      { scope: "managed", name: policyLocations.managedSettingsFile, text: readManagedPolicy(policyLocations.managedSettingsFile, identity.resolved.policyAnchor).settingsText },
       { scope: "user", name: policyLocations.userSettingsFile, text: readSettingsFile(policyLocations.userSettingsFile) },
     ], projectTrusted: false });
     return ["Diagnostic local de politique", `Source : ${policyLocations.managedSettingsFile}`,
@@ -487,11 +486,12 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // SPEC-CFG-005: the settings files are checked before each request; `liveSettings` holds the effective values.
   let liveSettings = settings;
   const reloader = new SettingsReloader({
-    files: scopeSources(locations),
+    files: loaded.sources.filter((source) => source.scope !== "cli"),
     fixed: cliSource ? [cliSource] : [],
     base: { environment: env.settingsLayer(), cliValues, allowedScopes, projectTrusted: trust.trusted },
     current: settings,
     warn: (message) => err(`avertissement : ${message}`),
+    policyAnchor: identity.resolved.policyAnchor,
   });
   // SPEC-MOD-011 ERR-04: options forbidden by the managed policy.
   const forbidden = firstPass.get<string[]>("policy.forbiddenOptions").map((o) => o.replace(/^--/, ""));

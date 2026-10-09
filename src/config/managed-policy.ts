@@ -1,6 +1,9 @@
-// Implements: SPEC-CFG-001 (CA-06), SPEC-CFG-003 (§ 5.7 point 10, CA-07, CA-16), SPEC-HOK-002 (CA-06)
-// Supports: gap E-120. Local semantic validation; external anchoring and version adoption are separate increments.
+// Implements: SPEC-CFG-001 (CA-06), SPEC-CFG-003 (§ 5.7 points 2, 3, 5, 10, CA-07, CA-14, CA-16), SPEC-HOK-002 (CA-06)
+// Supports: SPEC-MOD-010 (CA-07), gaps E-120, E-121. Dynamic version adoption and known perimeters are separate increments.
 
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import type { PolicyAnchor } from "../identity/resolver";
 import { parse, visit, type ParseError } from "jsonc-parser";
 import { buildSnapshot, fingerprintOf } from "../hooks/config";
 import { HOOK_EVENTS } from "../hooks/events";
@@ -22,6 +25,25 @@ export interface PolicyValidation {
   readonly digest?: string;
   /** On a rejected version, only independently validated preferences may be loaded for local diagnosis. */
   readonly settingsText: string | undefined;
+}
+
+/** The file carries policy bytes; the distribution, not this file, supplies the authority. */
+function readPolicySource(file: string, anchor?: PolicyAnchor): { text?: string; issue?: ConfigIssue } {
+  if (!anchor) return { text: readSettingsFile(file) };
+  const rejected = (reason: string): ConfigIssue => ({ code: "ERR-03", severity: "error", kind: "policy", scope: "managed",
+    message: `Politique obligatoire de l'organisation ${anchor.organizationId} : ${reason}. Périmètre inconnu ; fonctions d'agent bloquées.` });
+  try {
+    const bytes = readFileSync(file);
+    if (createHash("sha256").update(bytes).digest("hex") !== anchor.policySha256) return { issue: rejected("empreinte non autorisée par la distribution") };
+    return { text: bytes.toString("utf8") };
+  } catch {
+    return { issue: rejected("source absente ou illisible") };
+  }
+}
+
+export function readManagedPolicy(file: string, anchor?: PolicyAnchor): PolicyValidation {
+  const source = readPolicySource(file, anchor);
+  return source.issue ? { required: true, issues: [source.issue], settingsText: undefined } : validateManagedPolicy(source.text);
 }
 
 /** No action is run here. Incomplete JSON cannot establish that the source contains preferences only. */
@@ -132,18 +154,23 @@ export function validateManagedPolicy(text: string | undefined): PolicyValidatio
 /** Fresh raw source checks avoid the ordinary configuration reloader's fallback to the previous valid JSON. */
 export class ManagedPolicyGuard {
   readonly #file: string;
+  readonly #anchor?: PolicyAnchor;
   #text: string | undefined;
   #validation: PolicyValidation;
   #observedDigest?: string;
   #changed = false;
-  constructor(file: string) {
+  constructor(file: string, anchor?: PolicyAnchor) {
     this.#file = file;
-    this.#text = readSettingsFile(file);
-    this.#validation = validateManagedPolicy(this.#text);
+    this.#anchor = anchor ? Object.freeze({ ...anchor }) : undefined;
+    const source = readPolicySource(file, this.#anchor);
+    this.#text = source.text;
+    this.#validation = source.issue ? { required: true, issues: [source.issue], settingsText: undefined } : validateManagedPolicy(source.text);
     if (this.#validation.issues.length === 0) this.#observedDigest = this.#validation.digest;
   }
   check(): readonly ConfigIssue[] {
-    const text = readSettingsFile(this.#file);
+    const source = readPolicySource(this.#file, this.#anchor);
+    if (source.issue) return [source.issue];
+    const text = source.text;
     if (text !== this.#text) { this.#text = text; this.#validation = validateManagedPolicy(text); }
     if (this.#validation.issues.length > 0) return this.#validation.issues;
     if (this.#observedDigest !== undefined && this.#observedDigest !== this.#validation.digest) this.#changed = true;

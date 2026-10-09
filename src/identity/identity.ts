@@ -1,5 +1,6 @@
 // Implements: SPEC-CAD-002 (EF-40 to EF-42, FA-02, RG-01, RG-03, ERR-13, ERR-14)
 // Read-only access to the resolved identity, with the runtime overrides allowed by RG-03.
+// Supports: SPEC-CFG-003 (§ 5.7 points 2, 3), gap E-121: runtime overrides cannot replace the distribution anchor.
 
 import { isOverridable, isServiceUrl, MODEL_TIERS, OVERRIDABLE_VARIABLES, type ModelTier } from "./runtime-catalog";
 import type { IdentityValue, ModelTierValue, ResolvedIdentity } from "./resolver";
@@ -20,7 +21,7 @@ export class Identity {
   readonly warnings: IdentityWarning[] = [];
 
   constructor(resolved: ResolvedIdentity) {
-    this.#resolved = resolved;
+    this.#resolved = Object.freeze({ ...resolved, ...(resolved.policyAnchor ? { policyAnchor: Object.freeze({ ...resolved.policyAnchor }) } : {}) });
   }
 
   get hash(): string {

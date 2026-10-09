@@ -1,6 +1,6 @@
 // Implements: SPEC-MOD-012 (§ 5.5, § 5.6 FA-04, EF-01, EF-02, EF-04 to EF-07, ERR-01, ERR-02, ERR-04, RG-03, CA-01, CA-02, CA-05, CA-07, CA-08, CA-12),
 //             SPEC-API-006 (EF-03, EF-04, CA-03, CA-05), SPEC-CFG-002 (§ 5.2 `config validate`, CA-03)
-// Supports: SPEC-CFG-003 (local policy validation), gaps E-066, E-120. Administration operations never start a session nor contact the model service (EF-04).
+// Supports: SPEC-CFG-003 (local policy validation), gaps E-066, E-120, E-121. Administration operations never start a session nor contact the model service (EF-04).
 
 import { readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
@@ -8,8 +8,8 @@ import { ExitCode } from "../cli/exit-codes";
 import { familyHelp, FAMILY_BY_NAME, FAMILY_CATALOG, parseSubcommand, SubcommandUsageError } from "../cli/families";
 import type { EnvironmentView } from "../config/environment";
 import { loadConfiguration } from "../config/load";
-import { validateManagedPolicy } from "../config/managed-policy";
-import { Settings, type ConfigIssue } from "../config/settings";
+import { readManagedPolicy } from "../config/managed-policy";
+import { readSettingsFile, Settings, type ConfigIssue } from "../config/settings";
 import type { Scope } from "../config/settings-schema";
 import type { Identity } from "../identity/identity";
 import { MODEL_TIERS } from "../identity/runtime-catalog";
@@ -397,11 +397,12 @@ function configValidate(deps: AdminDependencies, file: string | undefined, scope
 
   const reports = targets.map((t) => {
     // Each file is checked alone, in its scope, as if the project were trusted: every key is examined.
-    const issues: ConfigIssue[] = t.text === undefined ? [] : Settings.load({ sources: [{ scope: t.scope, name: t.name, text: t.text }], projectTrusted: true }).issues;
-    if (t.scope === "managed") issues.push(...validateManagedPolicy(t.text).issues);
+    const text = t.scope === "managed" ? readSettingsFile(t.name) : t.text;
+    const issues: ConfigIssue[] = text === undefined ? [] : Settings.load({ sources: [{ scope: t.scope, name: t.name, text }], projectTrusted: true }).issues;
+    if (t.scope === "managed") issues.push(...readManagedPolicy(t.name, deps.identity.resolved.policyAnchor).issues);
     // In a file under validation, only an unknown key is a warning (accepted, SPEC-MOD-012 § 8); every other problem is an error.
     const severity = (i: ConfigIssue): "error" | "warning" => (i.kind === "unknown-key" || i.kind === "untrusted" ? "warning" : "error");
-    return { path: t.name, scope: t.scope, exists: t.text !== undefined, issues: issues.map((i) => ({ severity: severity(i), code: i.code, message: i.message, ...(i.kind ? { kind: i.kind } : {}), ...(i.key ? { key: i.key } : {}) })) };
+    return { path: t.name, scope: t.scope, exists: text !== undefined, issues: issues.map((i) => ({ severity: severity(i), code: i.code, message: i.message, ...(i.kind ? { kind: i.kind } : {}), ...(i.key ? { key: i.key } : {}) })) };
   });
   const errors = reports.reduce((k, r) => k + r.issues.filter((i) => i.severity === "error").length, 0);
   write({ valid: errors === 0, files: reports }, () => {
@@ -409,9 +410,7 @@ function configValidate(deps: AdminDependencies, file: string | undefined, scope
     for (const r of reports) {
       if (!r.exists) {
         lines.push(`${r.path} (${r.scope}) : absent`);
-        continue;
-      }
-      lines.push(`${r.path} (${r.scope}) : ${r.issues.length === 0 ? "valide" : `${r.issues.length} problème${r.issues.length > 1 ? "s" : ""}`}`);
+      } else lines.push(`${r.path} (${r.scope}) : ${r.issues.length === 0 ? "valide" : `${r.issues.length} problème${r.issues.length > 1 ? "s" : ""}`}`);
       for (const i of r.issues) lines.push(`  ${i.severity === "error" ? "erreur" : "avertissement"} : ${i.message}`);
     }
     lines.push("", errors === 0 ? "Configuration valide." : `${errors} erreur${errors > 1 ? "s" : ""}.`);
