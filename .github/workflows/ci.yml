@@ -46,8 +46,8 @@ jobs:
       - name: Smoke test of the standalone executable
         shell: bash
         run: |
-          exe=$(ls dist | grep -v manifest.json | head -n 1)
-          ./dist/$exe --version
+          exe=$(bun -e 'const m = await Bun.file("dist/manifest.json").json(); const e = m.deliverables.find(d => d.target === "current"); if (!e) process.exit(1); console.log(e.file);')
+          "./dist/$exe" --version
 
   cross-compile:
     runs-on: ubuntu-latest

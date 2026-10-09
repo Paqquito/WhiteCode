@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { publishSettingsSchema } from "./settings-schema";
 
 const root = join(import.meta.dir, "..");
 const TARGETS = ["bun-windows-x64", "bun-windows-arm64", "bun-linux-x64", "bun-linux-arm64", "bun-linux-x64-musl", "bun-linux-arm64-musl", "bun-darwin-x64", "bun-darwin-arm64"];
@@ -48,5 +49,12 @@ for (const target of targets) {
   }
   manifest.push({ target: target ?? "current", file: outfile.slice(outDir.length + 1), sha256: createHash("sha256").update(bytes).digest("hex") });
 }
+const editorSchema = publishSettingsSchema(root, outDir, { cli, version: RESOLVED_IDENTITY.version });
+const schemaBytes = readFileSync(editorSchema.file);
+if (/\{\{[A-Z][A-Z0-9_]*(\|[a-z]+)*\}\}/.test(schemaBytes.toString("utf8"))) {
+  console.error("Variable non résolue dans le schéma des paramètres.");
+  process.exit(1);
+}
+manifest.push({ target: "settings-schema", file: "config.schema.json", sha256: createHash("sha256").update(schemaBytes).digest("hex") });
 writeFileSync(join(outDir, "manifest.json"), `${JSON.stringify({ identity: RESOLVED_IDENTITY.hash, version: RESOLVED_IDENTITY.version, deliverables: manifest }, null, 2)}\n`);
 console.error(`Livrables : ${manifest.map((m) => m.file).join(", ")}`);
