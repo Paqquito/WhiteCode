@@ -1,6 +1,6 @@
 // Implements: SPEC-MOD-012 (§ 5.5, § 5.6 FA-04, EF-01, EF-02, EF-04 to EF-07, ERR-01, ERR-02, ERR-04, RG-03, CA-01, CA-02, CA-05, CA-07, CA-08, CA-12),
 //             SPEC-API-006 (EF-03, EF-04, CA-03, CA-05), SPEC-CFG-002 (§ 5.2 `config validate`, CA-03)
-// Supports: SPEC-CFG-003 (FA-02, file and native system policy validation), gaps E-066, E-120 to E-125. Administration operations never start a session nor contact the model service (EF-04).
+// Supports: SPEC-CFG-003 (FA-02, CA-06, independent enrolment and authorised recovery), gaps E-066, E-120 to E-126. Administration operations never start a session nor contact the model service (EF-04).
 
 import { lstatSync, readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
@@ -8,7 +8,10 @@ import { ExitCode } from "../cli/exit-codes";
 import { familyHelp, FAMILY_BY_NAME, FAMILY_CATALOG, parseSubcommand, SubcommandUsageError } from "../cli/families";
 import type { EnvironmentView } from "../config/environment";
 import { loadConfiguration } from "../config/load";
-import { readManagedPolicy } from "../config/managed-policy";
+import { readManagedPolicy, validateManagedPolicy } from "../config/managed-policy";
+import { readPolicyEnrollment } from "../config/policy-enrollment";
+import { readPolicySource } from "../config/protected-policy-source";
+import { computeLocations } from "../config/locations";
 import type { RegistryPolicyReader } from "../platform/registry";
 import type { ProfilePolicyReader } from "../platform/managed-profile";
 import type { PolicyFileProtectionReader } from "../platform/policy-file";
@@ -109,6 +112,9 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
     }
     case "config validate":
       return configValidate(deps, parsed.args[0], parsed.options.get("scope"), write, err);
+    case "config recover-policy":
+      if (parsed.args.length !== 1) { err("Usage : config recover-policy <fichier> [--json]."); return ExitCode.UsageOrConfiguration; }
+      return policyRecovery(deps, parsed.args[0]!, write, err);
     case "diagnostic validate":
     case "diagnostic repair":
       return diagnostic(deps, operation.name === "repair", write, out);
@@ -372,6 +378,23 @@ function modelShow(deps: AdminDependencies, name: string, write: Writer, err: (t
       `  origine : ${doc.source === "extra" ? "catalogue complémentaire (models.extraCatalog)" : "catalogue de la distribution"}`,
     ].join("\n"),
   );
+  return ExitCode.Success;
+}
+
+/** SPEC-CFG-003 CA-06: only bytes authorised independently of the candidate may enter the recovery path. */
+function policyRecovery(deps: AdminDependencies, file: string, write: Writer, err: (t: string) => void): number {
+  const locations = computeLocations(deps.identity, deps.env, deps.cwd, deps.system, deps.managedDir);
+  const enrollment = readPolicyEnrollment(locations.managedSettingsFile, deps.identity.resolved.policyAnchor, deps.policyFileProtection);
+  if (enrollment.issues.length > 0) { err(enrollment.issues.map((issue) => issue.message).join("\n")); return ExitCode.BlockedByPolicy; }
+  const authority = enrollment.anchor ?? deps.identity.resolved.policyAnchor;
+  if (!authority) { err("Aucune version autorisée par une inscription protégée ou la distribution : contactez votre administrateur."); return ExitCode.BlockedByPolicy; }
+  const source = readPolicySource(resolvePath(deps.cwd, file), authority, () => ({ writable: false }));
+  // Candidate bytes may be user-owned: their authority is the independently protected hash, never their location.
+  if (source.issue) { err(source.issue.message); return ExitCode.BlockedByPolicy; }
+  const validated = validateManagedPolicy(source.text);
+  if (validated.issues.some((issue) => issue.severity === "error")) { err(validated.issues.map((issue) => issue.message).join("\n")); return ExitCode.BlockedByPolicy; }
+  const report = { organizationId: authority.organizationId, verified: true, requiresAdministrativeInstall: true, destination: locations.managedSettingsFile, sha256: authority.policySha256 };
+  write(report, () => `Version autorisée pour l'organisation ${authority.organizationId}.\nFaites remettre ce fichier en place par votre administrateur : ${locations.managedSettingsFile}\nPuis redémarrez la session. Aucun fichier système n'a été modifié.`);
   return ExitCode.Success;
 }
 

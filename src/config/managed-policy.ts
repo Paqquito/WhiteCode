@@ -1,8 +1,8 @@
 // Implements: SPEC-CFG-001 (CA-06), SPEC-CFG-003 (§ 5.7 points 2, 3, 5, 10, 11, CA-07, CA-13, CA-14, CA-16), SPEC-HOK-002 (CA-06)
-// Supports: SPEC-MOD-010 (CA-07, CA-09), SPEC-PER-001 (CA-30), SPEC-CFG-003 (FA-02, protected file and native system channels), gaps E-120 to E-125. Dynamic version adoption remains separate.
+// Supports: SPEC-MOD-010 (CA-07, CA-09), SPEC-PER-001 (CA-30), SPEC-CFG-003 (FA-02, CA-05, CA-06, independent enrolment and native system channels), gaps E-120 to E-126. Dynamic version adoption remains separate.
 
-import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { readPolicySource } from "./protected-policy-source";
+import { readPolicyEnrollment } from "./policy-enrollment";
 import type { PolicyAnchor } from "../identity/resolver";
 import { parse, visit, type ParseError } from "jsonc-parser";
 import { buildSnapshot, fingerprintOf } from "../hooks/config";
@@ -13,7 +13,7 @@ import { flattenSettings, validateSettingValue, type ConfigIssue } from "./setti
 import { SETTING_BY_KEY } from "./settings-schema";
 import { parseDuration } from "./units";
 import type { ManagedSystemPolicy } from "./managed-system-policy";
-import { inspectPolicyFileProtection, type PolicyFileProtection, type PolicyFileProtectionReader } from "../platform/policy-file";
+import type { PolicyFileProtectionReader } from "../platform/policy-file";
 
 const RULES: Readonly<Record<string, RuleDecision>> = {
   "permissions.allowRules": "allow", "permissions.askRules": "ask", "permissions.denyRules": "deny",
@@ -23,6 +23,9 @@ export type PolicyCapability = "local" | "remote";
 const object = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 export interface PolicyValidation {
+  /** Effective file authority; invalid enrolment has an unknown perimeter even in a remote-only distribution. */
+  readonly perimeter?: "remote";
+  readonly enrollmentDigest?: string;
   readonly required: boolean;
   readonly issues: readonly ConfigIssue[];
   readonly digest?: string;
@@ -32,52 +35,21 @@ export interface PolicyValidation {
   readonly preferencesText?: string;
 }
 
-const outsidePerimeter = (anchor: PolicyAnchor | undefined, capability: PolicyCapability | undefined) => anchor?.perimeter === "remote" && capability === "local";
-
-/** The file carries policy bytes; the distribution, not this file, supplies the authority. */
-function readPolicySource(file: string, anchor?: PolicyAnchor, protection: PolicyFileProtectionReader = inspectPolicyFileProtection): { text?: string; issue?: ConfigIssue; protection?: PolicyFileProtection } {
-  const rejected = (reason: string): ConfigIssue => ({ code: "ERR-03", severity: "error", kind: "policy", scope: "managed",
-    message: `${anchor ? `Politique obligatoire de l'organisation ${anchor.organizationId}` : `Source de politique gérée ${file}`} : ${reason}. ${anchor?.perimeter === "remote" ? "Périmètre distant ; sessions distantes bloquées." : "Périmètre inconnu ; fonctions d'agent bloquées."}` });
-  let fd: number | undefined;
-  let detected = false;
-  try {
-    const first = lstatSync(file);
-    detected = true;
-    if (!first.isFile() || first.isSymbolicLink()) return { issue: rejected("fichier ordinaire sans lien symbolique attendu") };
-    const before = protection(file);
-    if (before.error !== undefined || typeof before.writable !== "boolean") return { issue: rejected(`protection invérifiable (${before.error ?? "unavailable"})`) };
-    fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
-    const opened = fstatSync(fd);
-    const stamp = (stat: typeof first) => `${stat.dev}:${stat.ino}:${stat.mode}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
-    if (!opened.isFile() || opened.size > 1024 * 1024 || stamp(first) !== stamp(opened)) return { issue: rejected("source non ordinaire, trop volumineuse ou remplacée pendant la lecture") };
-    const buffer = Buffer.alloc(opened.size + 1);
-    let length = 0;
-    while (length < buffer.length) {
-      const count = readSync(fd, buffer, length, buffer.length - length, null);
-      if (count === 0) break;
-      length += count;
-    }
-    if (length > 1024 * 1024) return { issue: rejected("source trop volumineuse") };
-    const bytes = buffer.subarray(0, length);
-    const after = protection(file);
-    if (after.error !== undefined || typeof after.writable !== "boolean" || stamp(opened) !== stamp(fstatSync(fd)) || stamp(opened) !== stamp(lstatSync(file))) return { issue: rejected("source ou protection modifiée pendant la lecture") };
-    if (anchor && createHash("sha256").update(bytes).digest("hex") !== anchor.policySha256) return { issue: rejected("empreinte non autorisée par la distribution") };
-    return { text: bytes.toString("utf8"), protection: { writable: before.writable || after.writable } };
-  } catch (error) {
-    if (!anchor && !detected && (error as NodeJS.ErrnoException).code === "ENOENT") return {};
-    return { issue: rejected("source absente ou illisible") };
-  } finally { if (fd !== undefined) closeSync(fd); }
-}
+const outsidePerimeter = (anchor: Pick<PolicyAnchor, "perimeter"> | undefined, capability: PolicyCapability | undefined) => anchor?.perimeter === "remote" && capability === "local";
 
 export function readManagedPolicy(file: string, anchor?: PolicyAnchor, capability?: PolicyCapability, protection?: PolicyFileProtectionReader): PolicyValidation {
-  const source = readPolicySource(file, anchor, protection);
+  const enrollment = readPolicyEnrollment(file, anchor, protection);
+  if (enrollment.issues.length > 0) return { required: true, issues: enrollment.issues, settingsText: undefined };
+  const authority = enrollment.anchor ?? anchor;
+  const source = readPolicySource(file, authority, protection);
   let policy: PolicyValidation = source.issue ? { required: true, issues: [source.issue], settingsText: undefined } : validateManagedPolicy(source.text);
+  policy = { ...policy, perimeter: authority?.perimeter, enrollmentDigest: enrollment.digest };
   if (source.protection?.writable) {
-    const required = policy.required || anchor !== undefined;
+    const required = policy.required || authority !== undefined;
     const issue: ConfigIssue = { code: "ERR-03", severity: required ? "error" : "warning", kind: "policy", scope: "managed", message: `Fichier géré modifiable sans autorité administrateur : ${file}.${required ? " Politique obligatoire invalide ; capacités encadrées bloquées." : " Faites protéger le fichier et ses parents par votre administrateur."}` };
     policy = { ...policy, required, settingsText: required ? undefined : policy.settingsText, preferencesText: required ? undefined : policy.preferencesText, issues: [...policy.issues, issue] };
   }
-  if (!outsidePerimeter(anchor, capability)) return policy;
+  if (!outsidePerimeter(authority, capability)) return policy;
   return { required: false, issues: policy.issues.map((issue) => ({ ...issue, severity: "warning", message: `${issue.message} Sessions distantes indisponibles ; fonctions locales conservées.` })), settingsText: policy.preferencesText };
 }
 
@@ -198,6 +170,7 @@ export class ManagedPolicyGuard {
   readonly #anchor?: PolicyAnchor;
   readonly #protection?: PolicyFileProtectionReader;
   #observedDigest?: string;
+  readonly #enrollmentDigest?: string;
   #changed = false;
   readonly #systemPolicy?: ManagedSystemPolicy;
   readonly #systemPolicyDigest?: string;
@@ -209,24 +182,25 @@ export class ManagedPolicyGuard {
     this.#anchor = anchor ? Object.freeze({ ...anchor }) : undefined;
     this.#protection = protection;
     const policy = readManagedPolicy(file, this.#anchor, undefined, protection);
+    this.#enrollmentDigest = policy.enrollmentDigest;
     if (!policy.issues.some((issue) => issue.severity === "error")) this.#observedDigest = policy.digest;
   }
   check(capability?: PolicyCapability): readonly ConfigIssue[] {
-    const issues = this.#check();
+    const policy = this.#check();
     const systemPolicy = this.#systemPolicy?.read();
     if (systemPolicy?.digest !== this.#systemPolicyDigest) this.#systemPolicyChanged = true;
     const systemIssues = systemPolicy?.issues.filter((issue) => issue.severity === "error") ?? [];
     if (this.#systemPolicyChanged && systemIssues.length === 0) systemIssues.push({ code: "ERR-03", severity: "error", kind: "policy", scope: "managed", message: `La politique obligatoire ${this.#systemPolicy?.kind === "registry" ? "du registre" : "du profil macOS"} a changé ou disparu ; session suspendue. Faites vérifier la source par votre administrateur, puis redémarrez.` });
-    return [...(outsidePerimeter(this.#anchor, capability) ? [] : issues), ...systemIssues];
+    return [...(outsidePerimeter(policy, capability) ? [] : policy.issues), ...systemIssues];
   }
-  #check(): readonly ConfigIssue[] {
+  #check(): Pick<PolicyValidation, "issues" | "perimeter"> {
     const policy = readManagedPolicy(this.#file, this.#anchor, undefined, this.#protection);
+    if (policy.enrollmentDigest !== this.#enrollmentDigest) this.#changed = true;
     const errors = policy.issues.filter((issue) => issue.severity === "error");
-    if (errors.length > 0) return errors;
+    if (errors.length > 0) return { perimeter: policy.perimeter, issues: errors };
     if (this.#observedDigest !== undefined && this.#observedDigest !== policy.digest) this.#changed = true;
     // Newly introduced restrictions also require restarting before they are adopted by the composed session.
     if (this.#observedDigest === undefined && policy.required) this.#changed = true;
-    if (this.#changed) return [{ code: "ERR-03", severity: "error", kind: "policy", scope: "managed", message: "La politique obligatoire a changé ou disparu ; session suspendue. Faites vérifier la source par votre administrateur, puis redémarrez." }];
-    return [];
+    return { perimeter: policy.perimeter, issues: this.#changed ? [{ code: "ERR-03", severity: "error", kind: "policy", scope: "managed", message: "La politique obligatoire ou son inscription a changé ou disparu ; session suspendue. Faites vérifier la source par votre administrateur, puis redémarrez." }] : [] };
   }
 }

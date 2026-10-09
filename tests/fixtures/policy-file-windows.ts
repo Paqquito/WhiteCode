@@ -1,5 +1,6 @@
 // Only this child restricts its own token; no login, elevation or machine ACL change.
 import { dlopen, ptr } from "bun:ffi";
+import { createHash } from "node:crypto";
 import { chmodSync } from "node:fs";
 import { join } from "node:path";
 import { cli, workspace } from "../helpers/env";
@@ -31,8 +32,13 @@ try {
   const protectedFile = inspectPolicyFileProtection(join(process.env["SystemRoot"]!, "System32/kernel32.dll"));
   const mandatory = await cli(["--non-interactive", "Read the summary."], ws, { extra: { policyFileProtection: inspectPolicyFileProtection } });
   const validation = await cli(["config", "validate", "--scope", "managed"], ws, { extra: { policyFileProtection: inspectPolicyFileProtection } });
+  chmodSync(file, 0o644);
+  ws.write("managed/policy.json", "{}");
+  ws.write("managed/enrollment.json", JSON.stringify({ schemaVersion: 1, organizationId: "native-enrolment", policySha256: createHash("sha256").update("{}").digest("hex") }));
+  const enrolled = await cli(["--non-interactive", "Read the summary."], ws, { extra: { policyFileProtection: inspectPolicyFileProtection } });
+  const recovery = await cli(["config", "recover-policy", file], ws, { extra: { policyFileProtection: inspectPolicyFileProtection } });
   checked(security.symbols.RevertToSelf());
-  console.log(JSON.stringify({ ordinary, readonly, protectedFile, mandatory, validation }));
+  console.log(JSON.stringify({ ordinary, readonly, protectedFile, mandatory, validation, enrolled, recovery }));
 } finally {
   checked(security.symbols.RevertToSelf());
   chmodSync(file, 0o644);

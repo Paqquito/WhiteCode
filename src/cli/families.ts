@@ -1,5 +1,5 @@
 // Implements: SPEC-MOD-012 (§ 5.1 structure, § 5.2 naming, § 5.3 catalogue of families and operations, § 5.4 common options, EF-01, RN-A to RN-H)
-// Supports: gap E-066 (operations delivered in lot 1)
+// Supports: gaps E-066 (operations delivered in lot 1), E-126 (local authorised policy recovery verification).
 
 export interface OperationDef {
   /** Operation name, second level of the invocation (RN-F). */
@@ -32,6 +32,7 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
       op("set", "Définit un paramètre dans la portée choisie.", { args: "<clé> <valeur>" }),
       op("remove", "Retire un paramètre de la portée choisie.", { args: "<clé>" }),
       op("validate", "Vérifie la validité de toutes les sources de configuration, ou d'un fichier.", { args: "[<fichier>]", delivered: true, options: ["json", "scope"] }),
+      op("recover-policy", "Vérifie une version de politique autorisée avant sa remise en place administrative.", { args: "<fichier>", delivered: true, options: ["json"] }),
       op("show-sources", "Affiche les sources chargées et leur ordre de priorité."),
       op("push", "Envoie les paramètres vers l'emplacement de sauvegarde configuré."),
       op("pull", "Récupère les paramètres depuis l'emplacement de sauvegarde configuré."),

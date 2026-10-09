@@ -5,7 +5,7 @@
 //             SPEC-SES-004 (ERR-03, CA-01, CA-02), SPEC-SES-008 (FA-01, EF-03), SPEC-SES-012 (§ 5.3, EF-01, EF-03, ERR-01, ERR-02, CA-01, CA-02), SPEC-SES-015 (steps 2 to 4, FA-01),
 //             SPEC-MOD-001 (§ 5.1, EF-01, EF-04, ERR-01, FA-04 summary at exit, FA-06, CA-05), SPEC-MOD-006 (§ 5.1, § 5.4 steps 1 and 7, FA-03, § 11), SPEC-MOD-007 (§ 5.1, § 6, EF-01, EF-02, EF-08, ERR-02, ERR-03, CA-04, CA-06), SPEC-MOD-008 (§ 5.1, § 6, § 10, FA-02, FA-05, EF-02 to EF-07, RG-01 to RG-03, CA-01 to CA-06), SPEC-CMD-002 (§ 5.3, FA-01, ERR-01, CA-01)
 // Supports: SPEC-MOT-005 (loading per segment, files touched), SPEC-MOT-007 (reminder producers), SPEC-CFG-001, SPEC-CFG-007 (RG-02, FA-01), SPEC-OUT-008, SPEC-OUT-009 (EF-07), SPEC-PER-001 (CA-05), SPEC-PER-003, SPEC-PER-010, SPEC-MOD-003 (CA-02, CA-04, CA-05), SPEC-SES-001, SPEC-API-006, decisions D-03, D-05, D-09, D-10, D-13, gaps E-013, E-017, E-018, E-045, E-050, E-094
-// Supports: SPEC-CFG-003 (FA-02, file and native system authority checks before composition and every action), gaps E-124, E-125.
+// Supports: SPEC-CFG-003 (FA-02, CA-05, CA-06, file, enrolment and native system authority checks before composition and every action), gaps E-124 to E-126.
 // Composition root of a session: options → identity and settings → provider → engine → automated output, or the
 // interactive application (lot 5).
 
@@ -19,6 +19,7 @@ import { readSettingsFile, validateSettingValue, Settings, type ScopeSource } fr
 import { computeLocations } from "../config/locations";
 import { ManagedPolicyGuard, readManagedPolicy, type PolicyCapability } from "../config/managed-policy";
 import { managedSystemPolicy } from "../config/managed-system-policy";
+import { readPolicyEnrollment } from "../config/policy-enrollment";
 import type { RegistryPolicyReader } from "../platform/registry";
 import type { ProfilePolicyReader } from "../platform/managed-profile";
 import type { PolicyFileProtectionReader } from "../platform/policy-file";
@@ -339,20 +340,23 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   };
   const policyRefusal = () => policyGuard.check(policyCapability).length > 0 ? "Blocked: the mandatory organisation policy is invalid, missing or changed. Ask your administrator to verify it and restart the session." : undefined;
   const localPolicyDiagnostic = () => {
+    const enrollment = readPolicyEnrollment(policyLocations.managedSettingsFile, identity.resolved.policyAnchor, deps.policyFileProtection);
+    const filePolicy = readManagedPolicy(policyLocations.managedSettingsFile, identity.resolved.policyAnchor, undefined, deps.policyFileProtection);
     const preferences = Settings.load({ sources: [
-      { scope: "managed", name: policyLocations.managedSettingsFile, text: readManagedPolicy(policyLocations.managedSettingsFile, identity.resolved.policyAnchor, undefined, deps.policyFileProtection).settingsText },
+      { scope: "managed", name: policyLocations.managedSettingsFile, text: filePolicy.settingsText },
       ...(systemPolicy ? [{ scope: "managed" as const, name: systemPolicy.name, text: systemPolicy.read().settingsText }] : []),
       { scope: "user", name: policyLocations.userSettingsFile, text: readSettingsFile(policyLocations.userSettingsFile) },
     ], projectTrusted: false });
     return ["Diagnostic local de politique", `Source : ${policyLocations.managedSettingsFile}`, ...(systemPolicy ? [`Canal : ${systemPolicy.name}`, `Périmètre ${systemPolicy.kind === "registry" ? "du registre" : "du profil macOS"} : toutes les capacités d'agent si ce canal porte une politique obligatoire.`] : []),
-      `Périmètre : ${identity.resolved.policyAnchor?.perimeter === "remote" ? "sessions distantes ; fonctions locales conservées" : "inconnu ; fonctions d'agent bloquées"}`,
+      ...(enrollment.anchor ? [`Inscription : ${enrollment.name}`, `Organisation : ${enrollment.anchor.organizationId}`] : []),
+      `Périmètre : ${filePolicy.perimeter === "remote" ? "sessions distantes ; fonctions locales conservées" : "inconnu ; fonctions d'agent bloquées"}`,
       ...policyGuard.check().map((i) => i.message),
       "Faites vérifier la source par votre administrateur, puis redémarrez.", "Préférences d'interface valides :",
       ...SETTINGS.filter((s) => s.key.startsWith("ui.") && !s.secret && preferences.origin(s.key) !== "default").map((s) => `${s.key} = ${JSON.stringify(preferences.get(s.key))}`),
     ].join("\n");
   };
   // Administrative help and file validation are local recovery surfaces; no session is composed for them.
-  if (!serve && looksLikeSubcommand(argv) && argv.length > 1 && !argv.includes("--help") && !(argv[0] === "config" && argv[1] === "validate")) {
+  if (!serve && looksLikeSubcommand(argv) && argv.length > 1 && !argv.includes("--help") && !(argv[0] === "config" && ["validate", "recover-policy"].includes(argv[1]!))) {
     if (argv[0] === "diagnostic" && argv[1] === "validate" && policyGuard.check().length > 0) {
       streams.writeOut(localPolicyDiagnostic() + "\n");
       return policyGuard.check(policyCapability).length > 0 ? ExitCode.BlockedByPolicy : ExitCode.Success;
