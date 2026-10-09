@@ -1,18 +1,19 @@
 // Implements: SPEC-CFG-001 (CA-06), SPEC-CFG-003 (§ 5.7 points 2, 3, 5, 10, 11, CA-07, CA-13, CA-14, CA-16), SPEC-HOK-002 (CA-06)
-// Supports: SPEC-MOD-010 (CA-07, CA-09), SPEC-PER-001 (CA-30), SPEC-CFG-003 (Windows registry channel), gaps E-120 to E-123. Dynamic version adoption remains separate.
+// Supports: SPEC-MOD-010 (CA-07, CA-09), SPEC-PER-001 (CA-30), SPEC-CFG-003 (FA-02, protected system file and registry), gaps E-120 to E-124. Dynamic version adoption remains separate.
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import type { PolicyAnchor } from "../identity/resolver";
 import { parse, visit, type ParseError } from "jsonc-parser";
 import { buildSnapshot, fingerprintOf } from "../hooks/config";
 import { HOOK_EVENTS } from "../hooks/events";
 import { isRule, parseRule, type RuleDecision } from "../permissions/rules";
 import { fingerprint } from "../shared/fingerprint";
-import { flattenSettings, readSettingsFile, validateSettingValue, type ConfigIssue } from "./settings";
+import { flattenSettings, validateSettingValue, type ConfigIssue } from "./settings";
 import { SETTING_BY_KEY } from "./settings-schema";
 import { parseDuration } from "./units";
 import type { ManagedRegistry } from "./managed-registry";
+import { inspectPolicyFileProtection, type PolicyFileProtection, type PolicyFileProtectionReader } from "../platform/policy-file";
 
 const RULES: Readonly<Record<string, RuleDecision>> = {
   "permissions.allowRules": "allow", "permissions.askRules": "ask", "permissions.denyRules": "deny",
@@ -34,22 +35,48 @@ export interface PolicyValidation {
 const outsidePerimeter = (anchor: PolicyAnchor | undefined, capability: PolicyCapability | undefined) => anchor?.perimeter === "remote" && capability === "local";
 
 /** The file carries policy bytes; the distribution, not this file, supplies the authority. */
-function readPolicySource(file: string, anchor?: PolicyAnchor): { text?: string; issue?: ConfigIssue } {
-  if (!anchor) return { text: readSettingsFile(file) };
+function readPolicySource(file: string, anchor?: PolicyAnchor, protection: PolicyFileProtectionReader = inspectPolicyFileProtection): { text?: string; issue?: ConfigIssue; protection?: PolicyFileProtection } {
   const rejected = (reason: string): ConfigIssue => ({ code: "ERR-03", severity: "error", kind: "policy", scope: "managed",
-    message: `Politique obligatoire de l'organisation ${anchor.organizationId} : ${reason}. ${anchor.perimeter === "remote" ? "Périmètre distant ; sessions distantes bloquées." : "Périmètre inconnu ; fonctions d'agent bloquées."}` });
+    message: `${anchor ? `Politique obligatoire de l'organisation ${anchor.organizationId}` : `Source de politique gérée ${file}`} : ${reason}. ${anchor?.perimeter === "remote" ? "Périmètre distant ; sessions distantes bloquées." : "Périmètre inconnu ; fonctions d'agent bloquées."}` });
+  let fd: number | undefined;
+  let detected = false;
   try {
-    const bytes = readFileSync(file);
-    if (createHash("sha256").update(bytes).digest("hex") !== anchor.policySha256) return { issue: rejected("empreinte non autorisée par la distribution") };
-    return { text: bytes.toString("utf8") };
-  } catch {
+    const first = lstatSync(file);
+    detected = true;
+    if (!first.isFile() || first.isSymbolicLink()) return { issue: rejected("fichier ordinaire sans lien symbolique attendu") };
+    const before = protection(file);
+    if (before.error !== undefined || typeof before.writable !== "boolean") return { issue: rejected(`protection invérifiable (${before.error ?? "unavailable"})`) };
+    fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    const opened = fstatSync(fd);
+    const stamp = (stat: typeof first) => `${stat.dev}:${stat.ino}:${stat.mode}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+    if (!opened.isFile() || opened.size > 1024 * 1024 || stamp(first) !== stamp(opened)) return { issue: rejected("source non ordinaire, trop volumineuse ou remplacée pendant la lecture") };
+    const buffer = Buffer.alloc(opened.size + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const count = readSync(fd, buffer, length, buffer.length - length, null);
+      if (count === 0) break;
+      length += count;
+    }
+    if (length > 1024 * 1024) return { issue: rejected("source trop volumineuse") };
+    const bytes = buffer.subarray(0, length);
+    const after = protection(file);
+    if (after.error !== undefined || typeof after.writable !== "boolean" || stamp(opened) !== stamp(fstatSync(fd)) || stamp(opened) !== stamp(lstatSync(file))) return { issue: rejected("source ou protection modifiée pendant la lecture") };
+    if (anchor && createHash("sha256").update(bytes).digest("hex") !== anchor.policySha256) return { issue: rejected("empreinte non autorisée par la distribution") };
+    return { text: bytes.toString("utf8"), protection: { writable: before.writable || after.writable } };
+  } catch (error) {
+    if (!anchor && !detected && (error as NodeJS.ErrnoException).code === "ENOENT") return {};
     return { issue: rejected("source absente ou illisible") };
-  }
+  } finally { if (fd !== undefined) closeSync(fd); }
 }
 
-export function readManagedPolicy(file: string, anchor?: PolicyAnchor, capability?: PolicyCapability): PolicyValidation {
-  const source = readPolicySource(file, anchor);
-  const policy: PolicyValidation = source.issue ? { required: true, issues: [source.issue], settingsText: undefined } : validateManagedPolicy(source.text);
+export function readManagedPolicy(file: string, anchor?: PolicyAnchor, capability?: PolicyCapability, protection?: PolicyFileProtectionReader): PolicyValidation {
+  const source = readPolicySource(file, anchor, protection);
+  let policy: PolicyValidation = source.issue ? { required: true, issues: [source.issue], settingsText: undefined } : validateManagedPolicy(source.text);
+  if (source.protection?.writable) {
+    const required = policy.required || anchor !== undefined;
+    const issue: ConfigIssue = { code: "ERR-03", severity: required ? "error" : "warning", kind: "policy", scope: "managed", message: `Fichier géré modifiable sans autorité administrateur : ${file}.${required ? " Politique obligatoire invalide ; capacités encadrées bloquées." : " Faites protéger le fichier et ses parents par votre administrateur."}` };
+    policy = { ...policy, required, settingsText: required ? undefined : policy.settingsText, preferencesText: required ? undefined : policy.preferencesText, issues: [...policy.issues, issue] };
+  }
   if (!outsidePerimeter(anchor, capability)) return policy;
   return { required: false, issues: policy.issues.map((issue) => ({ ...issue, severity: "warning", message: `${issue.message} Sessions distantes indisponibles ; fonctions locales conservées.` })), settingsText: policy.preferencesText };
 }
@@ -169,22 +196,20 @@ export function validateManagedPolicy(text: string | undefined): PolicyValidatio
 export class ManagedPolicyGuard {
   readonly #file: string;
   readonly #anchor?: PolicyAnchor;
-  #text: string | undefined;
-  #validation: PolicyValidation;
+  readonly #protection?: PolicyFileProtectionReader;
   #observedDigest?: string;
   #changed = false;
   readonly #registry?: ManagedRegistry;
   readonly #registryDigest?: string;
   #registryChanged = false;
-  constructor(file: string, anchor?: PolicyAnchor, registry?: ManagedRegistry) {
+  constructor(file: string, anchor?: PolicyAnchor, registry?: ManagedRegistry, protection?: PolicyFileProtectionReader) {
     this.#registry = registry;
     this.#registryDigest = registry?.read().digest;
     this.#file = file;
     this.#anchor = anchor ? Object.freeze({ ...anchor }) : undefined;
-    const source = readPolicySource(file, this.#anchor);
-    this.#text = source.text;
-    this.#validation = source.issue ? { required: true, issues: [source.issue], settingsText: undefined } : validateManagedPolicy(source.text);
-    if (this.#validation.issues.length === 0) this.#observedDigest = this.#validation.digest;
+    this.#protection = protection;
+    const policy = readManagedPolicy(file, this.#anchor, undefined, protection);
+    if (!policy.issues.some((issue) => issue.severity === "error")) this.#observedDigest = policy.digest;
   }
   check(capability?: PolicyCapability): readonly ConfigIssue[] {
     const issues = this.#check();
@@ -195,14 +220,12 @@ export class ManagedPolicyGuard {
     return [...(outsidePerimeter(this.#anchor, capability) ? [] : issues), ...registryIssues];
   }
   #check(): readonly ConfigIssue[] {
-    const source = readPolicySource(this.#file, this.#anchor);
-    if (source.issue) return [source.issue];
-    const text = source.text;
-    if (text !== this.#text) { this.#text = text; this.#validation = validateManagedPolicy(text); }
-    if (this.#validation.issues.length > 0) return this.#validation.issues;
-    if (this.#observedDigest !== undefined && this.#observedDigest !== this.#validation.digest) this.#changed = true;
+    const policy = readManagedPolicy(this.#file, this.#anchor, undefined, this.#protection);
+    const errors = policy.issues.filter((issue) => issue.severity === "error");
+    if (errors.length > 0) return errors;
+    if (this.#observedDigest !== undefined && this.#observedDigest !== policy.digest) this.#changed = true;
     // Newly introduced restrictions also require restarting before they are adopted by the composed session.
-    if (this.#observedDigest === undefined && this.#validation.required) this.#changed = true;
+    if (this.#observedDigest === undefined && policy.required) this.#changed = true;
     if (this.#changed) return [{ code: "ERR-03", severity: "error", kind: "policy", scope: "managed", message: "La politique obligatoire a changé ou disparu ; session suspendue. Faites vérifier la source par votre administrateur, puis redémarrez." }];
     return [];
   }

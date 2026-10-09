@@ -6,7 +6,7 @@ import { runCli } from "../../src/headless/run";
 import { systemInfo } from "../../src/platform/system";
 import type { ModelProvider } from "../../src/providers/types";
 import type { Identity } from "../../src/identity/identity";
-import { captureStreams, loadCatalog, loadIdentity, TEST_USER_CONFIG, type Workspace } from "./env";
+import { captureStreams, loadCatalog, loadIdentity, TEST_USER_CONFIG, trustedPolicyFile, type Workspace } from "./env";
 import { fakeTerminal } from "./vterm";
 
 export const KEY = {
@@ -79,6 +79,7 @@ export function interactive(
     identity,
     catalog: loadCatalog(),
     managedDir: ws.managed,
+    policyFileProtection: trustedPolicyFile,
     providerFactory: o.provider ? () => o.provider! : undefined,
     signal: o.signal,
   }).then((code) => {

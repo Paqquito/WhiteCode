@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { cli, workspace } from "./helpers/env";
+import { cli, trustedPolicyFile, workspace } from "./helpers/env";
 import { productEnv, record } from "./helpers/hooks";
 import { ScriptedProvider } from "./helpers/scripted-provider";
 import { ManagedPolicyGuard, validateManagedPolicy } from "../src/config/managed-policy";
@@ -205,7 +205,7 @@ test("TECH — an optional managed copy does not erase the identical action of a
 test("TECH — only the mandatory projection suspends adoption; preferences and JSON formatting remain independent", () => {
   const ws = workspace();
   const path = ws.write("managed/policy.json", JSON.stringify({ permissions: { denyRules: ["run_shell"] }, ui: { history: { maxEntries: 100 } } }));
-  const guard = new ManagedPolicyGuard(path);
+  const guard = new ManagedPolicyGuard(path, undefined, undefined, trustedPolicyFile);
   ws.write("managed/policy.json", '{ // comment\n "ui": { "history": { "maxEntries": 200 } }, "permissions": { "denyRules": ["run_shell"] } }');
   expect(guard.check()).toEqual([]);
   ws.write("managed/policy.json", JSON.stringify({ permissions: { denyRules: [] } }));
@@ -265,7 +265,7 @@ test("TECH — a policy corrupted during the model response refuses the tool bef
 test("TECH — a queued tool is rechecked after the previous tool completes; completed work is reported accurately", async () => {
   const ws = workspace();
   const file = ws.write("managed/policy.json", JSON.stringify({ permissions: { denyRules: ["run_shell"] } }));
-  const guard = new ManagedPolicyGuard(file);
+  const guard = new ManagedPolicyGuard(file, undefined, undefined, trustedPolicyFile);
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
   let started!: () => void;

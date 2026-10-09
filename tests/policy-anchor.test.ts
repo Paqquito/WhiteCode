@@ -5,7 +5,7 @@ import { existsSync, readFileSync, unlinkSync, utimesSync, writeFileSync } from 
 import { join } from "node:path";
 import { Identity } from "../src/identity/identity";
 import { resolveIdentity } from "../src/identity/resolver";
-import { cli, ROOT, workspace } from "./helpers/env";
+import { cli, ROOT, trustedPolicyFile, workspace } from "./helpers/env";
 import { productEnv, record, PROJECT_DIR } from "./helpers/hooks";
 import { ScriptedProvider } from "./helpers/scripted-provider";
 import { SettingsReloader } from "../src/config/reload";
@@ -120,7 +120,7 @@ test("TECH — reloading rejects unauthorised managed bytes and retains approved
   const files: ScopeSource[] = [{ scope: "managed", name: path, text: POLICY }, { scope: "user", name: user, text: "{}" }];
   const current = Settings.load({ sources: files, projectTrusted: false });
   const warnings: string[] = [];
-  const reloader = new SettingsReloader({ files, fixed: [], base: { projectTrusted: false }, current, warn: (message) => warnings.push(message), policyAnchor: anchored().resolved.policyAnchor });
+  const reloader = new SettingsReloader({ files, fixed: [], base: { projectTrusted: false }, current, warn: (message) => warnings.push(message), policyAnchor: anchored().resolved.policyAnchor, policyFileProtection: trustedPolicyFile });
   ws.write("managed/policy.json", "{}");
   utimesSync(path, new Date(), new Date(Date.now() + 2000));
   expect(reloader.check()).toBeUndefined();

@@ -10,11 +10,14 @@ import { isResolveFailure, ModelCatalog, type ResolvedModel } from "../../src/pr
 import { runCli, type RunDependencies } from "../../src/headless/run";
 import type { StandardStreams } from "../../src/platform/io";
 import { systemInfo } from "../../src/platform/system";
+import type { PolicyFileProtectionReader } from "../../src/platform/policy-file";
 import type { ModelProvider } from "../../src/providers/types";
 import { NO_PROTECTED_LOCATIONS } from "../../src/permissions/paths";
 import type { ToolContext, ToolSettings } from "../../src/tools/types";
 
 export const ROOT = resolve(import.meta.dir, "../..");
+/** Virtual administrator-owned source; native file authority is tested separately. */
+export const trustedPolicyFile: PolicyFileProtectionReader = () => ({ writable: false });
 
 export function loadIdentity(file = "identity/dev.identity.json"): Identity {
   const result = resolveIdentityText(readFileSync(join(ROOT, file), "utf8"), { version: "0.1.0" });
@@ -167,6 +170,7 @@ export async function cli(
     identity,
     catalog: loadCatalog(),
     managedDir: ws.managed,
+    policyFileProtection: trustedPolicyFile,
     providerFactory: options.provider ? () => options.provider! : undefined,
     signal: options.signal,
     ...options.extra,

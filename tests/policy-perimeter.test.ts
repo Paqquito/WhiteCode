@@ -7,7 +7,7 @@ import { Identity } from "../src/identity/identity";
 import { resolveIdentity } from "../src/identity/resolver";
 import { ManagedPolicyGuard } from "../src/config/managed-policy";
 import { decide, type PermissionContext } from "../src/permissions/engine";
-import { cli, ROOT, workspace } from "./helpers/env";
+import { cli, ROOT, trustedPolicyFile, workspace } from "./helpers/env";
 import { PROJECT_DIR, productEnv, record } from "./helpers/hooks";
 import { ScriptedProvider } from "./helpers/scripted-provider";
 import { listeningEngine, RemoteHost } from "./helpers/remote";
@@ -75,7 +75,7 @@ test("SPEC-PER-001/CA-30 — a local model tool remains authorised; the remote p
   const provider = new ScriptedProvider([{ toolCalls: [{ name: "read_file", input: { path: join(ws.project, "input.txt") } }] }, { text: "done" }]);
   expect((await cli(["--non-interactive", "Read input.txt."], ws, { identity, provider })).code).toBe(0);
   expect(JSON.stringify(provider.requests[1]!.history)).toContain("LOCAL-CONTENT");
-  const guard = new ManagedPolicyGuard(join(ws.managed, "policy.json"), identity.resolved.policyAnchor);
+  const guard = new ManagedPolicyGuard(join(ws.managed, "policy.json"), identity.resolved.policyAnchor, undefined, trustedPolicyFile);
   const ctx: PermissionContext = { mode: "unrestricted", rules: [], sessionAllows: [], managedRulesOnly: false, cwd: ws.project, home: ws.home, platform: "windows", policyRefusal: guard.check("remote").length > 0 ? "Remote policy unavailable." : undefined };
   const decision = decide({ toolName: "read_file", subject: { kind: "paths", access: "read", paths: [join(ws.project, "input.txt")] }, flags: { readOnly: true, concurrencySafe: true, destructive: false, requiresPermission: false, openWorld: false }, available: true, hookDecision: "allow", contribution: "allow" }, ctx);
   expect(decision).toMatchObject({ kind: "deny", step: 1, reason: "Remote policy unavailable." });
