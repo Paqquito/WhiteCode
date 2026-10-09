@@ -1,5 +1,5 @@
 // Implements: SPEC-CFG-001 (CA-06), SPEC-CFG-003 (§ 5.7 points 2, 3, 5, 10, 11, CA-07, CA-13, CA-14, CA-16), SPEC-HOK-002 (CA-06)
-// Supports: SPEC-MOD-010 (CA-07, CA-09), SPEC-PER-001 (CA-30), SPEC-CFG-003 (FA-02, CA-05, CA-06, independent enrolment and native system channels), gaps E-120 to E-126. Dynamic version adoption remains separate.
+// Supports: SPEC-MOD-010 (CA-07, CA-09), SPEC-PER-001 (CA-30), SPEC-CFG-003 (FA-02, CA-05, CA-06, CA-08, independent enrolment, system channels and cache authority), gaps E-120 to E-127. Dynamic version adoption remains separate.
 
 import { readPolicySource } from "./protected-policy-source";
 import { readPolicyEnrollment } from "./policy-enrollment";
@@ -14,6 +14,7 @@ import { SETTING_BY_KEY } from "./settings-schema";
 import { parseDuration } from "./units";
 import type { ManagedSystemPolicy } from "./managed-system-policy";
 import type { PolicyFileProtectionReader } from "../platform/policy-file";
+import type { PolicyCacheSource } from "./policy-cache";
 
 const RULES: Readonly<Record<string, RuleDecision>> = {
   "permissions.allowRules": "allow", "permissions.askRules": "ask", "permissions.denyRules": "deny",
@@ -175,7 +176,12 @@ export class ManagedPolicyGuard {
   readonly #systemPolicy?: ManagedSystemPolicy;
   readonly #systemPolicyDigest?: string;
   #systemPolicyChanged = false;
-  constructor(file: string, anchor?: PolicyAnchor, systemPolicy?: ManagedSystemPolicy, protection?: PolicyFileProtectionReader) {
+  readonly #cachePolicy?: PolicyCacheSource;
+  readonly #cacheDigest?: string;
+  #cacheChanged = false;
+  constructor(file: string, anchor?: PolicyAnchor, systemPolicy?: ManagedSystemPolicy, protection?: PolicyFileProtectionReader, cachePolicy?: PolicyCacheSource) {
+    this.#cachePolicy = cachePolicy;
+    this.#cacheDigest = cachePolicy?.read().digest;
     this.#systemPolicy = systemPolicy;
     this.#systemPolicyDigest = systemPolicy?.read().digest;
     this.#file = file;
@@ -191,7 +197,11 @@ export class ManagedPolicyGuard {
     if (systemPolicy?.digest !== this.#systemPolicyDigest) this.#systemPolicyChanged = true;
     const systemIssues = systemPolicy?.issues.filter((issue) => issue.severity === "error") ?? [];
     if (this.#systemPolicyChanged && systemIssues.length === 0) systemIssues.push({ code: "ERR-03", severity: "error", kind: "policy", scope: "managed", message: `La politique obligatoire ${this.#systemPolicy?.kind === "registry" ? "du registre" : "du profil macOS"} a changé ou disparu ; session suspendue. Faites vérifier la source par votre administrateur, puis redémarrez.` });
-    return [...(outsidePerimeter(policy, capability) ? [] : policy.issues), ...systemIssues];
+    const cache = this.#cachePolicy?.read();
+    if (cache?.digest !== this.#cacheDigest) this.#cacheChanged = true;
+    const cacheIssues = cache?.issues.filter((issue) => issue.severity === "error") ?? [];
+    if (this.#cacheChanged && cacheIssues.length === 0) cacheIssues.push({ code: "ERR-04", severity: "error", kind: "policy", scope: "managed", message: "La politique en cache ou son autorisation a changé ou disparu ; session suspendue. Faites vérifier l'autorité par votre administrateur, puis redémarrez." });
+    return [...(outsidePerimeter(policy, capability) ? [] : policy.issues), ...systemIssues, ...(outsidePerimeter(cache, capability) ? [] : cacheIssues)];
   }
   #check(): Pick<PolicyValidation, "issues" | "perimeter"> {
     const policy = readManagedPolicy(this.#file, this.#anchor, undefined, this.#protection);

@@ -5,7 +5,7 @@
 //             SPEC-SES-004 (ERR-03, CA-01, CA-02), SPEC-SES-008 (FA-01, EF-03), SPEC-SES-012 (§ 5.3, EF-01, EF-03, ERR-01, ERR-02, CA-01, CA-02), SPEC-SES-015 (steps 2 to 4, FA-01),
 //             SPEC-MOD-001 (§ 5.1, EF-01, EF-04, ERR-01, FA-04 summary at exit, FA-06, CA-05), SPEC-MOD-006 (§ 5.1, § 5.4 steps 1 and 7, FA-03, § 11), SPEC-MOD-007 (§ 5.1, § 6, EF-01, EF-02, EF-08, ERR-02, ERR-03, CA-04, CA-06), SPEC-MOD-008 (§ 5.1, § 6, § 10, FA-02, FA-05, EF-02 to EF-07, RG-01 to RG-03, CA-01 to CA-06), SPEC-CMD-002 (§ 5.3, FA-01, ERR-01, CA-01)
 // Supports: SPEC-MOT-005 (loading per segment, files touched), SPEC-MOT-007 (reminder producers), SPEC-CFG-001, SPEC-CFG-007 (RG-02, FA-01), SPEC-OUT-008, SPEC-OUT-009 (EF-07), SPEC-PER-001 (CA-05), SPEC-PER-003, SPEC-PER-010, SPEC-MOD-003 (CA-02, CA-04, CA-05), SPEC-SES-001, SPEC-API-006, decisions D-03, D-05, D-09, D-10, D-13, gaps E-013, E-017, E-018, E-045, E-050, E-094
-// Supports: SPEC-CFG-003 (FA-02, CA-05, CA-06, file, enrolment and native system authority checks before composition and every action), gaps E-124 to E-126.
+// Supports: SPEC-CFG-003 (FA-02, CA-05, CA-06, CA-08, file, enrolment, cache and native authority checks before composition and every action), gaps E-124 to E-127.
 // Composition root of a session: options → identity and settings → provider → engine → automated output, or the
 // interactive application (lot 5).
 
@@ -20,6 +20,7 @@ import { computeLocations } from "../config/locations";
 import { ManagedPolicyGuard, readManagedPolicy, type PolicyCapability } from "../config/managed-policy";
 import { managedSystemPolicy } from "../config/managed-system-policy";
 import { readPolicyEnrollment } from "../config/policy-enrollment";
+import { policyCacheSource } from "../config/policy-cache";
 import type { RegistryPolicyReader } from "../platform/registry";
 import type { ProfilePolicyReader } from "../platform/managed-profile";
 import type { PolicyFileProtectionReader } from "../platform/policy-file";
@@ -331,7 +332,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const policyEnv = new EnvironmentView(identity.get("ENV_PREFIX"), deps.environment);
   const policyLocations = computeLocations(identity, policyEnv, deps.cwd, system, deps.managedDir);
   const systemPolicy = managedSystemPolicy(identity, system, deps.registryPolicyReader, deps.profilePolicyReader);
-  const policyGuard = new ManagedPolicyGuard(policyLocations.managedSettingsFile, identity.resolved.policyAnchor, systemPolicy, deps.policyFileProtection);
+  const cachePolicy = policyCacheSource(policyLocations.managedSettingsFile, policyLocations.configDir, identity.resolved.policyAnchor, deps.policyFileProtection, () => (deps.now?.() ?? new Date()).getTime());
+  const policyGuard = new ManagedPolicyGuard(policyLocations.managedSettingsFile, identity.resolved.policyAnchor, systemPolicy, deps.policyFileProtection, cachePolicy);
   let policyCapability: PolicyCapability = deps.policyCapability ?? "local";
   if (serve?.transport === "network" || argv[0] === "remote-access" || argv[0] === "ssh-session") policyCapability = "remote";
   const assertPolicy = () => {
@@ -342,13 +344,16 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const localPolicyDiagnostic = () => {
     const enrollment = readPolicyEnrollment(policyLocations.managedSettingsFile, identity.resolved.policyAnchor, deps.policyFileProtection);
     const filePolicy = readManagedPolicy(policyLocations.managedSettingsFile, identity.resolved.policyAnchor, undefined, deps.policyFileProtection);
+    const cache = cachePolicy.read();
     const preferences = Settings.load({ sources: [
       { scope: "managed", name: policyLocations.managedSettingsFile, text: filePolicy.settingsText },
       ...(systemPolicy ? [{ scope: "managed" as const, name: systemPolicy.name, text: systemPolicy.read().settingsText }] : []),
+      { scope: "managed", name: cachePolicy.name, text: cache.settingsText },
       { scope: "user", name: policyLocations.userSettingsFile, text: readSettingsFile(policyLocations.userSettingsFile) },
     ], projectTrusted: false });
     return ["Diagnostic local de politique", `Source : ${policyLocations.managedSettingsFile}`, ...(systemPolicy ? [`Canal : ${systemPolicy.name}`, `Périmètre ${systemPolicy.kind === "registry" ? "du registre" : "du profil macOS"} : toutes les capacités d'agent si ce canal porte une politique obligatoire.`] : []),
       ...(enrollment.anchor ? [`Inscription : ${enrollment.name}`, `Organisation : ${enrollment.anchor.organizationId}`] : []),
+      ...(cache.required || cache.issues.length > 0 ? [`Cache : ${cachePolicy.name}`, `Autorisation : ${cachePolicy.authorizationFile}`, `Périmètre du cache : ${cache.perimeter === "remote" ? "sessions distantes ; fonctions locales conservées" : "inconnu ; toutes les capacités d'agent"}`] : []),
       `Périmètre : ${filePolicy.perimeter === "remote" ? "sessions distantes ; fonctions locales conservées" : "inconnu ; fonctions d'agent bloquées"}`,
       ...policyGuard.check().map((i) => i.message),
       "Faites vérifier la source par votre administrateur, puis redémarrez.", "Préférences d'interface valides :",
@@ -395,7 +400,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   if (!serve && looksLikeSubcommand(argv)) {
     const env = new EnvironmentView(identity.get("ENV_PREFIX"), deps.environment);
     identity.applyOverrides(env.identityOverrides(identity.overridableCandidates));
-    return runSubcommand(argv, { streams, identity, catalog: deps.catalog, env, cwd: deps.cwd, system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, profilePolicyReader: deps.profilePolicyReader, policyFileProtection: deps.policyFileProtection });
+    return runSubcommand(argv, { streams, identity, catalog: deps.catalog, env, cwd: deps.cwd, system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, profilePolicyReader: deps.profilePolicyReader, policyFileProtection: deps.policyFileProtection, cachePolicy });
   }
   const parsed = parseCommandLine(argv);
   // SPEC-MOD-010 EF-05: the duration of each phase of the start-up, for the journal.
@@ -469,6 +474,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       registryPolicyReader: deps.registryPolicyReader,
       profilePolicyReader: deps.profilePolicyReader,
       policyFileProtection: deps.policyFileProtection,
+      cachePolicy,
       cliSource,
       cliValues,
       allowedScopes,
@@ -512,7 +518,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // SPEC-CFG-005: the settings files are checked before each request; `liveSettings` holds the effective values.
   let liveSettings = settings;
   const reloader = new SettingsReloader({
-    files: loaded.sources.filter((source) => source.scope !== "cli" && source.name !== systemPolicy?.name),
+    files: loaded.sources.filter((source) => source.scope !== "cli" && source.name !== systemPolicy?.name && source.name !== cachePolicy.name),
     fixed: cliSource ? [cliSource] : [],
     base: { environment: env.settingsLayer(), cliValues, allowedScopes, projectTrusted: trust.trusted },
     current: settings,
@@ -522,6 +528,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     policyCapability,
     systemPolicy,
     systemPolicyText: loaded.sources.find((source) => source.name === systemPolicy?.name)?.text,
+    cachePolicy,
+    cachePolicyText: loaded.sources.find((source) => source.name === cachePolicy.name)?.text,
   });
   // SPEC-MOD-011 ERR-04: options forbidden by the managed policy.
   const forbidden = firstPass.get<string[]>("policy.forbiddenOptions").map((o) => o.replace(/^--/, ""));
@@ -3082,9 +3090,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         const states: Record<string, string> = { error: "en échec", unavailable: "indisponible", pending: "en attente", connecting: "connexion en cours" };
         const systemPolicyValue = systemPolicy?.read();
         const filePolicy = readManagedPolicy(locations.managedSettingsFile, identity.resolved.policyAnchor, undefined, deps.policyFileProtection);
+        const cache = cachePolicy.read(policyCapability);
         const extra: Finding[] = [
           ...filePolicy.issues.map((issue): Finding => ({ status: issue.severity, area: "Fichier de politique", message: issue.message, location: locations.managedSettingsFile })),
           ...(systemPolicyValue?.issues.map((issue): Finding => ({ status: issue.severity, area: systemPolicy?.kind === "registry" ? "Politique de registre" : "Politique de profil macOS", message: issue.message, location: systemPolicy?.name })) ?? []),
+          ...cache.issues.map((issue): Finding => ({ status: issue.severity, area: "Cache de politique", message: issue.message, location: cachePolicy.name })),
           ...(connectors?.status() ?? []).map((s): Finding =>
             s.state === "connected" ? { status: "ok", area: "Connecteurs", message: `${s.name} connecté`, location: s.source } : { status: s.state === "error" || s.state === "unavailable" ? "error" : "warning", area: "Connecteurs", message: `${s.name} ${states[s.state] ?? s.state}${s.error ? ` : ${s.error}` : ""}`, location: s.source, fix: { description: `/connectors reconnect ${s.name}` } },
           ),
@@ -3094,7 +3104,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           ...maskedRules(rules).map((m): Finding => ({ status: "warning", area: "Règles d'accès", message: describeMasking(m, ruleSource) })), // SPEC-PER-012 § 5.2
         ];
         const findings = await runDiagnostics(
-          diagnosticInputs({ sources: [...scopeSources(locations).map((source) => source.scope === "managed" ? { ...source, text: filePolicy.settingsText } : source), ...(systemPolicy ? [{ scope: "managed" as const, name: systemPolicy.name, text: systemPolicyValue?.settingsText }] : [])], settings: liveSettings, configDir: locations.configDir, sessionsDir: locations.sessionsDir, platform: system.platform }),
+          diagnosticInputs({ sources: [...scopeSources(locations).map((source) => source.scope === "managed" ? { ...source, text: filePolicy.settingsText } : source), ...(systemPolicy ? [{ scope: "managed" as const, name: systemPolicy.name, text: systemPolicyValue?.settingsText }] : []), ...(cache.required || cache.issues.length > 0 ? [{ scope: "managed" as const, name: cachePolicy.name, text: cache.settingsText }] : [])], settings: liveSettings, configDir: locations.configDir, sessionsDir: locations.sessionsDir, platform: system.platform }),
           extra,
         );
         const lines = renderDiagnostics(findings, `Diagnostic — ${identity.get("PRODUCT")} ${identity.version}`);

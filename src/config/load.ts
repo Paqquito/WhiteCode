@@ -1,5 +1,5 @@
 // Implements: SPEC-CFG-001 (§ 5.1 sources by scope, § 5.3 loading with the project trust), SPEC-PER-016 (trust decision before the project settings)
-// Supports: SPEC-CFG-003 (CA-02, CA-07, CA-13, CA-14, FA-02, validate file and native system channels as a whole), gaps E-120 to E-125.
+// Supports: SPEC-CFG-003 (CA-02, CA-07, CA-08, CA-13, CA-14, FA-02, validate file, system channels and offline cache), gaps E-120 to E-127.
 // Shared by the agent run and the administration sub-commands.
 
 import type { Identity } from "../identity/identity";
@@ -8,6 +8,7 @@ import type { EnvironmentView } from "./environment";
 import { computeLocations, type Locations } from "./locations";
 import { readManagedPolicy, type PolicyCapability } from "./managed-policy";
 import { managedSystemPolicy, type ManagedSystemPolicy } from "./managed-system-policy";
+import { policyCacheSource, type PolicyCacheSource } from "./policy-cache";
 import type { RegistryPolicyReader } from "../platform/registry";
 import type { ProfilePolicyReader } from "../platform/managed-profile";
 import type { PolicyFileProtectionReader } from "../platform/policy-file";
@@ -25,6 +26,7 @@ export interface LoadRequest {
   readonly profilePolicyReader?: ProfilePolicyReader;
   readonly policyFileProtection?: PolicyFileProtectionReader;
   readonly policyCapability?: PolicyCapability;
+  readonly cachePolicy?: PolicyCacheSource;
   /** `cli` scope source (`--config-source`). */
   readonly cliSource?: ScopeSource;
   readonly cliValues?: Record<string, unknown>;
@@ -34,6 +36,7 @@ export interface LoadRequest {
 }
 
 export interface LoadedConfiguration {
+  readonly cachePolicy: PolicyCacheSource;
   readonly systemPolicy?: ManagedSystemPolicy;
   readonly locations: Locations;
   readonly sources: readonly ScopeSource[];
@@ -62,10 +65,14 @@ export function loadConfiguration(r: LoadRequest): LoadedConfiguration {
   const systemPolicy = managedSystemPolicy(r.identity, r.system, r.registryPolicyReader, r.profilePolicyReader);
   const systemPolicyValue = systemPolicy?.read();
   if (systemPolicy) validatedSources.push({ scope: "managed", name: systemPolicy.name, text: systemPolicyValue?.settingsText });
+  const cachePolicy = r.cachePolicy ?? policyCacheSource(locations.managedSettingsFile, locations.configDir, r.identity.resolved.policyAnchor, r.policyFileProtection);
+  const cacheValue = cachePolicy.read(r.policyCapability ?? "local");
+  if (cacheValue.required || cacheValue.issues.length > 0 || cacheValue.settingsText !== undefined) validatedSources.push({ scope: "managed", name: cachePolicy.name, text: cacheValue.settingsText });
   const loadOptions = { sources: validatedSources, environment: r.env.settingsLayer(), cliValues: r.cliValues ?? {}, allowedScopes: r.allowedScopes };
   const firstPass = Settings.load({ ...loadOptions, projectTrusted: false });
   firstPass.issues.push(...policy.issues);
   firstPass.issues.push(...(systemPolicyValue?.issues ?? []));
+  firstPass.issues.push(...cacheValue.issues);
   const trust = decideTrust({
     projectRoot: locations.projectRoot,
     userState: readUserState(locations.userStateFile),
@@ -76,5 +83,6 @@ export function loadConfiguration(r: LoadRequest): LoadedConfiguration {
   const settings = Settings.load({ ...loadOptions, projectTrusted: trust.trusted });
   settings.issues.push(...policy.issues);
   settings.issues.push(...(systemPolicyValue?.issues ?? []));
-  return { locations, sources: validatedSources, firstPass, settings, trust, systemPolicy };
+  settings.issues.push(...cacheValue.issues);
+  return { locations, sources: validatedSources, firstPass, settings, trust, systemPolicy, cachePolicy };
 }

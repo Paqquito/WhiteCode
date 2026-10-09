@@ -1,7 +1,7 @@
 // Implements: SPEC-CFG-005 (§ 5.3 steps 1 to 5, FA-02, FA-03, EF-01 to EF-04, ERR-01, CA-01 to CA-03)
 // Detection of changes in the settings files during a session: checked before each request (a periodic check, which
 // also covers the file systems without change notification, ERR-01); an invalid file keeps its last valid version.
-// Supports: SPEC-CFG-003 (CA-02, CA-13, CA-14, FA-02, macOS profile reload), gaps E-121 to E-125: unauthorised managed bytes never enter the reloaded configuration.
+// Supports: SPEC-CFG-003 (CA-02, CA-08, CA-13, CA-14, FA-02, profile and offline cache reload), gaps E-121 to E-127: unauthorised managed bytes never enter the reloaded configuration.
 
 import { statSync } from "node:fs";
 import { parse, type ParseError } from "jsonc-parser";
@@ -11,6 +11,7 @@ import { readManagedPolicy, type PolicyCapability } from "./managed-policy";
 import type { PolicyAnchor } from "../identity/resolver";
 import type { ManagedSystemPolicy } from "./managed-system-policy";
 import type { PolicyFileProtectionReader } from "../platform/policy-file";
+import type { PolicyCacheSource } from "./policy-cache";
 
 export interface ReloadResult {
   readonly settings: Settings;
@@ -47,9 +48,13 @@ export class SettingsReloader {
   #current: Settings;
   readonly #systemPolicy?: ManagedSystemPolicy;
   #systemPolicyText?: string;
+  readonly #cachePolicy?: PolicyCacheSource;
+  #cachePolicyText?: string;
 
   /** `files`: the sources read from disk (managed, user, project, local); `fixed`: the others (`--config-source`). */
-  constructor(o: { files: readonly ScopeSource[]; fixed: readonly ScopeSource[]; base: Omit<LoadOptions, "sources">; current: Settings; warn: (message: string) => void; policyAnchor?: PolicyAnchor; policyCapability?: PolicyCapability; policyFileProtection?: PolicyFileProtectionReader; systemPolicy?: ManagedSystemPolicy; systemPolicyText?: string }) {
+  constructor(o: { files: readonly ScopeSource[]; fixed: readonly ScopeSource[]; base: Omit<LoadOptions, "sources">; current: Settings; warn: (message: string) => void; policyAnchor?: PolicyAnchor; policyCapability?: PolicyCapability; policyFileProtection?: PolicyFileProtectionReader; systemPolicy?: ManagedSystemPolicy; systemPolicyText?: string; cachePolicy?: PolicyCacheSource; cachePolicyText?: string }) {
+    this.#cachePolicy = o.cachePolicy;
+    this.#cachePolicyText = o.cachePolicyText;
     this.#systemPolicy = o.systemPolicy;
     this.#systemPolicyText = o.systemPolicyText;
     this.#files = o.files.map((f) => ({ ...f }));
@@ -71,6 +76,13 @@ export class SettingsReloader {
   check(): ReloadResult | undefined {
     let touched = false;
     const scopes: string[] = [];
+    const cache = this.#cachePolicy?.read(this.#policyCapability);
+    for (const issue of cache?.issues ?? []) this.#warn(issue.message);
+    if (cache && !cache.issues.some((issue) => issue.severity === "error") && cache.settingsText !== this.#cachePolicyText) {
+      this.#cachePolicyText = cache.settingsText;
+      touched = true;
+      scopes.push("managed");
+    }
     const systemPolicy = this.#systemPolicy?.read();
     if (systemPolicy?.issues.some((issue) => issue.severity === "error")) {
       for (const issue of systemPolicy.issues) this.#warn(issue.message);
@@ -103,7 +115,7 @@ export class SettingsReloader {
       scopes.push(f.scope);
     }
     if (!touched) return undefined;
-    const next = Settings.load({ ...this.#base, sources: [...this.#files, ...this.#fixed, ...(this.#systemPolicy ? [{ scope: "managed" as const, name: this.#systemPolicy.name, text: this.#systemPolicyText }] : [])] });
+    const next = Settings.load({ ...this.#base, sources: [...this.#files, ...this.#fixed, ...(this.#systemPolicy ? [{ scope: "managed" as const, name: this.#systemPolicy.name, text: this.#systemPolicyText }] : []), ...(this.#cachePolicy ? [{ scope: "managed" as const, name: this.#cachePolicy.name, text: this.#cachePolicyText }] : [])] });
     const changed = SETTINGS.map((d) => d.key).filter((k) => JSON.stringify(next.get(k)) !== JSON.stringify(this.#current.get(k)));
     this.#current = next;
     return { settings: next, changed, scopes };

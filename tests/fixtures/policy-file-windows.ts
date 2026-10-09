@@ -1,7 +1,7 @@
 // Only this child restricts its own token; no login, elevation or machine ACL change.
 import { dlopen, ptr } from "bun:ffi";
 import { createHash } from "node:crypto";
-import { chmodSync } from "node:fs";
+import { chmodSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { cli, workspace } from "../helpers/env";
 import { inspectPolicyFileProtection } from "../../src/platform/policy-file";
@@ -37,8 +37,15 @@ try {
   ws.write("managed/enrollment.json", JSON.stringify({ schemaVersion: 1, organizationId: "native-enrolment", policySha256: createHash("sha256").update("{}").digest("hex") }));
   const enrolled = await cli(["--non-interactive", "Read the summary."], ws, { extra: { policyFileProtection: inspectPolicyFileProtection } });
   const recovery = await cli(["config", "recover-policy", file], ws, { extra: { policyFileProtection: inspectPolicyFileProtection } });
+  unlinkSync(join(ws.managed, "enrollment.json"));
+  const envelope = JSON.stringify({ schemaVersion: 1, organizationId: "native-cache", perimeter: "all", settings: "{}" });
+  ws.write("home/config/remote-policy-cache.json", envelope);
+  ws.write("managed/cache-authorization.json", JSON.stringify({ schemaVersion: 1, organizationId: "native-cache", perimeter: "all", cacheSha256: createHash("sha256").update(envelope).digest("hex"),
+    offlineAllowed: true, validFrom: new Date(Date.now() - 3600_000).toISOString(), validUntil: new Date(Date.now() + 3600_000).toISOString(), revoked: false }));
+  const cache = await cli(["--non-interactive", "Read the summary."], ws, { extra: { policyFileProtection: inspectPolicyFileProtection } });
+  const cacheValidation = await cli(["config", "validate", "--scope", "managed"], ws, { extra: { policyFileProtection: inspectPolicyFileProtection } });
   checked(security.symbols.RevertToSelf());
-  console.log(JSON.stringify({ ordinary, readonly, protectedFile, mandatory, validation, enrolled, recovery }));
+  console.log(JSON.stringify({ ordinary, readonly, protectedFile, mandatory, validation, enrolled, recovery, cache, cacheValidation }));
 } finally {
   checked(security.symbols.RevertToSelf());
   chmodSync(file, 0o644);
