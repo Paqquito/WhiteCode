@@ -7,6 +7,7 @@ import { runToCompletion } from "../src/platform/process";
 import { findExecutable } from "../src/platform/system";
 import { cli, loadIdentity, testModel, workspace } from "./helpers/env";
 import { ScriptedProvider } from "./helpers/scripted-provider";
+import { sanitizeRemoteUrl } from "../src/engine/repository-state";
 
 const identity = loadIdentity();
 const model = testModel("default");
@@ -105,16 +106,17 @@ describe("SPEC-MOT-045 behavior contract", () => {
 });
 
 describe("SPEC-MOT-003 repository state and budget", () => {
-  test("SPEC-MOT-003/CA-01 — a session in a Git repository: the repository section gives the current branch and the last commits", async () => {
+  test("SPEC-MOT-003/CA-01 SPEC-INT-017/CA-01 — repository context includes a sanitized remote, branch and last commits", async () => {
     const ws = workspace();
     const git = findExecutable("git");
-    if (!git) return; // Git is present on every CI runner
+    if (!git) throw new Error("Git is required to validate the repository criterion.");
     const env = { ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => typeof v === "string")) as Record<string, string>, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.test", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.test" };
     const g = (...args: string[]) => runToCompletion(git, args, { cwd: ws.project, env, timeoutMs: 10_000 });
     g("init", "-b", "feature-x");
     ws.write("project/a.txt", "a\n");
     g("add", "a.txt");
     g("commit", "-m", "Add the first file");
+    g("remote", "add", "origin", "https://fixture-user:FAKE-URL-TOKEN@example.invalid/project.git?access_token=FAKE-QUERY#FAKE-FRAGMENT");
     ws.write("project/b.txt", "b\n");
     const provider = new ScriptedProvider([{ text: "ok" }]);
     await cli(["--non-interactive", "x"], ws, { provider, env: { PATH: process.env["PATH"] ?? "" } });
@@ -123,8 +125,19 @@ describe("SPEC-MOT-003 repository state and budget", () => {
     expect(repo.text).toContain("- Current branch: feature-x");
     expect(repo.text).toContain("Add the first file");
     expect(repo.text).toContain("?? b.txt");
+    expect(repo.text).toContain("https://example.invalid/project.git");
+    for (const secret of ["fixture-user", "FAKE-URL-TOKEN", "FAKE-QUERY", "FAKE-FRAGMENT"]) expect(JSON.stringify(provider.requests[0]!.system)).not.toContain(secret);
     expect(repo.cacheBoundary).toBeUndefined(); // variable part
   }, 30_000);
+
+  test("SPEC-INT-017/CA-02 — startup outside Git explicitly says so in the environment context", async () => {
+    const ws = workspace();
+    const provider = new ScriptedProvider([{ text: "Finished." }]);
+    const result = await cli(["--non-interactive", "Work."], ws, { provider, env: { PATH: process.env["PATH"] ?? "" } });
+    expect(result.code).toBe(0);
+    expect(provider.requests[0]!.system.find((b) => b.text.startsWith("# Environment"))?.text).toContain("not a Git repository");
+    expect(provider.requests[0]!.system.some((b) => b.text.startsWith("# Repository state"))).toBe(false);
+  });
 
   test("SPEC-MOT-003/CA-05 — a budget of 5,000 tokens and 200 skills: descriptions are shortened and the size fits the budget", () => {
     const skills: SectionProvider = {
@@ -149,6 +162,13 @@ describe("SPEC-MOT-003 repository state and budget", () => {
     expect(section.text).toContain("…");
     expect(built.warnings).toEqual([]);
   });
+});
+
+test("TECH — remote URL sanitizing rejects opaque and ambiguous syntax while preserving recognized locations", () => {
+  for (const remote of ["git:FAKE-TOKEN@example.invalid:project.git", "git@FAKE-TOKEN@example.invalid:project.git", "ssh:FAKE-TOKEN@example.invalid", "file:FAKE-TOKEN"]) expect(sanitizeRemoteUrl(remote)).toBeUndefined();
+  expect(sanitizeRemoteUrl("git@example.invalid:project.git?token=FAKE#FAKE")).toBe("example.invalid:project.git");
+  expect(sanitizeRemoteUrl("ssh://user:FAKE@example.invalid/project.git?FAKE#FAKE")).toBe("ssh://example.invalid/project.git");
+  expect(sanitizeRemoteUrl("file:///work/project.git")).toBe("file:///work/project.git");
 });
 
 describe("SPEC-MOT-045 variants", () => {

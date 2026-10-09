@@ -1,6 +1,7 @@
 // Implements: SPEC-CAD-002 (EF-40 to EF-42, FA-02, RG-01, RG-03, ERR-13, ERR-14)
 // Read-only access to the resolved identity, with the runtime overrides allowed by RG-03.
 // Supports: SPEC-CFG-003 (§ 5.7 points 2, 3), gap E-121: runtime overrides cannot replace the distribution anchor.
+// Supports: SPEC-CAD-002 (CA-19: explicit language fallback warning), gap E-133.
 
 import { isOverridable, isServiceUrl, MODEL_TIERS, OVERRIDABLE_VARIABLES, type ModelTier } from "./runtime-catalog";
 import type { IdentityValue, ModelTierValue, ResolvedIdentity } from "./resolver";
@@ -11,7 +12,7 @@ export interface IdentityOverride {
 }
 
 export interface IdentityWarning {
-  readonly code: "ERR-13" | "ERR-14";
+  readonly code: "ERR-09" | "ERR-13" | "ERR-14";
   readonly message: string;
 }
 
@@ -46,6 +47,10 @@ export class Identity {
     if (override) return override.value;
     const entry = this.#resolved.values[name];
     if (!entry) throw new Error(`Identity variable not defined: ${name}`);
+    if (language && typeof entry.value !== "string" && entry.value[language] === undefined) {
+      const message = `Pas de valeur en ${language} pour ${name}, utilisation de ${this.defaultLanguage}.`;
+      if (!this.warnings.some((w) => w.code === "ERR-09" && w.message === message)) this.warnings.push({ code: "ERR-09", message });
+    }
     return pickLanguage(entry.value, language ?? this.#resolved.defaultLanguage, this.#resolved.defaultLanguage);
   }
 
@@ -110,7 +115,7 @@ export class Identity {
 
 export function pickLanguage(value: IdentityValue, language: string, defaultLanguage: string): string {
   if (typeof value === "string") return value;
-  return value[language] ?? value[language.split("-")[0] ?? ""] ?? value[defaultLanguage] ?? Object.values(value)[0] ?? "";
+  return value[language] ?? value[defaultLanguage] ?? Object.values(value)[0] ?? "";
 }
 
 function isSecureUrl(value: string): boolean {

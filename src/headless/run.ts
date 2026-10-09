@@ -40,6 +40,7 @@ import { builtinSkills } from "../skills/builtin";
 import { fill as fillTemplate } from "../commands/create-instructions";
 import { createInstructionsRequest, parseChoices, SETUP_CHOICES, type SetupChoice } from "../commands/create-instructions";
 import { renderDiagnostics, runDiagnostics, type Finding } from "../admin/diagnostic";
+import { identityFindings } from "../identity/diagnostic";
 import { readUserState, updateUserState } from "../config/trust";
 import { FallbackPolicy } from "../engine/fallback";
 import { buildSystemInstructions, estimateTokens, RequiredSectionUnavailable } from "../engine/system-instructions";
@@ -422,6 +423,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     phaseStart = t;
   };
   const opt = (name: string) => parsed.options.get(name);
+  let env = new EnvironmentView(identity.get("ENV_PREFIX"), deps.environment);
+  identity.applyOverrides(env.identityOverrides(identity.overridableCandidates));
   if (["control-listen", "control-connect", "remote-session", "reopen-remote"].some((name) => parsed.options.has(name))) policyCapability = "remote";
 
   if (opt("help")) {
@@ -454,9 +457,6 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   if (undelivered.length > 0) throw new RunError(`Option non disponible dans cette version : ${undelivered.join(", ")}.`, ExitCode.UsageOrConfiguration);
 
   // Environment and identity overrides (SPEC-CAD-002 FA-02).
-  let env = new EnvironmentView(identity.get("ENV_PREFIX"), deps.environment);
-  identity.applyOverrides(env.identityOverrides(identity.overridableCandidates));
-
   const cwdOption = opt("cwd");
   const cwd = typeof cwdOption === "string" ? absolute(cwdOption, deps.cwd) : deps.cwd;
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new RunError(`Dossier de travail introuvable : ${cwd}.`, ExitCode.UsageOrConfiguration);
@@ -1397,9 +1397,12 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   debug.log("config", "settings loaded", { trust: trust.source, mode: modeState.mode, model: resolvedModel.id, provider: providerId });
 
   // Repository state, captured at the start of each segment (SPEC-MOT-003 EF-04, Q-01, ENF-02); a failure is only logged (ERR-01).
+  let repositoryAbsent = false;
   const captureRepository = (): string | undefined => {
+    repositoryAbsent = false;
     if (!settings.get<boolean>("context.gitStatus.enabled")) return undefined;
     const capture = captureGitState(findExecutable("git"), cwd, env.childEnvironment({}));
+    repositoryAbsent = capture.isRepository === false;
     if (capture.problem) debug.log("context", "repository state unavailable", { reason: capture.problem });
     return capture.text;
   };
@@ -1444,6 +1447,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       projectInstructions: loadProjectInstructions(),
       customInstructions,
       gitState: minimal ? undefined : captureRepository(),
+      repositoryAbsent: !minimal && repositoryAbsent,
       identity,
       variant: "main",
       nonInteractive,
@@ -2079,6 +2083,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         dialogGuardMs: DIALOG_GUARD_MS,
       },
       status: () => ({ mode: modeState.mode, model: minimal ? `${currentModel.id} · session minimale` : currentModel.id }),
+      reducedMotion: settings.get<boolean>("ui.reducedMotion"),
       // SPEC-PER-003 EF-03, SPEC-PER-017 § 5.3 step 3: `unrestricted` is entered the first time only after its warning is accepted.
       cycleMode: () =>
         void (async () => {
@@ -3164,6 +3169,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         const filePolicy = readManagedPolicy(locations.managedSettingsFile, identity.resolved.policyAnchor, undefined, deps.policyFileProtection);
         const cache = cachePolicy.read(policyCapability);
         const extra: Finding[] = [
+          ...identityFindings(identity),
           ...filePolicy.issues.map((issue): Finding => ({ status: issue.severity, area: "Fichier de politique", message: issue.message, location: locations.managedSettingsFile })),
           ...(systemPolicyValue?.issues.map((issue): Finding => ({ status: issue.severity, area: systemPolicy?.kind === "registry" ? "Politique de registre" : "Politique de profil macOS", message: issue.message, location: systemPolicy?.name })) ?? []),
           ...cache.issues.map((issue): Finding => ({ status: issue.severity, area: "Cache de politique", message: issue.message, location: cachePolicy.name })),
@@ -4421,3 +4427,4 @@ function imposedVariables(byScope: ReadonlyArray<{ origin: string; value: unknow
   return out;
 }
 
+// Supports: SPEC-CAD-002 (CA-12, CA-14), SPEC-INT-017 (CA-01, CA-02), SPEC-IHM-038 (CA-02), gap E-133.

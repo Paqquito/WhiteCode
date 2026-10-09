@@ -49,6 +49,7 @@ const enumOf = (values: readonly string[]) => Type.Union(values.map((v) => Type.
 const mode = () => enumOf(PERMISSION_MODES);
 
 export const SETTINGS: readonly SettingDef[] = [
+  { key: "ui.reducedMotion", schema: bool(), default: false, scopes: [U], owner: "SPEC-IHM-038" },
   // Models, thinking and effort
   { key: "models.selected", schema: str(), scopes: [U, P, G, C], owner: "SPEC-MOT-001" },
   // Tier alias → model identifier (SPEC-API-007); how each developer maps the neutral tiers (gap E-040).

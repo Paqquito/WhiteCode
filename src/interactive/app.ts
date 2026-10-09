@@ -2,6 +2,7 @@
 // The interactive application: input area, conversation flow, temporary panels, status line. It turns keys into actions,
 // keeps the draft, the queue of messages and the stashed drafts, shows the permission dialog in a fixed zone, and hands
 // the messages to the session one at a time.
+// Supports: SPEC-IHM-038 (EF-03, CA-02: no waiting animation in reduced motion).
 
 import type { Terminal } from "../platform/terminal";
 import type { ApprovalRequest, HumanAnswer, HumanApprovalChannel } from "../permissions/resolver";
@@ -111,6 +112,7 @@ export const EXIT_COMMAND = /^\s*\/(exit|quit)\s*$/;
 const SCOPE_LABEL: Readonly<Record<(typeof RULE_SCOPES)[number], string>> = { session: "session", local: "projet (local)", project: "projet (partagé)", user: "utilisateur" };
 
 export interface AppOptions {
+  readonly reducedMotion?: boolean;
   readonly terminal: Terminal;
   readonly capabilities: Capabilities;
   readonly settings: AppSettings;
@@ -425,7 +427,7 @@ export class InteractiveApp {
     this.#activity = "Réflexion…";
     this.#stream = "";
     this.#responseCommitted = false;
-    this.#animation = setInterval(() => {
+    if (!this.#o.reducedMotion) this.#animation = setInterval(() => {
       this.#spinner++;
       this.#redraw();
     }, 120);

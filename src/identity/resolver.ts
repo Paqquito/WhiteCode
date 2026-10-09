@@ -37,6 +37,7 @@ export interface ResolvedIdentity {
   readonly modelBackground: ModelTier;
   readonly compatibility: {
     readonly forbiddenTerms: readonly string[];
+    readonly scanExceptions?: readonly { readonly terme: string; readonly contexte: string; readonly justification: string }[];
     readonly allowLegacyReads: boolean;
   };
   readonly policyAnchor?: PolicyAnchor;
@@ -380,8 +381,17 @@ export function resolveIdentity(data: unknown, options: ResolveOptions): Resolve
   }
 
   // Compatibility section.
+  if (data["compatibility"] !== undefined && !isPlainObject(data["compatibility"])) error("ERR-05", "La section compatibility doit être un objet.", "$.compatibility");
   const compat = isPlainObject(data["compatibility"]) ? data["compatibility"] : {};
+  if (compat["forbiddenTerms"] !== undefined && (!Array.isArray(compat["forbiddenTerms"]) || compat["forbiddenTerms"].some((t) => typeof t !== "string" || t.normalize("NFD").replace(/[\p{M}_\-\s]/gu, "") === ""))) error("ERR-05", "Les termes interdits doivent être une liste de chaînes non vides après normalisation.", "$.compatibility.forbiddenTerms");
+  if (compat["scanExceptions"] !== undefined && !Array.isArray(compat["scanExceptions"])) error("ERR-05", "Les exceptions anti-fuite doivent être une liste.", "$.compatibility.scanExceptions");
   const forbiddenTerms = Array.isArray(compat["forbiddenTerms"]) ? compat["forbiddenTerms"].filter((t): t is string => typeof t === "string") : [];
+  const scanExceptions: Array<{ terme: string; contexte: string; justification: string }> = [];
+  for (const entry of Array.isArray(compat["scanExceptions"]) ? compat["scanExceptions"] : []) {
+    if (!isPlainObject(entry) || typeof entry["terme"] !== "string" || entry["terme"].trim() === "" || typeof entry["contexte"] !== "string" || entry["contexte"].trim() === "" || typeof entry["justification"] !== "string" || entry["justification"].trim() === "") {
+      error("ERR-05", "Exception anti-fuite invalide : terme, contexte précis et justification non vide requis.", "$.compatibility.scanExceptions");
+    } else scanExceptions.push({ terme: entry["terme"], contexte: entry["contexte"], justification: entry["justification"] });
+  }
   const allowLegacyReads = compat["allowLegacyReads"] === true;
 
   if (issues.some((i) => i.severity === "error")) return { issues };
@@ -395,7 +405,7 @@ export function resolveIdentity(data: unknown, options: ResolveOptions): Resolve
     models,
     modelDefault,
     modelBackground,
-    compatibility: { forbiddenTerms, allowLegacyReads },
+    compatibility: { forbiddenTerms, allowLegacyReads, ...(scanExceptions.length ? { scanExceptions } : {}) },
     ...(policyAnchor ? { policyAnchor } : {}),
   };
   const hash = createHash("sha256").update(canonicalJson(body)).digest("hex");
