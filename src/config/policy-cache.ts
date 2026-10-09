@@ -1,4 +1,4 @@
-// Implements: SPEC-CFG-003 (§ 5.7 points 4 and 6, CA-08, authorised offline cache rejection), gap E-127.
+// Implements: SPEC-CFG-003 (§ 5.7 points 4, 6 and 7, CA-08, CA-09, authorised offline cache rejection), gaps E-127, E-128.
 // Supports: SPEC-CFG-003 (CA-03, offline interface preferences and permission restrictions); sensitive adoption remains separate.
 import { dirname, join } from "node:path";
 import { parse, visit } from "jsonc-parser";

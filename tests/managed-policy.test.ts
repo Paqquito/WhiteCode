@@ -3,14 +3,51 @@ import { expect, test } from "bun:test";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { cli, trustedPolicyFile, workspace } from "./helpers/env";
-import { productEnv, record } from "./helpers/hooks";
+import { productEnv, record, hook } from "./helpers/hooks";
 import { ScriptedProvider } from "./helpers/scripted-provider";
 import { ManagedPolicyGuard, validateManagedPolicy } from "../src/config/managed-policy";
 import { Host } from "./helpers/control";
-import { interactive } from "./helpers/interactive";
+import { interactive, KEY } from "./helpers/interactive";
 import { bench, probe } from "./helpers/engine";
 import { ResponseExecution } from "../src/engine/executor";
 import { textOutcome } from "../src/tools/types";
+
+for (const [kind, failure] of [["command failure", "process.exit(1);"], ["nonconforming response", "console.log(JSON.stringify({ decision: 'unsupported' }));"]] as const) {
+  for (const driver of ["automated", "control", "interactive"]) {
+    test("SPEC-CFG-003/CA-11 — mandatory " + kind + " refuses the " + driver + " action despite no-hooks", async () => {
+      const ws = workspace();
+      const target = join(ws.project, "created.txt");
+      const command = hook(ws, "mandatory-control", failure);
+      ws.write("managed/policy.json", JSON.stringify({ hooks: { before_tool: [{ id: "required-check", mandatory: true, actions: [{ type: "command", command }] }] } }));
+      const provider = new ScriptedProvider([{ toolCalls: [{ name: "write_file", input: { path: target, content: "MUST-NOT-EXIST" } }] }, { text: "CONTROL-REFUSAL-OBSERVED" }]);
+      if (driver === "automated") {
+        const result = await cli(["--non-interactive", "--no-hooks", "--approval-mode", "auto_edit", "Create created.txt."], ws, { provider, env: productEnv(ws) });
+        expect(result.code).toBe(0);
+        expect(result.stderr).toContain("contrôle obligatoire");
+      } else if (driver === "control") {
+        const host = new Host(ws, { argv: ["--no-hooks", "--approval-mode", "auto_edit"], provider, env: productEnv(ws) });
+        try { host.user("Create created.txt."); await host.waitFor((m) => m.type === "turn_completed"); }
+        finally { host.feed.end(); }
+        expect((await host.finish()).code).toBe(0);
+        expect(host.demands("approval_request")).toHaveLength(0);
+      } else {
+        const terminal = interactive(["--no-hooks", "--approval-mode", "auto_edit"], ws, { provider, env: productEnv(ws) });
+        try {
+          await terminal.idle();
+          terminal.type("Create created.txt." + KEY.enter);
+          await terminal.waitFor((t) => t.includes("CONTROL-REFUSAL-OBSERVED"), "completed turn after mandatory refusal");
+          expect(terminal.all().join("\n")).toContain("contrôle obligatoire");
+        } finally { terminal.type("/quit" + KEY.enter); }
+        expect((await terminal.done).code).toBe(0);
+      }
+      expect(existsSync(target)).toBe(false);
+      expect(provider.requests).toHaveLength(2);
+      const feedback = JSON.stringify(provider.requests[1]!.history);
+      expect(feedback).toContain("Action denied");
+      expect(feedback).toContain("contrôle obligatoire");
+    });
+  }
+}
 
 test("SPEC-CFG-001/CA-06 — invalid managed JSON blocks every driver before provider creation; local diagnosis retains valid UI preferences", async () => {
   const ws = workspace();

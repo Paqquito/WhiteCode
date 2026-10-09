@@ -1,4 +1,4 @@
-// Implements: SPEC-HOK-010 (§ 5.1 response fields, § 5.4 aggregation steps 2 to 5, FA-01, FA-02, EF-04, ERR-01, RG-01, RG-02), SPEC-HOK-012 (EF-04 mandatory control hooks)
+// Implements: SPEC-HOK-010 (§ 5.1 response fields, § 5.4 aggregation steps 2 to 5, FA-01, FA-02, EF-04, ERR-01, RG-01, RG-02), SPEC-HOK-012 (EF-04 mandatory control hooks), SPEC-CFG-003 (CA-11), gap E-128.
 // Responses of the hooks of one event, combined in a deterministic way.
 
 import type { HookDecision, HookEventInfo } from "./events";

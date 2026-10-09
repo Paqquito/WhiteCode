@@ -1,4 +1,4 @@
-// Supports: SPEC-CFG-003 (CA-03, CA-08, authorised offline cache), gap E-127.
+// Supports: SPEC-CFG-003 (CA-03, CA-08, CA-09, authorised offline cache), gaps E-127, E-128.
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -41,6 +41,44 @@ test("TECH — an explicitly authorised offline cache of interface preferences a
   expect(result.stdout).toContain("lecture seule");
   expect(result.stderr).toContain("révocation inconnue");
   expect(provider.requests).toHaveLength(0);
+});
+
+test("SPEC-CFG-003/CA-09 — an older cache cannot replace the currently authorised version at startup or after a model response", async () => {
+  const ws = workspace();
+  const older = provision(ws, { settings: JSON.stringify({ ui: { history: { maxEntries: 222 } } }) });
+  provision(ws);
+  const authorised = await cli(["--non-interactive", "/preferences ui.history.maxEntries"], ws, { extra: { now } });
+  expect(authorised.code).toBe(0);
+  expect(authorised.stdout).toContain("777");
+  ws.write("home/config/remote-policy-cache.json", older.envelope);
+  const provider = new ScriptedProvider([]);
+  const effects = record(ws, "rollback-effect");
+  let factories = 0;
+  const options = { provider, env: productEnv(ws), userConfig: { hooks: { session_opened: [{ actions: [{ type: "command", command: effects.command }] }] } },
+    extra: { now, providerFactory: () => { factories++; return provider; } } };
+  for (const argv of [["--non-interactive", "Read the summary."], ["--control-channel"], ["connector-server", "start"]]) {
+    const refused = await cli(argv, ws, options);
+    expect(refused.code).toBe(4);
+    expect(refused.stderr).toContain("empreinte non autorisée");
+  }
+  expect((await interactive([], ws, options).done).code).toBe(4);
+  expect(factories).toBe(0);
+  expect(effects.read()).toHaveLength(0);
+  provision(ws);
+  const target = join(ws.project, "created.txt");
+  const changing = new ScriptedProvider([() => {
+    ws.write("home/config/remote-policy-cache.json", older.envelope);
+    return { toolCalls: [{ name: "write_file", input: { path: target, content: "UNAUTHORISED-ROLLBACK" } }] };
+  }]);
+  const refused = await cli(["--non-interactive", "--approval-mode", "auto_edit", "Create created.txt."], ws, { provider: changing, extra: { now } });
+  expect(refused.code).toBe(4);
+  expect(changing.requests).toHaveLength(1);
+  expect(existsSync(target)).toBe(false);
+  // Only a new protected administrative authorisation can permit these exact older bytes.
+  ws.write("managed/cache-authorization.json", JSON.stringify(older.authorization));
+  const permitted = await cli(["--non-interactive", "/preferences ui.history.maxEntries"], ws, { extra: { now } });
+  expect(permitted.code).toBe(0);
+  expect(permitted.stdout).toContain("222");
 });
 
 test("SPEC-CFG-003/CA-08 — another organisation, expiration or known revocation rejects the cache before agent effects", async () => {
