@@ -2,7 +2,7 @@
 // Parses the command line against the declarative catalogue. Every error is a usage error (exit code 2).
 
 import { suggest } from "../shared/suggest";
-import { CONFLICTS, FAMILIES, OPTION_BY_NAME, REQUIRES, type OptionDef } from "./options";
+import { CONFLICTS, DEBUG_DOMAINS, FAMILIES, OPTION_BY_NAME, REQUIRES, type OptionDef } from "./options";
 
 export class CliUsageError extends Error {
   readonly exitCode = 2;
@@ -86,8 +86,10 @@ export function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
       if (inline !== undefined) throw new CliUsageError(`L'option --${name} n'accepte pas de valeur.`);
       value = true;
     } else if (def.value === "optional") {
-      // An optional value is only accepted in the `--name=value` form, so that a request is never taken as a value.
+      // Debug accepts a separate known-domain list; other optional values require `=` to preserve requests.
       value = inline ?? true;
+      const next = argv[i + 1];
+      if (name === "debug" && inline === undefined && next !== undefined && splitList(next).length > 0 && splitList(next).every((domain) => (DEBUG_DOMAINS as readonly string[]).includes(domain.replace(/^!/, "")))) { value = next; i++; }
     } else {
       if (inline !== undefined) value = inline;
       else {

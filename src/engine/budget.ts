@@ -1,5 +1,6 @@
 // Implements: SPEC-MOD-005 (§ 5.5 budget admission, FA-02, FA-08, EF-08 to EF-11, ERR-04, ERR-05, RG-03, RG-05, CA-02, CA-07, CA-08, CA-09 to CA-13, CA-17)
 // Supports: SPEC-API-002 (EF-08), SPEC-API-003 (EF-06), gaps E-054 (bound of a call), E-055 (price overrides)
+// Supports: SPEC-OBS-021 (CA-02: admission before exceeding the one-unit budget), gap E-141.
 
 import type { ModelPricing, ResolvedModel } from "../providers/catalog";
 import type { ModelRequest, Usage } from "../providers/types";

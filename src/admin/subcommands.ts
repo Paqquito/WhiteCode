@@ -3,6 +3,7 @@
 // Supports: SPEC-CFG-003 (FA-02, CA-06, CA-08, independent enrolment, cache and authorised recovery), gaps E-066, E-120 to E-127. Administration operations never start a session nor contact the model service (EF-04).
 // Supports: SPEC-CAD-002 (CA-12, CA-14: source and override warnings in standalone diagnostics), gap E-133.
 // Implements: SPEC-CFG-010 (CA-03: reset choices for the current real project), gap E-134.
+// Supports: SPEC-OBS-015 (CA-02/03/04, FA-02), gap E-141.
 
 import { lstatSync, readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
@@ -35,6 +36,7 @@ import { renderDiagnostics, runDiagnostics, type DiagnosticInputs } from "./diag
 import { effectiveCapabilities, isDeliveredProvider } from "../providers/adapters";
 import { capabilitiesOf, isResolveFailure, type ModelCatalog, type ModelEntry } from "../providers/catalog";
 import { suggest } from "../shared/suggest";
+import { maskSecrets } from "../shared/secrets";
 import { readTranscriptReference } from "../session/transcript-access";
 import { renderValidation, validateExtension } from "../extensions/validate";
 import { catalogAdd, catalogList, catalogRemove, catalogUpdate, extensionAdd, extensionEnable, extensionList, extensionRemove, extensionUpdate, scopeOf, type ExtensionAdminContext } from "../extensions/admin";
@@ -314,14 +316,14 @@ async function diagnostic(deps: AdminDependencies, repair: boolean, write: Write
   const title = `Diagnostic — ${deps.identity.get("PRODUCT")} ${deps.identity.version}`;
   const errors = findings.filter((f) => f.status === "error").length;
   if (!repair) {
-    write({ findings: findings.map(({ fix, ...f }) => ({ ...f, ...(fix ? { fix: fix.description } : {}) })), errors }, () => renderDiagnostics(findings, title).join("\n"));
-    return errors === 0 ? ExitCode.Success : ExitCode.UsageOrConfiguration;
+    write({ findings: findings.map(({ fix, ...f }) => ({ ...f, area: maskSecrets(f.area), message: maskSecrets(f.message), ...(f.location ? { location: maskSecrets(f.location) } : {}), ...(fix ? { fix: maskSecrets(fix.description) } : {}) })), errors }, () => renderDiagnostics(findings, title).join("\n"));
+    return errors === 0 ? ExitCode.Success : ExitCode.ExecutionError;
   }
   out(renderDiagnostics(findings, title).join("\n"));
   const fixable = findings.filter((f) => f.fix?.apply);
   if (fixable.length === 0) {
     out("Aucune correction automatique à appliquer.");
-    return errors === 0 ? ExitCode.Success : ExitCode.UsageOrConfiguration;
+    return errors === 0 ? ExitCode.Success : ExitCode.ExecutionError;
   }
   if (!deps.streams.stdinIsTTY) {
     out("Corrections non appliquées : l'accord de l'utilisateur est demandé sur un terminal.");
@@ -330,7 +332,7 @@ async function diagnostic(deps: AdminDependencies, repair: boolean, write: Write
   let applied = 0;
   const lines = deps.streams.stdinLines()[Symbol.asyncIterator]();
   for (const f of fixable) {
-    deps.streams.writeErr(`Appliquer : ${f.fix!.description} (${f.location}) ? [o/N] `);
+    deps.streams.writeErr(maskSecrets(`Appliquer : ${f.fix!.description} (${f.location}) ? [o/N] `));
     const answer = await lines.next();
     if (answer.done) break;
     if (!/^(o|oui|y|yes)$/i.test(answer.value.trim())) continue;

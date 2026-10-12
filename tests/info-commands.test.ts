@@ -35,7 +35,7 @@ describe("SPEC-CMD-014 /context-usage", () => {
 });
 
 describe("SPEC-CMD-016 /spending", () => {
-  test("SPEC-CMD-016/CA-01 — a session that used two models: the cost is detailed by model", async () => {
+  test("SPEC-CMD-016/CA-01 — SPEC-OBS-021/CA-01 — a session that used two models: the cost is detailed by model", async () => {
     const ws = workspace();
     const p = new ScriptedProvider([{ toolCalls: [{ name: "spawn_agent", input: { description: "aide", prompt: "cherche", model: "small" } }] }, { text: "rapport" }, { text: "fini" }]);
     const h = new Host(ws, { provider: p, init: {} });

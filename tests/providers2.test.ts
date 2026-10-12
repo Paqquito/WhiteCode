@@ -124,13 +124,13 @@ describe("SPEC-API-007 allow list and identifiers of the tiers", () => {
 });
 
 describe("SPEC-API-011 API key", () => {
-  test("SPEC-API-011/CA-03 — debug mode: a logged request never shows the key", async () => {
+  test("SPEC-API-011/CA-03 — SPEC-OBS-012/CA-02 — debug mode: a logged request never shows the key", async () => {
     const ws = workspace();
     const s = startFakeOpenAI([{ text: "ok" }]);
     const log = join(ws.root, "debug.log");
     const key = "sk-test-0123456789-secret-value";
     const r = await cli(["--non-interactive", "--debug=api", "--debug-output", log, "x"], ws, { userConfig: { api: { provider: "openai_compatible", baseUrl: s.baseURL } }, env: { OPENAI_API_KEY: key } });
-    expect(r.stderr).toBe("");
+    expect(r.stderr).toBe(`Journal de débogage : ${log}.\n`);
     expect(r.code).toBe(0);
     expect(s.requests[0]!.headers["authorization"]).toBe(`Bearer ${key}`);
     const text = readFileSync(log, "utf8");

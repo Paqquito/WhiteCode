@@ -10,6 +10,7 @@
 // Supports: SPEC-SES-015 (CA-02), SPEC-OUT-037 (CA-01), SPEC-HOK-001 (CA-04), SPEC-CFG-007 (CA-04), gap E-132.
 // Supports: SPEC-CFG-010 (CA-01, CA-02: concurrent choices and corrupt-state recovery), gap E-134.
 // Supports: SPEC-PER-004/018 (approval model and versioned consent), SPEC-PER-014 (session denials), SPEC-MOD-005 (CA-16), gap E-138.
+// Supports: SPEC-OBS-012 (CA-01/02, destinations and announcement), SPEC-OBS-015 (CA-05), SPEC-OBS-021 (CA-01/02), gap E-141.
 // Composition root of a session: options → identity and settings → provider → engine → automated output, or the
 // interactive application (lot 5).
 
@@ -1469,9 +1470,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   let debugPath: string | undefined;
   if (debugEnabled) {
     const domains = typeof debugOption === "string" ? splitList(debugOption) : [];
-    const output = opt("debug-output");
+    const output = opt("debug-output") ?? env.own("DEBUG_FILE");
     debugPath = output === "stderr" ? undefined : typeof output === "string" ? absolute(output, cwd) : join(transcript?.sessionDir ?? locations.configDir, "debug.log");
-    debug = debugPath === undefined ? createDebugLog({ kind: "stderr", write: (t) => streams.writeErr(t) }, domains) : createDebugLog({ kind: "file", path: debugPath }, domains);
+    debug = debugPath === undefined ? createDebugLog({ kind: "stderr", write: (t) => streams.writeErr(t) }, domains) : createDebugLog({ kind: "file", path: debugPath, write: (t) => streams.writeErr(t) }, domains);
+    debugPath = debug.path;
+    err(`Journal de débogage : ${debugPath ?? "sortie d'erreur"}.`);
   }
   for (const [domain, message, data] of earlyDebug) debug.log(domain, message, data);
   remoteLog.log = (event, data) => debug.log("remote", event, data); // SPEC-MOD-007 § 14, never the token (RG-01)
@@ -2638,9 +2641,12 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   function debugJournalExcerpt(): string {
     if (!debug.enabled) {
       debugPath = join(sessionWork, "debug.log");
-      debug = createDebugLog({ kind: "file", path: debugPath }, []);
+      debug = createDebugLog({ kind: "file", path: debugPath, write: (t) => streams.writeErr(t) }, []);
+      debugPath = debug.path;
+      if (debugPath === undefined) return "The debug file is inaccessible: logging now goes to standard error. Ask the user to reproduce the problem and inspect that output.";
       return `The detailed debug journal was not active: it is now enabled for this session, in ${debugPath}. It holds nothing about the problem yet: ask the user to reproduce the problem, then to run /debug again. Do not analyse anything else.`;
     }
+    debugPath = debug.path;
     if (debugPath === undefined) return "The debug journal goes to the standard error of the terminal: it cannot be read here. Ask the user to restart with the journal written to a file.";
     let lines: string[] = [];
     try {
@@ -3345,12 +3351,12 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
             app.commit(box(lines.splice(0).map((l) => text(l))));
             let applied = 0;
             for (const f of fixable) {
-              if (!(await app.confirm(`Appliquer : ${f.fix!.description} (${f.location}) ?`, "appliquer", "ignorer"))) continue;
+              if (!(await app.confirm(maskSecrets(`Appliquer : ${f.fix!.description} (${f.location}) ?`), "appliquer", "ignorer"))) continue;
               try {
                 f.fix!.apply!();
                 applied++;
               } catch (e) {
-                lines.push(`Échec de la correction ${f.fix!.description} : ${(e as Error).message}`);
+                lines.push(maskSecrets(`Échec de la correction ${f.fix!.description} : ${(e as Error).message}`));
               }
             }
             applySettingsChanges();

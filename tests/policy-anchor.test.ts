@@ -20,6 +20,21 @@ function anchored(text = POLICY): Identity {
   return new Identity(result.identity!);
 }
 
+test("SPEC-OBS-015/CA-05 — a missing mandatory policy leaves a minimal local diagnostic without model or correction", async () => {
+  const ws = workspace(), identity = anchored();
+  const original = JSON.stringify({ ui: { history: { maxEntries: 123 } } });
+  const file = ws.write("home/config/config.json", original);
+  let factories = 0;
+  const result = await cli(["diagnostic", "validate"], ws, { identity, userConfig: null, env: productEnv(ws), extra: { providerFactory: () => { factories++; throw new Error("No provider may start without mandatory policy."); } } });
+  expect(result.code).toBe(4);
+  expect(result.stdout).toContain("Diagnostic local de politique");
+  expect(result.stdout).toContain("organisation-test");
+  expect(result.stdout).toContain("ui.history.maxEntries = 123");
+  expect(readFileSync(file, "utf8")).toBe(original);
+  expect(existsSync(join(ws.configHome, "sessions"))).toBe(false);
+  expect(factories).toBe(0);
+});
+
 test("SPEC-CFG-003/CA-14 — missing or replaced anchored policy blocks after every restart; only local help and diagnosis remain", async () => {
   const ws = workspace();
   const identity = anchored();

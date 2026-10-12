@@ -4,6 +4,7 @@
 import { FAMILY_CATALOG } from "./families";
 
 export type OptionValue = "none" | "required" | "optional";
+export const DEBUG_DOMAINS = ["api", "mcp", "hooks", "permissions", "tools", "config", "render", "remote", "context", "engine", "control", "agents", "startup", "maintenance", "commands", "serve"] as const;
 export type OptionType = "string" | "integer" | "amount" | "seconds" | "enum" | "list" | "rules" | "path-or-content" | "path";
 
 export interface OptionDef {
@@ -100,7 +101,7 @@ export const OPTIONS: readonly OptionDef[] = [
   { name: "help", value: "none", group: "Divers", description: "Affiche l'aide.", delivered: true, owner: "SPEC-MOD-011" },
   { name: "version", value: "none", group: "Divers", description: "Affiche la version.", delivered: true, owner: "SPEC-MOD-011" },
   { name: "cwd", value: "required", type: "path", group: "Divers", description: "Dossier de travail.", defaultText: "dossier courant", delivered: true, owner: "SPEC-MOD-011" },
-  { name: "debug", value: "optional", type: "list", group: "Divers", description: "Active le journal de débogage (--debug=<domaines> pour filtrer).", delivered: true, owner: "SPEC-OBS-012" },
+  { name: "debug", value: "optional", type: "list", group: "Divers", description: "Active le journal de débogage (--debug <domaines>, préfixe ! pour exclure).", delivered: true, owner: "SPEC-OBS-012" },
   { name: "debug-output", value: "required", type: "string", group: "Divers", description: "Destination du journal de débogage (chemin, ou stderr).", defaultText: "fichier de la session", delivered: true, owner: "SPEC-OBS-012" },
   { name: "strict-failure", value: "none", group: "Divers", description: "Arrête le processus à toute erreur journalisée.", hidden: true, delivered: false, owner: "SPEC-OBS-014" },
   { name: "export-system-instructions", value: "none", group: "Divers", description: "Affiche les instructions système et quitte.", hidden: true, delivered: false, owner: "SPEC-OBS-019" },

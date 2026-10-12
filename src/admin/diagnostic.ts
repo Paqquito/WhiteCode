@@ -1,5 +1,6 @@
 // Implements: SPEC-CMD-020 (§ 5.1, § 5.3, EF-01, EF-02, RG-01, § 10, CA-01)
 // Supports: SPEC-OBS-015 (checks of the environment), gap E-116
+// Supports: SPEC-OBS-015 (§ 12: no secrets in messages or correction descriptions), gap E-141.
 // The checks shared by `/diagnose` and `diagnostic validate|repair`: each finding has a status, a place and, when it can
 // be corrected, a correction applied only once accepted.
 
@@ -91,10 +92,10 @@ const SYMBOL: Record<FindingStatus, string> = { ok: "✓", warning: "⚠", error
 export function renderDiagnostics(findings: readonly Finding[], title: string): string[] {
   const order: FindingStatus[] = ["error", "warning", "ok"];
   const sorted = [...findings].sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
-  const lines = [title];
+  const lines = [maskSecrets(title)];
   for (const f of sorted) {
     lines.push(maskSecrets(`${SYMBOL[f.status]} ${f.area} : ${f.message}${f.location ? ` — ${f.location}` : ""}`));
-    if (f.fix) lines.push(`    correction proposée : ${f.fix.description}${f.fix.apply ? "" : " (manuelle)"}`);
+    if (f.fix) lines.push(maskSecrets(`    correction proposée : ${f.fix.description}${f.fix.apply ? "" : " (manuelle)"}`));
   }
   const count = (s: FindingStatus) => findings.filter((f) => f.status === s).length;
   lines.push(`Résumé : ${count("ok")} correct${count("ok") > 1 ? "s" : ""}, ${count("warning")} avertissement${count("warning") > 1 ? "s" : ""}, ${count("error")} erreur${count("error") > 1 ? "s" : ""}.`);

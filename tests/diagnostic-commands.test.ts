@@ -26,7 +26,7 @@ const quit = async (run: Run) => {
 };
 
 describe("SPEC-CMD-020 /diagnose", () => {
-  test("SPEC-MOD-012/CA-10 — diagnostic repair applies its proposal only after explicit agreement", async () => {
+  test("SPEC-MOD-012/CA-10 — SPEC-OBS-015/CA-04 — diagnostic repair applies its proposal only after explicit agreement", async () => {
     for (const accepted of [false, true]) {
       const ws = workspace();
       const p = new ScriptedProvider([]);
@@ -46,7 +46,7 @@ describe("SPEC-CMD-020 /diagnose", () => {
     expect(r.stdout).toMatch(/Résumé : \d+ corrects?, \d+ avertissements?, 1 erreur\./);
     // Outside a session, the same report; the exit code tells the error.
     const outside = await cli(["diagnostic", "validate"], ws, { env: productEnv(ws), userConfig: BROKEN });
-    expect(outside.code).toBe(2);
+    expect(outside.code).toBe(1);
     expect(outside.stdout).toContain("correction proposée : retirer `ui.colorMode`");
     expect(userConfig(ws).ui.colorMode).toBe(42); // EF-01: nothing changed without agreement
   });
