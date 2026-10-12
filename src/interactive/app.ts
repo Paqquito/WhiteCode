@@ -174,6 +174,7 @@ export class InteractiveApp {
   readonly #stash: string[];
   readonly #approvals: PendingApproval[] = [];
   #confirm: Confirm | undefined;
+  #secret: { title: string; value: string; resolve: (value: string | undefined) => void } | undefined;
   #choice: ChoiceDialog | undefined;
   #capture: Capture | undefined;
   #session: TerminalSession | undefined;
@@ -363,6 +364,9 @@ export class InteractiveApp {
     this.#session.screen.flush();
   }
 
+  /** Replays input captured after startup consent once the ordinary input consumer is installed. */
+  acceptStartupInput(chunks: readonly string[]): void { for (const chunk of chunks) this.#input(chunk); }
+
   /** Restores the terminal; idempotent. */
   stop(): void {
     if (this.#cursorShape) {
@@ -379,6 +383,7 @@ export class InteractiveApp {
     for (const a of this.#approvals.splice(0)) a.resolve({ answer: "no_stop" });
     this.#confirm?.resolve(false);
     this.#confirm = undefined;
+    this.#secret?.resolve(undefined);
   }
 
   /** Next entry of the user: a message, or the exit (step 3 of § 5.2). */
@@ -785,6 +790,15 @@ export class InteractiveApp {
     });
   }
 
+  /** Separate masked buffer: a credential never enters the editor, history, queue or persisted input state. */
+  requestSecret(title: string): Promise<string | undefined> {
+    if (this.#exiting) return Promise.resolve(undefined);
+    return new Promise((resolve) => {
+      this.#secret = { title, value: "", resolve: (value) => { if (this.#secret) this.#secret.value = ""; this.#secret = undefined; resolve(value); this.#redraw(); } };
+      this.#session?.screen.flush();
+    });
+  }
+
   #confirmView(c: Confirm): Node {
     const t = tone("warning", this.#view.unicode);
     return box([text(c.message), text([{ text: `o : ${c.yes} · n : ${c.no}`, style: { bold: true } }])], { border: { style: t.style }, padding: { left: 1, right: 1 } });
@@ -818,6 +832,7 @@ export class InteractiveApp {
   /** Exit without confirmation (termination signal): the turn in flight is aborted. */
   forceExit(): void {
     this.#exiting = true;
+    this.#secret?.resolve(undefined);
     this.#turn?.abort();
     this.#confirm?.resolve(false);
     this.#saveState();
@@ -865,6 +880,16 @@ export class InteractiveApp {
   }
 
   #event(e: InputEvent, uncertain = false): void {
+    if (this.#secret) {
+      const secret = this.#secret;
+      if (e.kind === "paste") {
+        if (!/[\r\n\u0000]/.test(e.text) && secret.value.length + e.text.length <= 2048) secret.value += e.text;
+      } else if (e.name === "escape" || e.ctrl && ["c", "d"].includes(e.name)) secret.resolve(undefined);
+      else if (e.name === "enter") { if (secret.value) secret.resolve(secret.value); }
+      else if (e.name === "backspace") secret.value = [...secret.value].slice(0, -1).join("");
+      else if (!e.ctrl && !e.alt && e.text && !/[\u0000-\u001f\u007f]/.test(e.text) && secret.value.length + e.text.length <= 2048) secret.value += e.text;
+      this.#redraw(); return;
+    }
     if (e.kind === "paste") {
       // SPEC-IHM-010 EF-01: a paste never sends anything, whatever it contains.
       const active = this.#approvals[0]?.explaining;
@@ -1228,6 +1253,7 @@ export class InteractiveApp {
     const approval = this.#approvals[0];
     if (approval) panels.push(this.#dialogView(approval));
     if (this.#confirm) panels.push(this.#confirmView(this.#confirm));
+    if (this.#secret) panels.push(box([text(this.#secret.title), text("•".repeat(Math.min(60, [...this.#secret.value].length))), text("Entrée : valider · Échap : annuler")], { border: {}, padding: { left: 1, right: 1 } }));
     if (this.#choice) panels.push(this.#choiceView(this.#choice));
     if (this.#capture) panels.push(box([text([{ text: this.#capture.prompt, style: { bold: true } }]), text([{ text: "Entrée : valider · Échap : annuler", style: { dim: true } }])], { padding: { left: 2 } }));
     // SPEC-OUT-021 § 10: the task list above the input area, emptied once every task is done (§ 5.3 step 3).

@@ -24,6 +24,10 @@ import type { Identity } from "../identity/identity";
 import { identityFindings } from "../identity/diagnostic";
 import { updateUserState } from "../config/trust";
 import { projectStateKey } from "../connectors/session";
+import { credentialStore, loginWithKey, logout, type AuthUi, type CredentialValidator } from "../auth/commands";
+import { credentialValidator } from "../providers/credential-check";
+import { authDialog } from "../interactive/auth-dialog";
+import { nativeCredentialVault, type CredentialVault } from "../platform/credential-vault";
 import { MODEL_TIERS } from "../identity/runtime-catalog";
 import type { StandardStreams } from "../platform/io";
 import { comparablePath, findExecutable, type SystemInfo } from "../platform/system";
@@ -35,6 +39,10 @@ import { renderValidation, validateExtension } from "../extensions/validate";
 import { catalogAdd, catalogList, catalogRemove, catalogUpdate, extensionAdd, extensionEnable, extensionList, extensionRemove, extensionUpdate, scopeOf, type ExtensionAdminContext } from "../extensions/admin";
 
 export interface AdminDependencies {
+  readonly validateCredential?: CredentialValidator;
+  readonly credentialVault?: CredentialVault;
+  readonly signal?: AbortSignal;
+  readonly assertPolicy?: () => void;
   readonly streams: StandardStreams;
   readonly identity: Identity;
   readonly catalog: ModelCatalog;
@@ -107,6 +115,29 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
   const write = (document: unknown, text: () => string) => out(json ? JSON.stringify(document) : text()); // FA-04, CA-02: only the document
 
   switch (`${family.name} ${operation.name}`) {
+    case "auth login":
+    case "auth logout": {
+      if (operation.name === "logout" && deps.env.ownBoolean("HIDE_SIGN_OUT") === true) { err("Déconnexion désactivée par la configuration."); return ExitCode.UsageOrConfiguration; }
+      if (parsed.args.length) { err("Cette opération d'authentification n'accepte aucun argument ; saisissez la clé dans le champ masqué."); return ExitCode.UsageOrConfiguration; }
+      if (!deps.streams.stdinIsTTY || !deps.streams.stdoutIsTTY || !deps.streams.terminal) { err("Cette opération exige un terminal interactif ; utilisez la variable publique du fournisseur en automatisé."); return ExitCode.UsageOrConfiguration; }
+      const terminal = deps.streams.terminal;
+      const load = () => loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, profilePolicyReader: deps.profilePolicyReader, policyFileProtection: deps.policyFileProtection, cachePolicy: deps.cachePolicy });
+      const vault = deps.credentialVault ?? nativeCredentialVault({ interactive: true, environment: deps.env.childEnvironment() });
+      const store = () => { const configuration = load(); return credentialStore(deps.identity, configuration.locations.configDir, configuration.firstPass, vault, err, () => load().firstPass); };
+      const check = () => { deps.assertPolicy?.(); if (deps.signal?.aborted) throw new Error("Authentification interrompue."); };
+      const ui: AuthUi = {
+        secret: async (title) => { const value = await authDialog(terminal, title, true, deps.signal); return typeof value === "string" ? value : undefined; },
+        confirm: async (title) => await authDialog(terminal, title, false, deps.signal) === true,
+        notice: out,
+      };
+      try {
+        const initial = load();
+        const success = operation.name === "login"
+          ? await loginWithKey(initial.firstPass.get<string | undefined>("api.provider"), store, ui, deps.validateCredential ?? credentialValidator(initial.firstPass, deps.env), deps.signal, check)
+          : await logout(store(), ui, check);
+        return success ? ExitCode.Success : ExitCode.UsageOrConfiguration;
+      } catch (error) { err(`Authentification échouée : ${(error as Error).message}`); return ExitCode.UsageOrConfiguration; }
+    }
     case "project reset-choices": {
       if (parsed.args.length) { err("Usage : project reset-choices."); return ExitCode.UsageOrConfiguration; }
       const locations = computeLocations(deps.identity, deps.env, deps.cwd, deps.system, deps.managedDir);

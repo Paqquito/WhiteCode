@@ -13,6 +13,7 @@ export interface UserState {
   readonly restrictedProjects?: readonly string[];
   readonly unrestrictedAccepted?: boolean;
   readonly modelNotices?: Readonly<Record<string, string>>;
+  readonly keyConfirmations?: Readonly<Record<string, boolean>>;
   readonly projects?: Readonly<Record<string, unknown>>;
 }
 
@@ -28,6 +29,7 @@ function load(path: string): UserState {
   if (!object(value) || ["trustedProjects", "restrictedProjects"].some((key) => value[key] !== undefined && (!Array.isArray(value[key]) || value[key].some((p) => typeof p !== "string"))) ||
       (value["unrestrictedAccepted"] !== undefined && typeof value["unrestrictedAccepted"] !== "boolean") ||
       (value["modelNotices"] !== undefined && (!object(value["modelNotices"]) || Object.values(value["modelNotices"]).some((p) => typeof p !== "string"))) ||
+      (value["keyConfirmations"] !== undefined && (!object(value["keyConfirmations"]) || Object.entries(value["keyConfirmations"]).some(([key, answer]) => !/^[a-f0-9]{64}$/.test(key) || typeof answer !== "boolean"))) ||
       (value["projects"] !== undefined && (!object(value["projects"]) || Object.values(value["projects"]).some((p) => !object(p))))) throw new CorruptState();
   return value as UserState;
 }
@@ -75,6 +77,7 @@ function merge(state: UserState, patch: Partial<UserState>): UserState {
   const next = { ...state, ...patch };
   for (const key of ["trustedProjects", "restrictedProjects"] as const) if (patch[key]) next[key] = [...new Set([...(state[key] ?? []), ...patch[key]])];
   if (patch.modelNotices) next.modelNotices = { ...state.modelNotices, ...patch.modelNotices };
+  if (patch.keyConfirmations) next.keyConfirmations = { ...state.keyConfirmations, ...patch.keyConfirmations };
   if (patch.projects) next.projects = mergeObjects(state.projects ?? {}, patch.projects);
   return next;
 }

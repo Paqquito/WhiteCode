@@ -18,6 +18,8 @@ import type { ResultStore } from "../session/result-store";
 import { boundText } from "../tools/output-bounds";
 
 export interface ExecutorDeps {
+  /** Active credential values are masked before hooks, large-result storage, events and model context. */
+  readonly redactOutput?: (text: string) => string;
   /** Mandatory policy checked against the raw source before hooks and again after any approval or queue. */
   readonly policyRefusal?: () => string | undefined;
   /** File history of the session (SPEC-SES-006): called around the tools that change files. */
@@ -178,7 +180,7 @@ export class ResponseExecution {
     const guard = this.#deps.loopGuard;
     /** `evaluated`: false for permission refusals and suspended calls, which enter no series (§ 5.1 of SPEC-MOT-046). */
     const finish = (result: ToolOutcome, evaluated = true): ToolOutcome => {
-      let outcome = result;
+      let outcome = this.#redacted(result);
       if (evaluated && guard && tool) {
         // Step 5 of SPEC-MOT-046: at the threshold of identical failures, the reminder is attached, without blocking (CA-04).
         const reminder = guard.record(verdict?.entry, call.name, outcome.isError, outcome.content);
@@ -348,17 +350,24 @@ export class ResponseExecution {
         if (signal.aborted) return finish(textOutcome("Interrupted by the user.", true, "interrupted"));
         const afterExecution = this.#deps.policyRefusal?.();
         if (afterExecution) return finish({ ...outcome, content: [...outcome.content, { type: "text", text: `This tool completed before the policy check failed. No subsequent hook was run. ${afterExecution}` }] });
-        const after = await this.#deps.hooks.afterTool(call, outcome.isError, outcome.content.map((c) => (c.type === "text" ? c.text : `[${c.mediaType}]`)).join("\n"));
+        const safeOutcome = this.#redacted(outcome);
+        const after = await this.#deps.hooks.afterTool(call, safeOutcome.isError, safeOutcome.content.map((c) => (c.type === "text" ? c.text : `[${c.mediaType}]`)).join("\n"));
         if (after.stopTurn) this.#stopTurnRequested = true;
         // The model learns that the call ran with other parameters than its own (SPEC-MOD-006 FA-05).
-        const told = replacedByHost ? { ...outcome, content: [{ type: "text" as const, text: `[The control host replaced the parameters of this call with: ${JSON.stringify(call.input)}]` }, ...outcome.content] } : outcome;
-        return finish(this.#storeIfLarge(call, told));
+        const told = replacedByHost ? { ...safeOutcome, content: [{ type: "text" as const, text: `[The control host replaced the parameters of this call with: ${JSON.stringify(call.input)}]` }, ...safeOutcome.content] } : safeOutcome;
+        return finish(this.#storeIfLarge(call, this.#redacted(told)));
       } finally {
         release();
       }
     } catch (error) {
       return finish(textOutcome(`The tool failed: ${(error as Error)?.message ?? String(error)}`, true, "execution"));
     }
+  }
+
+  /** FA-01 of SPEC-OUT-001: a result beyond the inline limit is written to the session folder; the model gets its start, its end and the path. */
+  #redacted(outcome: ToolOutcome): ToolOutcome {
+    const redact = this.#deps.redactOutput;
+    return redact ? { ...outcome, content: outcome.content.map((part) => part.type === "text" ? { ...part, text: redact(part.text) } : part) } : outcome;
   }
 
   /** FA-01 of SPEC-OUT-001: a result beyond the inline limit is written to the session folder; the model gets its start, its end and the path. */

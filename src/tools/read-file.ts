@@ -98,6 +98,7 @@ export const readFileTool: Tool<ReadFileInput> = {
   summary: (input) => `Read ${input.path}`,
 
   async execute(input, ctx): Promise<ToolOutcome> {
+    if (ctx.readDenied(input.path) || ctx.readDenied(realPathOrSelf(input.path))) return textOutcome("This file is not accessible.", true, "permission_denied");
     let stats: Stats;
     try {
       stats = statSync(input.path);

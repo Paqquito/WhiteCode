@@ -43,6 +43,12 @@ import { createInstructionsRequest, parseChoices, SETUP_CHOICES, type SetupChoic
 import { renderDiagnostics, runDiagnostics, type Finding } from "../admin/diagnostic";
 import { identityFindings } from "../identity/diagnostic";
 import { readUserState, updateUserState, recoverUserState } from "../config/trust";
+import { credentialStore, loginWithKey, logout, type AuthUi, type CredentialValidator } from "../auth/commands";
+import { isCredentialFile } from "../auth/credentials";
+import { credentialValidator } from "../providers/credential-check";
+import { configuredNetwork } from "../config/network";
+import { authDialog } from "../interactive/auth-dialog";
+import { nativeCredentialVault, type CredentialVault } from "../platform/credential-vault";
 import { FallbackPolicy } from "../engine/fallback";
 import { buildSystemInstructions, estimateTokens, RequiredSectionUnavailable } from "../engine/system-instructions";
 import { InstructionsLoader, instructionsReminder, renderInstructions } from "../engine/project-instructions";
@@ -75,12 +81,12 @@ import { ControlSession, type ControlEnd, type ControlOperations } from "../cont
 import { ControlError } from "../control/protocol";
 import { bearerMatches, FramedLink, isLoopback, originAllowed, parseListenAddress } from "../control/remote";
 import { connectWebSocket, listenWebSocket, type WsPeer, type WsServer } from "../platform/websocket";
-import { networkFetch } from "../platform/network";
+
 import { ConnectorServerSession, DEFAULT_CAPABILITIES, Gate, SERVE_CAPABILITIES, WRITING_CAPABILITIES, type CallOutcome, type ServeCapability, type ServedTool } from "../connectors/server";
 import { ResponseExecution } from "../engine/executor";
 import { morePermissive } from "../control/protocol";
 import { familyHelp, FAMILY_BY_NAME, parseSubcommand, SubcommandUsageError } from "../cli/families";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { AnthropicProvider } from "../providers/anthropic";
 import { effectiveCapabilities, isDeliveredProvider } from "../providers/adapters";
 import { OpenAICompatibleProvider } from "../providers/openai-compatible";
@@ -199,6 +205,8 @@ export interface ProviderFactoryOptions {
 }
 
 export interface RunDependencies {
+  readonly validateCredential?: CredentialValidator;
+  readonly credentialVault?: CredentialVault;
   readonly streams: StandardStreams;
   readonly environment: Readonly<Record<string, string>>;
   readonly cwd: string;
@@ -412,7 +420,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         throw new RunError("Opération indisponible en mode minimal hors ligne.", ExitCode.UsageOrConfiguration);
       }
     }
-    return runSubcommand(argv, { streams, identity, catalog: deps.catalog, env, cwd: deps.cwd, system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, profilePolicyReader: deps.profilePolicyReader, policyFileProtection: deps.policyFileProtection, cachePolicy });
+    return runSubcommand(argv, { streams, identity, catalog: deps.catalog, env, cwd: deps.cwd, system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, profilePolicyReader: deps.profilePolicyReader, policyFileProtection: deps.policyFileProtection, cachePolicy, credentialVault: deps.credentialVault, validateCredential: deps.validateCredential, signal: deps.signal, assertPolicy });
   }
   const parsed = parseCommandLine(argv);
   // SPEC-MOD-010 EF-05: the duration of each phase of the start-up, for the journal.
@@ -435,6 +443,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   if (opt("version")) {
     streams.writeOut(versionText(identity));
     return ExitCode.Success;
+  }
+  if (["/login", "/logout"].includes(parsed.prompt?.trim() ?? "") && opt("request-format") !== "jsonl" && opt("result-format") !== "jsonl" && !opt("non-interactive") && !opt("control-channel") && !opt("control-listen") && !opt("control-connect")) {
+    return runSubcommand(["auth", parsed.prompt!.trim().slice(1)], { streams, identity, catalog: deps.catalog, env, cwd: deps.cwd, system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, profilePolicyReader: deps.profilePolicyReader, policyFileProtection: deps.policyFileProtection, cachePolicy, credentialVault: deps.credentialVault, validateCredential: deps.validateCredential, signal: deps.signal, assertPolicy });
   }
   if (policyGuard.check().length > 0 && parsed.prompt?.trim() === "/diagnose" && !opt("control-channel") && !opt("control-listen") && !opt("control-connect")) {
     streams.writeOut(localPolicyDiagnostic() + "\n");
@@ -523,7 +534,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // elements is not asked about (gap E-104).
   const willBeInteractive =
     streams.terminal !== undefined && streams.stdinIsTTY && streams.stdoutIsTTY && opt("non-interactive") !== true && opt("control-channel") !== true &&
-    opt("control-listen") === undefined && opt("control-connect") === undefined && opt("restore-files") === undefined && !serve;
+    opt("control-listen") === undefined && opt("control-connect") === undefined && opt("restore-files") === undefined && !serve &&
+    !(loaded.firstPass.get<boolean>("engine.control.enabled") && opt("request-format") === "jsonl" && (opt("result-format") ?? loaded.firstPass.get<string>("engine.output.format")) === "jsonl");
   if (willBeInteractive && loaded.trust.source === "none") {
     const state = readUserState(loaded.locations.userStateFile);
     const root = realPathOrSelf(loaded.locations.projectRoot);
@@ -825,18 +837,29 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     }
   };
   let apiKey: string | undefined;
+  let credentialSource = "aucune";
+  const startupInput: string[] = [];
+  let stopStartupInput: (() => void) | undefined;
+  let startupInputSize = 0;
+  const captureStartupInput = () => {
+    stopStartupInput = streams.terminal!.onInput((chunk) => {
+      if (startupInputSize + chunk.length > 64 * 1024) return;
+      startupInput.push(chunk); startupInputSize += chunk.length;
+    });
+  };
+  holder.cleanups.push(() => { stopStartupInput?.(); startupInput.length = 0; });
+  const sessionVault = deps.credentialVault ?? nativeCredentialVault({ interactive: willBeInteractive, environment: env.childEnvironment() });
+  const storedCredentials = credentialStore(identity, locations.configDir, settings, sessionVault, (message) => err(`avertissement : ${message}`), undefined, willBeInteractive);
   let authToken: string | undefined;
   let baseURL: string | undefined;
   let organization: string | undefined;
   if (providerId === "anthropic") {
     apiKey = env.public("ANTHROPIC_API_KEY");
     authToken = env.public("ANTHROPIC_AUTH_TOKEN");
-    if (!apiKey && !authToken) throw new RunError("Fournisseur anthropic : aucune clé utilisable ; définissez ANTHROPIC_API_KEY.", ExitCode.UsageOrConfiguration);
     baseURL = env.public("ANTHROPIC_BASE_URL");
   } else if (providerId === "openai") {
     // openai: key required, base URL of the SDK unless OPENAI_BASE_URL or api.baseUrl (SPEC-API-001 § 5.1, ERR-02).
     apiKey = env.public("OPENAI_API_KEY");
-    if (!apiKey) throw new RunError("Configuration du fournisseur incomplète : OPENAI_API_KEY n'est pas définie.", ExitCode.UsageOrConfiguration);
     baseURL = settings.get<string | undefined>("api.baseUrl") ?? env.public("OPENAI_BASE_URL");
     organization = env.public("OPENAI_ORG_ID");
   } else {
@@ -845,28 +868,33 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     if (!baseURL) throw new RunError("Fournisseur openai_compatible : l'URL de base est obligatoire ; définissez api.baseUrl dans vos paramètres utilisateur, ou OPENAI_BASE_URL.", ExitCode.UsageOrConfiguration);
     apiKey = env.public("OPENAI_API_KEY");
   }
+  if (apiKey) {
+    credentialSource = "environnement";
+    if (willBeInteractive) {
+      const fingerprint = createHash("sha256").update(providerId + ":").update(apiKey).digest("hex");
+      const recorded = readUserState(locations.userStateFile).keyConfirmations?.[fingerprint];
+      const suffix = apiKey.length > 4 ? apiKey.slice(-4) : "••••";
+      const accepted = recorded ?? await authDialog(streams.terminal!, `Utiliser cette clé d'environnement ? Derniers caractères : ${suffix}`, false, deps.signal, captureStartupInput) === true;
+      if (recorded === undefined && !deps.signal?.aborted) {
+        assertPolicy(); await updateUserState(locations.userStateFile, { keyConfirmations: { [fingerprint]: accepted } }, system.platform);
+      }
+      if (!accepted) { apiKey = undefined; credentialSource = "aucune"; }
+    }
+  }
+  if (!apiKey && !authToken) {
+    apiKey = await storedCredentials.get("provider:" + providerId);
+    if (apiKey) credentialSource = storedCredentials.source;
+  }
+  if (providerId === "anthropic" && !apiKey && !authToken) throw new RunError("Fournisseur anthropic : aucune clé utilisable ; définissez ANTHROPIC_API_KEY ou utilisez auth login.", ExitCode.UsageOrConfiguration);
+  if (providerId === "openai" && !apiKey) throw new RunError("Configuration du fournisseur incomplète : OPENAI_API_KEY n'est pas définie et aucune clé n'est enregistrée.", ExitCode.UsageOrConfiguration);
+  if (authToken) credentialSource = "jeton d'environnement";
+  const credentialForms = [...new Set([apiKey, authToken, ...PUBLIC_SECRET_VARIABLES.map((name) => env.public(name))].filter((value): value is string => !!value).flatMap((value) => [value, JSON.stringify(value).slice(1, -1), encodeURIComponent(value)]))].sort((a, b) => b.length - a.length);
+  const redactOutput = (text: string) => credentialForms.reduce((safe, value) => safe.split(value).join("[redacted credential]"), text);
   if (baseURL) checkUrl(baseURL);
   const prefix = identity.get("HTTP_HEADER_PREFIX");
   // SPEC-PER-022: the proxy (public variables, never from the project, RG-01), the extra authorities and the client
   // certificate (own variables); an unreadable file stops the launch.
-  const readPem = (name: string): string | undefined => {
-    const path = env.own(name);
-    if (path === undefined) return undefined;
-    try {
-      return readFileSync(path, "utf8");
-    } catch {
-      throw new RunError(`Fichier illisible pour ${env.prefix}${name} : ${path}.`, ExitCode.UsageOrConfiguration);
-    }
-  };
-  const proxyVar = (name: string) => env.public(name) ?? env.public(name.toLowerCase());
-  const network = networkFetch({
-    ...(proxyVar("HTTP_PROXY") ? { httpProxy: proxyVar("HTTP_PROXY")! } : {}),
-    ...(proxyVar("HTTPS_PROXY") ? { httpsProxy: proxyVar("HTTPS_PROXY")! } : {}),
-    noProxy: (proxyVar("NO_PROXY") ?? "").split(","),
-    ...(readPem("EXTRA_CA_CERTS") !== undefined ? { extraCa: readPem("EXTRA_CA_CERTS")! } : {}),
-    ...(readPem("TLS_CLIENT_CERT") !== undefined ? { clientCert: readPem("TLS_CLIENT_CERT")!, clientKey: readPem("TLS_CLIENT_KEY") } : {}),
-    caHint: `variable ${env.prefix}EXTRA_CA_CERTS`,
-  });
+  const network = (() => { try { return configuredNetwork(env); } catch (error) { throw new RunError((error as Error).message, ExitCode.UsageOrConfiguration); } })();
   const providerOptions: ProviderFactoryOptions = {
     fetch: network,
     providerId,
@@ -878,7 +906,6 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     idleTimeoutMs: settings.get<number>("api.streamIdleTimeout"),
     headers: { "User-Agent": identity.get("USER_AGENT"), [`${prefix}version`]: identity.version, [`${prefix}entrypoint`]: nonInteractive ? "non-interactive" : "interactive" },
   };
-  assertPolicy();
   assertPolicy();
   const loggedProvider = withRequestLog((deps.providerFactory ?? createProvider)(providerOptions), providerOptions, (m, d) => debug.log("api", m, d));
   const provider: ModelProvider = { id: loggedProvider.id, async *stream(request, signal) { assertPolicy(); yield* loggedProvider.stream(request, signal); } };
@@ -1706,7 +1733,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const effectiveRules = () => (settings.get<boolean>("permissions.managedRulesOnly") ? rules.filter((r) => r.scope === "managed") : rules);
   // RG-01 of SPEC-OUT-006 and SPEC-OUT-007: paths refused by a read rule are never returned.
   const readDenied = (path: string) =>
-    effectiveRules().some((r) => r.decision === "deny" && READ_TOOLS.has(r.tool) && ruleMatches(r, r.tool, { kind: "paths", access: "read", paths: [path] }, matchContext));
+    isCredentialFile(path, locations.configDir) ||     effectiveRules().some((r) => r.decision === "deny" && READ_TOOLS.has(r.tool) && ruleMatches(r, r.tool, { kind: "paths", access: "read", paths: [path] }, matchContext));
   const ripgrepPath = findExecutable("rg");
   if (!ripgrepPath) debug.log("tools", "search engine not found: built-in search used", {}); // FA-02 of SPEC-OUT-007
   const sessionAllows: Rule[] = [];
@@ -2178,6 +2205,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     pendingNote: () => modeState.takeNote(),
     context,
     executor: {
+      redactOutput,
       policyRefusal,
       registry,
       hooks,
@@ -2451,7 +2479,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       skills: skillSet,
       connectors: connectors?.prompts() ?? [],
       // SPEC-CMD-020 § 11: the variable hides the diagnosis.
-      disabled: [...settings.get<string[]>("commands.disabled"), ...(env.ownBoolean("HIDE_DIAGNOSTIC") === true ? ["diagnose"] : [])],
+      disabled: [...settings.get<string[]>("commands.disabled"), ...(env.ownBoolean("HIDE_DIAGNOSTIC") === true ? ["diagnose"] : []), ...(env.ownBoolean("HIDE_SIGN_OUT") === true ? ["logout"] : [])],
       automated: nonInteractive,
     });
   for (const w of commandCatalog().warnings) err(`avertissement : ${w}`); // EF-01, CA-03
@@ -2743,6 +2771,18 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       if (command.name !== "quit" && command.name !== "exit") return { refused: policyGuard.check(policyCapability).map((i) => i.message).join("\n") };
     }
     switch (command.name) {
+      case "login":
+      case "logout": {
+        if (args.trim()) return { refused: "Cette commande d'authentification n'accepte aucun argument." };
+        if (!app || command.name === "logout" && env.ownBoolean("HIDE_SIGN_OUT") === true) return { refused: "Authentification interactive indisponible." };
+        const ui: AuthUi = { secret: (title) => app.requestSecret(title), confirm: (title) => app.confirm(title), notice: (message) => app.notice("info", message) };
+        const store = () => credentialStore(identity, locations.configDir, liveSettings, sessionVault, (message) => app.notice("warning", message), () => { applySettingsChanges(); return liveSettings; });
+        try {
+          const check = () => { assertPolicy(); applySettingsChanges(); if (controller.signal.aborted || app.exiting) throw new Error("Authentification interrompue."); };
+          const success = command.name === "login" ? await loginWithKey(providerId, store, ui, deps.validateCredential ?? credentialValidator(liveSettings, env), controller.signal, check) : await logout(store(), ui, check);
+          return success ? { exit: true } : { silent: true };
+        } catch (error) { return { refused: `Authentification échouée : ${(error as Error).message}` }; }
+      }
       case "exit":
       case "quit":
         return { exit: true };
@@ -3294,6 +3334,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           `Session : ${sessionId}${transcript ? "" : " (non enregistrée)"}`,
           `Dossier : ${projectReal}`,
           `Fournisseur : ${providerId} · modèle : ${currentModel.id}`,
+          `Authentification : ${credentialSource}`,
           `Mode de permission : ${modeState.mode}`,
           `Confiance du projet : ${trust.trusted ? "accordée" : "non accordée"}`,
           "Connecteurs :",
@@ -3432,9 +3473,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     const interactiveApp = app;
     // FA-06 of SPEC-MOD-001: the history of a reopened session is shown again, condensed by default.
     const replay = settings.get<string>("ui.replayOnResume");
+    stopStartupInput?.(); stopStartupInput = undefined;
     interactiveApp.start();
     // Install the input consumer before any asynchronous startup consent, so the first message is not stranded.
     const initialEntry = parsed.prompt ? undefined : interactiveApp.nextEntry();
+    interactiveApp.acceptStartupInput(startupInput.splice(0));
     // SPEC-PER-003 EF-03: a launch in `unrestricted` asks for the warning first; refused, the session starts in `ask`.
     if (modeState.mode === "unrestricted" && !(await unrestrictedAccepted())) {
       modeState.set("ask");

@@ -7,6 +7,8 @@ import type { InternalCommand } from "./catalog";
 export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
   { name: "help", description: "Affiche les commandes disponibles et les raccourcis clavier.", kind: "display", widening: false, interactiveOnly: true },
   { name: "exit", description: "Quitte la session (le tour en cours est interrompu).", kind: "action", widening: false, interactiveOnly: true },
+  { name: "login", description: "Enregistre une clé d'API par saisie masquée et termine la session pour sa prise en compte.", kind: "action", widening: true, interactiveOnly: true },
+  { name: "logout", description: "Supprime les identifiants enregistrés après confirmation et termine la session.", kind: "action", widening: false, interactiveOnly: true },
   { name: "quit", description: "Quitte la session, comme /exit.", kind: "action", widening: false, interactiveOnly: true },
   { name: "transcript", description: "Ouvre la vue plein écran de la transcription (Alt+T).", kind: "display", widening: false, interactiveOnly: true },
   { name: "edit-mode", description: "Choisit l'édition standard ou modale de la zone de saisie, le contenu conservé.", kind: "action", widening: false, usage: "standard|modal", interactiveOnly: true },

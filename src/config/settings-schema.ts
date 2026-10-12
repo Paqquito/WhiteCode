@@ -166,6 +166,7 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "api.streamIdleTimeout", schema: durationSchema(), kind: "duration", default: 90_000, scopes: [U, G], owner: "SPEC-API-002" },
   { key: "api.maxRetries", schema: int(0), default: 8, scopes: [U, G], owner: "SPEC-API-003" },
   { key: "auth.loginMethod", schema: str(), scopes: [G], owner: "SPEC-API-012" },
+  { key: "auth.credentialStore", schema: enumOf(["auto", "keychain", "file"]), default: "auto", scopes: [U, G], owner: "SPEC-PER-027" },
 
   // Storage, sessions, environment
   { key: "storage.encryption.enabled", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-SES-001" },

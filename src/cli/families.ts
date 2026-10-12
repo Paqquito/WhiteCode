@@ -41,7 +41,7 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
   {
     name: "auth",
     role: "Identifiants",
-    operations: [op("login", "Ouvre une session d'authentification."), op("logout", "Supprime les identifiants enregistrés."), op("show", "Affiche l'état d'authentification et l'expiration.")],
+    operations: [op("login", "Enregistre une clé d'API par saisie masquée.", { delivered: true }), op("logout", "Supprime les identifiants enregistrés après confirmation.", { delivered: true }), op("show", "Affiche l'état d'authentification et l'expiration.")],
   },
   {
     name: "model",
