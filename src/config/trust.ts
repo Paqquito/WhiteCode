@@ -1,46 +1,16 @@
 // Implements: SPEC-PER-016 (EF-01, EF-02, FA-01, FA-02), SPEC-CFG-010 (approved folders in the user state), decision D-05 (`--allow-project-trust`)
 // Decides whether the project settings and active project elements may be read.
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
 import picomatch from "picomatch";
 import { comparablePath, isWithin, realPathOrSelf, type PlatformName } from "../platform/system";
-import { writeAtomic } from "../tools/text-file";
+import type { UserState } from "./user-state";
+export { readUserState, updateUserState, recoverUserState, type UserState } from "./user-state";
 
 export type TrustSource = "user-state" | "managed" | "option" | "none";
 
 export interface TrustDecision {
   readonly trusted: boolean;
   readonly source: TrustSource;
-}
-
-export interface UserState {
-  readonly trustedProjects?: readonly string[];
-  /** Folders kept in restricted mode by the answer of the user (SPEC-PER-016 § 5.3 step 4, EF-02). */
-  readonly restrictedProjects?: readonly string[];
-  /** The warning of the `unrestricted` mode was accepted on this machine (SPEC-PER-017 § 5.3 step 3). */
-  readonly unrestrictedAccepted?: boolean;
-  /** SPEC-API-008 step 1: day of the last notice about each deprecated model. */
-  readonly modelNotices?: Readonly<Record<string, string>>;
-  /** Choices by project (connectors of the `local` scope, approvals of project connectors), by comparable path. */
-  readonly projects?: Readonly<Record<string, unknown>>;
-}
-
-/** Writes `patch` over the user state file, keeping the other fields (SPEC-CFG-010). */
-export function updateUserState(path: string, patch: Partial<UserState>, platform: PlatformName): void {
-  const next = { ...readUserState(path), ...patch };
-  mkdirSync(dirname(path), { recursive: true });
-  writeAtomic(path, Buffer.from(`${JSON.stringify(next, null, 2)}\n`, "utf8"), platform);
-}
-
-export function readUserState(path: string): UserState {
-  if (!existsSync(path)) return {};
-  try {
-    const data: unknown = JSON.parse(readFileSync(path, "utf8"));
-    return typeof data === "object" && data !== null ? (data as UserState) : {};
-  } catch {
-    return {};
-  }
 }
 
 export interface TrustInputs {

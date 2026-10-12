@@ -2,6 +2,7 @@
 //             SPEC-API-006 (EF-03, EF-04, CA-03, CA-05), SPEC-CFG-002 (§ 5.2 `config validate`, CA-03)
 // Supports: SPEC-CFG-003 (FA-02, CA-06, CA-08, independent enrolment, cache and authorised recovery), gaps E-066, E-120 to E-127. Administration operations never start a session nor contact the model service (EF-04).
 // Supports: SPEC-CAD-002 (CA-12, CA-14: source and override warnings in standalone diagnostics), gap E-133.
+// Implements: SPEC-CFG-010 (CA-03: reset choices for the current real project), gap E-134.
 
 import { lstatSync, readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
@@ -21,6 +22,8 @@ import { Settings, type ConfigIssue } from "../config/settings";
 import type { Scope } from "../config/settings-schema";
 import type { Identity } from "../identity/identity";
 import { identityFindings } from "../identity/diagnostic";
+import { updateUserState } from "../config/trust";
+import { projectStateKey } from "../connectors/session";
 import { MODEL_TIERS } from "../identity/runtime-catalog";
 import type { StandardStreams } from "../platform/io";
 import { comparablePath, findExecutable, type SystemInfo } from "../platform/system";
@@ -104,6 +107,20 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
   const write = (document: unknown, text: () => string) => out(json ? JSON.stringify(document) : text()); // FA-04, CA-02: only the document
 
   switch (`${family.name} ${operation.name}`) {
+    case "project reset-choices": {
+      if (parsed.args.length) { err("Usage : project reset-choices."); return ExitCode.UsageOrConfiguration; }
+      const locations = computeLocations(deps.identity, deps.env, deps.cwd, deps.system, deps.managedDir);
+      const key = projectStateKey(locations.projectRoot, deps.system.platform);
+      await updateUserState(locations.userStateFile, (state) => {
+        const projects = { ...state.projects };
+        const entry = projects[key] as { connectors?: unknown } | undefined;
+        if (entry?.connectors !== undefined) projects[key] = { connectors: entry.connectors };
+        else delete projects[key];
+        return { ...state, projects };
+      }, deps.system.platform, err);
+      out("Choix mémorisés du projet courant réinitialisés.");
+      return ExitCode.Success;
+    }
     case "model list":
       return modelList(deps, write);
     case "model show": {

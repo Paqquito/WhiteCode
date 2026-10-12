@@ -5,6 +5,7 @@
 import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { comparablePath, realPathOrSelf, type PlatformName } from "../platform/system";
+import { restrictFileToOwner, writeNewPrivateWindowsFile } from "../platform/private-file";
 import type { ReadRecord, ToolContext } from "./types";
 
 export type TextEncoding = "utf8" | "utf16le" | "utf16be" | "latin1";
@@ -128,7 +129,7 @@ function failureMessage(error: unknown): string {
  * Atomic write (EF-03, RG-03, ENF-01): temporary file in the same folder, flushed, then renamed over the target.
  * Missing parent folders are created; the POSIX mode of a replaced file is kept (Q-01). The original stays intact on failure.
  */
-export function writeAtomic(path: string, bytes: Uint8Array, platform: PlatformName): void {
+export function writeAtomic(path: string, bytes: Uint8Array, platform: PlatformName, ownerOnly = false): void {
   const dir = dirname(path);
   const temp = join(dir, `.${basename(path)}.${process.pid}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}.tmp`);
   let mode: number | undefined;
@@ -139,15 +140,17 @@ export function writeAtomic(path: string, bytes: Uint8Array, platform: PlatformN
   }
   try {
     mkdirSync(dir, { recursive: true });
-    const fd = openSync(temp, "wx", mode ?? 0o666);
-    try {
-      let offset = 0;
-      while (offset < bytes.length) offset += writeSync(fd, bytes, offset, bytes.length - offset);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
+    if (ownerOnly && platform === "windows") writeNewPrivateWindowsFile(temp, bytes);
+    else {
+      const fd = openSync(temp, "wx", ownerOnly ? 0o600 : mode ?? 0o666);
+      try {
+        if (ownerOnly) restrictFileToOwner(temp);
+        let offset = 0;
+        while (offset < bytes.length) offset += writeSync(fd, bytes, offset, bytes.length - offset);
+        fsyncSync(fd);
+      } finally { closeSync(fd); }
     }
-    if (mode !== undefined && platform !== "windows") chmodSync(temp, mode);
+    if (!ownerOnly && mode !== undefined && platform !== "windows") chmodSync(temp, mode);
     renameSync(temp, path);
   } catch (error) {
     // Best-effort cleanup: when the folder itself could not be created, removing the temporary file fails too

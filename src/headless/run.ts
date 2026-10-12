@@ -8,6 +8,7 @@
 // Supports: SPEC-CFG-003 (FA-02, CA-05, CA-06, CA-08, file, enrolment, cache and native authority checks before composition and every action), gaps E-124 to E-127.
 // Supports: SPEC-PER-001 (CA-09, CA-11, CA-18, CA-20 to CA-23, CA-33), SPEC-PER-028 (CA-03), gap E-131.
 // Supports: SPEC-SES-015 (CA-02), SPEC-OUT-037 (CA-01), SPEC-HOK-001 (CA-04), SPEC-CFG-007 (CA-04), gap E-132.
+// Supports: SPEC-CFG-010 (CA-01, CA-02: concurrent choices and corrupt-state recovery), gap E-134.
 // Composition root of a session: options → identity and settings → provider → engine → automated output, or the
 // interactive application (lot 5).
 
@@ -41,7 +42,7 @@ import { fill as fillTemplate } from "../commands/create-instructions";
 import { createInstructionsRequest, parseChoices, SETUP_CHOICES, type SetupChoice } from "../commands/create-instructions";
 import { renderDiagnostics, runDiagnostics, type Finding } from "../admin/diagnostic";
 import { identityFindings } from "../identity/diagnostic";
-import { readUserState, updateUserState } from "../config/trust";
+import { readUserState, updateUserState, recoverUserState } from "../config/trust";
 import { FallbackPolicy } from "../engine/fallback";
 import { buildSystemInstructions, estimateTokens, RequiredSectionUnavailable } from "../engine/system-instructions";
 import { InstructionsLoader, instructionsReminder, renderInstructions } from "../engine/project-instructions";
@@ -513,6 +514,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     loaded = loadAll(env);
   }
   const offlineMinimal = env.ownBoolean("OFFLINE_MINIMAL") === true;
+  await recoverUserState(loaded.locations.userStateFile, (message) => err(`avertissement : ${message}`));
   if (offlineMinimal && (serve?.transport === "network" || ["control-listen", "control-connect", "remote-session", "reopen-remote"].some((name) => parsed.options.has(name)))) {
     throw new RunError("Transport distant indisponible en mode minimal hors ligne.", ExitCode.UsageOrConfiguration);
   }
@@ -535,9 +537,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       const answer = await askTrust(streams.terminal!, root, inventory, broad);
       if (answer === "quit") return ExitCode.Success;
       if (answer === "trust") {
-        updateUserState(loaded.locations.userStateFile, { trustedProjects: [...(state.trustedProjects ?? []), root] }, system.platform);
+        await updateUserState(loaded.locations.userStateFile, { trustedProjects: [root] }, system.platform);
         loaded = loadAll(env);
-      } else updateUserState(loaded.locations.userStateFile, { restrictedProjects: [...(state.restrictedProjects ?? []), root] }, system.platform);
+      } else await updateUserState(loaded.locations.userStateFile, { restrictedProjects: [root] }, system.platform);
     }
   }
   const { locations, firstPass, settings, trust } = loaded;
@@ -790,7 +792,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     if (notices[resolution.id] !== today) {
       const successor = resolution.lifecycle.successor ? ` ; successeur : ${resolution.lifecycle.successor}` : "";
       err(`avertissement : le modèle ${resolution.id} est déprécié : retrait prévu le ${resolution.lifecycle.retirementDate}${successor}.`); // step 1, CA-01
-      updateUserState(locations.userStateFile, { modelNotices: { ...notices, [resolution.id]: today } }, system.platform);
+      await updateUserState(locations.userStateFile, { modelNotices: { [resolution.id]: today } }, system.platform);
     }
   }
   if (!allowedByList(resolution, modelValue)) {
@@ -2061,7 +2063,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         "activer",
         "refuser",
       );
-      if (ok) updateUserState(locations.userStateFile, { unrestrictedAccepted: true }, system.platform);
+      if (ok) await updateUserState(locations.userStateFile, { unrestrictedAccepted: true }, system.platform);
       return ok;
     };
     app = new InteractiveApp({
@@ -3431,6 +3433,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     // FA-06 of SPEC-MOD-001: the history of a reopened session is shown again, condensed by default.
     const replay = settings.get<string>("ui.replayOnResume");
     interactiveApp.start();
+    // Install the input consumer before any asynchronous startup consent, so the first message is not stranded.
+    const initialEntry = parsed.prompt ? undefined : interactiveApp.nextEntry();
     // SPEC-PER-003 EF-03: a launch in `unrestricted` asks for the warning first; refused, the session starts in `ask`.
     if (modeState.mode === "unrestricted" && !(await unrestrictedAccepted())) {
       modeState.set("ask");
@@ -3457,6 +3461,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     await runInteractiveLoop({
       app: interactiveApp,
       initialPrompt: parsed.prompt ?? recoveredPrompt,
+      ...(initialEntry ? { initialEntry } : {}),
       ...(recoveredPrompt ? { initialMeta: { literal: true, pasted: [recoveredPrompt] } } : {}),
       initialQueueHeld: recoveredPrompt !== undefined,
       queueAutoSend: settings.get<boolean>("ui.queue.autoSend"),

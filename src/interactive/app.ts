@@ -339,6 +339,8 @@ export class InteractiveApp {
     return this.#turn !== undefined;
   }
 
+  get exiting(): boolean { return this.#exiting; }
+
   get queue(): readonly string[] {
     return this.#queue;
   }

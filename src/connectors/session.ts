@@ -4,7 +4,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { comparablePath, type PlatformName } from "../platform/system";
+import { comparablePath, realPathOrSelf, type PlatformName } from "../platform/system";
 import type { ConnectorDeclaration, ConnectorSource, ProjectChoice } from "./declarations";
 
 /** Choices of the user for one project (SPEC-CFG-010): personal connectors (`local` scope) and project connector approvals. */
@@ -18,7 +18,7 @@ export const MANAGED_CONNECTORS_FILE = "policy-connectors.json";
 
 /** Key of a project in the user state. */
 export function projectStateKey(projectRoot: string, platform: PlatformName): string {
-  return comparablePath(projectRoot, platform);
+  return comparablePath(realPathOrSelf(projectRoot), platform);
 }
 
 const readText = (path: string) => (existsSync(path) ? readFileSync(path, "utf8") : undefined);

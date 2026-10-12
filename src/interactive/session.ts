@@ -5,7 +5,7 @@
 // Supports: SPEC-SES-015 (CA-02: recovery releases only the explicitly accepted message), gap E-132.
 
 import type { TurnResult } from "../engine/events";
-import type { InteractiveApp } from "./app";
+import type { Entry, InteractiveApp } from "./app";
 
 export type EntryOutcome =
   /** A turn ran. */
@@ -24,6 +24,8 @@ export interface InteractiveLoopOptions {
   readonly app: InteractiveApp;
   readonly initialPrompt?: string;
   readonly initialMeta?: EntryMeta;
+  /** Input accepted while startup consent is being persisted, before this loop starts. */
+  readonly initialEntry?: Promise<Entry>;
   readonly initialQueueHeld?: boolean;
   /** Handles one entry: a built-in command, a skill or command, or a message to the model. */
   readonly process: (text: string, signal: AbortSignal, meta: EntryMeta) => Promise<EntryOutcome>;
@@ -36,6 +38,7 @@ export async function runInteractiveLoop(o: InteractiveLoopOptions): Promise<{ t
   // FA-06 of SPEC-IHM-011: a queue restored with a reopened session is never sent by itself.
   let release = false;
   let turns = 0;
+  let initialEntry = o.initialEntry;
   for (;;) {
     let text: string | undefined;
     let meta: EntryMeta = {};
@@ -48,11 +51,13 @@ export async function runInteractiveLoop(o: InteractiveLoopOptions): Promise<{ t
       text = app.takeQueued();
     }
     if (text === undefined) {
-      const entry = await app.nextEntry();
+      const entry = await (initialEntry ?? app.nextEntry());
+      initialEntry = undefined;
       if (entry.kind === "exit") break;
       text = entry.text;
       meta = { literal: entry.literal, pasted: entry.pasted };
     }
+    if (app.exiting) break;
     const controller = new AbortController();
     app.setQueueHeld(holdQueue);
     app.beginTurn(controller);
