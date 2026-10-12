@@ -12,6 +12,7 @@ import { searchDeferred } from "../src/tools/discover-tools";
 import { cli, workspace, type Workspace } from "./helpers/env";
 import { BUN, productEnv, PROJECT_DIR, record } from "./helpers/hooks";
 import { ScriptedProvider } from "./helpers/scripted-provider";
+import { httpConnectorServer } from "./helpers/fake-mcp-http";
 
 const SERVER = join(import.meta.dir, "helpers", "mcp-server.ts").replace(/\\/g, "/");
 const platform = currentPlatform();
@@ -36,19 +37,24 @@ describe("SPEC-MCP-001 configuration of the connectors", () => {
   test("SPEC-MCP-001/CA-01 — the example file in the project scope, approved: both connectors are configured", async () => {
     const ws = workspace();
     const docs = fake(ws, "docs", { tools: tools("search") });
+    const tickets = httpConnectorServer();
+    try {
     ws.write(
       `project/${PROJECT_DIR}/connectors.json`,
       JSON.stringify({
         servers: {
           docs: { ...docs, args: [...docs.args, "--root", "${PROJECT_ROOT}"], env: { TOKEN: "${DOCS_TOKEN}" } },
-          tickets: { transport: "http", url: "https://mcp.example.com/tickets", headers: { "X-Team": "core" } },
+          tickets: { transport: "http", url: tickets.url, headers: { "X-Team": "core" } },
         },
       }),
     );
     const p = new ScriptedProvider([{ text: "done" }]);
     const res = await run(ws, p, { mcp: { enabledProjectServers: ["docs", "tickets"] } }, ["--allow-project-trust"], { DOCS_TOKEN: "t" });
     expect(toolNames(p, 0)).toContain("cnx_docs_search");
-    expect(res.stderr).toContain("connecteur tickets : transport http non disponible dans cette version");
+    expect(toolNames(p, 0)).toContain("cnx_tickets_lookup");
+    expect(res.code).toBe(0);
+    expect(tickets.requests.every((r) => r.headers.get("X-Team") === "core")).toBe(true);
+    } finally { tickets.stop(); }
   });
 
   test("SPEC-MCP-001/CA-02 — docs defined in the user and local scopes: the local definition is used", async () => {

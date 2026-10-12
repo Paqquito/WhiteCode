@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import type { ContentPart, ImagePart } from "../providers/types";
 import { compileRaw } from "../shared/schema";
 import { textOutcome, type Tool, type ToolOutcome } from "../tools/types";
-import type { McpCallResult, McpToolInfo } from "./stdio-client";
+import { RequestTimeout, type McpCallResult, type McpToolInfo } from "./stdio-client";
 
 const MAX_NAME = 64;
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
@@ -112,7 +112,7 @@ export function connectorTool(info: McpToolInfo, qualified: string, deps: Connec
         result = await deps.call(info.name, input, { timeoutMs: deps.timeoutMs, signal: ctx.signal });
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
-        if (/délai de .* dépassé/.test(message)) return textOutcome(`The connector tool did not answer within ${Math.round(deps.timeoutMs / 1000)} s; the call was cancelled.`, true, "timeout"); // ERR-01
+        if (e instanceof RequestTimeout || /délai de .* dépassé/.test(message)) return textOutcome(`The connector tool did not answer within ${Math.round(deps.timeoutMs / 1000)} s; the call was cancelled.`, true, "timeout"); // ERR-01
         return textOutcome(`Connector ${deps.server}: ${message}`, true, "unavailable"); // FA-01, FA-03
       }
       const { parts, text } = convert(result, ctx.modelImages);

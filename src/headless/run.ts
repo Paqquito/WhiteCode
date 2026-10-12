@@ -14,6 +14,7 @@
 // Supports: SPEC-IHM-019 (CA-01/02), SPEC-IHM-020 (CA-02), SPEC-CMD-072 (CA-01), SPEC-MOD-001 (CA-06), gap E-142.
 // Composition root of a session: options → identity and settings → provider → engine → automated output, or the
 // Supports: SPEC-CAD-002 (CA-13), SPEC-API-006 (CA-02, unknown identifiers with minimal capabilities), gap E-145.
+// Supports: SPEC-MCP-003 (CA-01/02/03, shared network settings and authentication status), gap E-146.
 // interactive application (lot 5).
 
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
@@ -1673,11 +1674,12 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     else if (e.kind === "tools_changed")
       connectorNotes.push({ type: "connectors", text: `The tools of the connector ${e.name} changed.${e.added.length ? ` New: ${e.added.join(", ")}.` : ""}${e.removed.length ? ` Removed: ${e.removed.join(", ")}.` : ""}`, priority: 2 });
     else if (e.kind === "lost") connectorNotes.push({ type: "connectors", text: `The connector ${e.name} was disconnected: its tools fail until it reconnects.`, priority: 2 });
-    else connectorNotes.push({ type: "connectors", text: `The connector ${e.name} is unavailable (${e.reason}): do not use its tools.`, priority: 2 });
+    else connectorNotes.push({ type: "connectors", text: `The connector ${e.name} is unavailable: reconnect or authenticate it before using its tools.`, priority: 2 });
   };
   const connectors =
     connectorSet.connectors.length > 0
       ? new ConnectorManager({
+          fetch: network,
           connectors: connectorSet.connectors,
           projectRoot: locations.projectRoot,
           platform: system.platform,
@@ -3209,7 +3211,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       }
       case "connectors": {
         // SPEC-CMD-041: the state of each connector, up to date at opening (EF-01), its detail, a reconnection (CA-01).
-        const states: Record<string, string> = { connected: "connecté", connecting: "connexion en cours", pending: "en attente", error: "en échec", unavailable: "indisponible" };
+        const states: Record<string, string> = { connected: "connecté", connecting: "connexion en cours", pending: "en attente", auth_required: "authentification requise", error: "en échec", unavailable: "indisponible" };
         const list = connectors?.status() ?? [];
         const line = (s: (typeof list)[number]) => `${s.name} (${s.scope}) : ${states[s.state] ?? s.state}${s.error ? ` — ${maskSecrets(s.error)}` : ""}${s.state === "connected" ? `, ${s.tools} outil${s.tools > 1 ? "s" : ""}` : ""}`;
         const [verb, name] = args.trim().split(/\s+/);
@@ -3540,7 +3542,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       }
       case "status": {
         // SPEC-CMD-067: the state of the session, without any secret (EF-01); a connector in error is listed as such (CA-01).
-        const states: Record<string, string> = { connected: "connecté", connecting: "connexion en cours", pending: "en attente", error: "en échec", unavailable: "indisponible" };
+        const states: Record<string, string> = { connected: "connecté", connecting: "connexion en cours", pending: "en attente", auth_required: "authentification requise", error: "en échec", unavailable: "indisponible" };
         const lines = [
           `${identity.get("PRODUCT")} ${identity.version}`,
           `Session : ${sessionId}${transcript ? "" : " (non enregistrée)"}`,

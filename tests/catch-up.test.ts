@@ -2,13 +2,14 @@
 // the work (SPEC-MOT-008), interruption (SPEC-MOT-009), reminders (SPEC-MOT-007), paths (SPEC-PER-010), trust of the
 // workspace (SPEC-PER-016), the `unrestricted` mode (SPEC-PER-003, SPEC-PER-017), the task list (SPEC-OUT-021).
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cli, workspace } from "./helpers/env";
 import { Host } from "./helpers/control";
 import { bunCommand, PROJECT_DIR, productEnv, record } from "./helpers/hooks";
 import { interactive, KEY, sleep } from "./helpers/interactive";
 import { ScriptedProvider } from "./helpers/scripted-provider";
+import { processExists } from "../src/platform/process";
 
 const send = (run: ReturnType<typeof interactive>, line: string) => {
   run.type(line);
@@ -76,22 +77,31 @@ describe("SPEC-MOT-009 interruption", () => {
 
   test("SPEC-MOT-009/CA-02 — SPEC-MOT-009/CA-05 — a long shell command interrupted: the process stops, the model sees « interrupted » and learns it at the next turn", async () => {
     const ws = workspace();
-    const sleeper = ws.write("scripts/sleep.ts", "await Bun.sleep(20_000);\n").replace(/\\/g, "/");
+    const pidMarker = join(ws.root, "interrupt.pid");
+    const sleeper = ws.write("scripts/sleep.ts", `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(pidMarker)}, String(process.pid) + " READY"); await Bun.sleep(20_000);\n`).replace(/\\/g, "/");
     const p = new ScriptedProvider([{ toolCalls: [{ name: "run_shell", input: { command: bunCommand(sleeper) } }] }, { text: "suite" }]);
     const h = new Host(ws, { provider: p, init: {}, argv: ["--allow-rule", "run_shell"], env: productEnv(ws) });
+    try {
     h.user("lance");
     await h.waitFor((m) => m.type === "tool_call");
-    await sleep(500);
+    let pid = 0;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      try { const ready = /^(\d+) READY$/.exec(readFileSync(pidMarker, "utf8")); if (ready) { pid = Number(ready[1]); break; } } catch {}
+      await sleep(100);
+    }
+    expect(pid).toBeGreaterThan(0); // The native child confirms it is running before interruption.
     const started = Date.now();
     await h.request("cancel_turn");
     await h.waitFor((m) => m.type === "turn_completed");
     expect(Date.now() - started).toBeLessThan(8_000);
+    expect(processExists(pid)).toBe(false); // Ending only the shell must not leave the native child alive.
     expect(h.messages.some((m) => m.type === "tool_result" && String(m["output"]).toLowerCase().includes("interrupted"))).toBe(true);
     h.user("et alors ?");
     await h.waitFor((m) => m.type === "turn_completed" && m["turn"] === 2);
     h.feed.end();
     await h.finish();
     expect(history(p, 1)).toContain("The user interrupted the previous turn");
+    } finally { h.feed.end(); await h.finish(); }
   }, 30_000);
 });
 

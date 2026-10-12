@@ -3,15 +3,17 @@
 //             SPEC-MCP-011 (§ 5.3 step 2, EF-01, EF-03, ERR-01)
 // The connections of a session: started in parallel without blocking, published to the tool registry once connected,
 // reconnected with an exponential delay, closed at the end.
+// Supports: SPEC-MCP-003 (CA-01/02/03, HTTP and SSE connections), gap E-146.
 
 import { isAbsolute, resolve } from "node:path";
 import type { PlatformName } from "../platform/system";
 import type { Tool } from "../tools/types";
 import { expand, type ConnectorDeclaration } from "./declarations";
 import { ConnectionError, StdioConnection, type McpPromptInfo, type McpToolInfo } from "./stdio-client";
+import { AuthenticationRequired, HttpConnection } from "./http-client";
 import { connectorTool, qualifiedToolName, schemaProblem } from "./tools";
 
-export type ConnectorState = "pending" | "connecting" | "connected" | "error" | "unavailable";
+export type ConnectorState = "pending" | "connecting" | "connected" | "error" | "unavailable" | "auth_required";
 
 export interface ConnectorStatus {
   readonly name: string;
@@ -25,6 +27,8 @@ export interface ConnectorStatus {
 }
 
 export interface ConnectorManagerOptions {
+  /** Shared proxy, authorities and client certificate configuration. */
+  readonly fetch?: typeof fetch;
   readonly connectors: readonly ConnectorDeclaration[];
   readonly projectRoot: string;
   readonly platform: PlatformName;
@@ -59,7 +63,7 @@ interface Entry {
   readonly d: ConnectorDeclaration;
   state: ConnectorState;
   error?: string;
-  conn?: StdioConnection;
+  conn?: Pick<StdioConnection, "listTools" | "listPrompts" | "getPrompt" | "callTool" | "close" | "capabilities" | "stderrTail" | "lost">;
   connecting?: Promise<void>;
   reconnecting?: Promise<void>;
   connectionRevision: number;
@@ -86,6 +90,7 @@ export class ConnectorManager {
   #active = 0;
   readonly #queue: Array<() => void> = [];
   readonly #connecting = new Set<Promise<void>>();
+  readonly #disconnecting = new Set<Promise<void>>();
   #closed = false;
   /** Aborted by `close`: the connections being set up are stopped too (SPEC-MOD-010 CA-05). */
   readonly #shutdown = new AbortController();
@@ -186,29 +191,37 @@ export class ConnectorManager {
 
   async #connect(e: Entry): Promise<void> {
     if (this.#closed) return;
-    if (e.d.transport !== "stdio") return this.#fail(e, `transport ${e.d.transport} non disponible dans cette version`, false);
+    if (!["stdio", "http", "sse"].includes(e.d.transport)) return this.#fail(e, `transport ${e.d.transport} non disponible dans cette version`, false);
     const launch = this.#launch(e);
     if (typeof launch === "string") return this.#fail(e, launch, false);
     e.state = "connecting";
     try {
-      const conn = await StdioConnection.open({
+      const common = {
         name: e.d.name,
+        connectTimeoutMs: e.d.timeoutMs ?? this.#o.connectTimeoutMs,
+        clientInfo: this.#o.clientInfo,
+        onNotification: (method: string) => {
+          if (method === "notifications/tools/list_changed") void this.#refresh(e);
+          if (method === "notifications/prompts/list_changed") void this.#refreshPrompts(e);
+        },
+        onLost: (reason: string) => { if (e.state === "connected") this.#lost(e, reason); },
+        signal: this.#shutdown.signal,
+      };
+      const missing = new Set<string>(), url = expand(e.d.url ?? "", this.#o.variables, missing);
+      const headers = Object.fromEntries(Object.entries(e.d.headers).map(([k, v]) => [k, expand(v, this.#o.variables, missing)]));
+      if (missing.size > 0) return this.#fail(e, `erreur de configuration : variable ${[...missing].join(", ")} non définie`, false);
+      const conn = e.d.transport === "stdio" ? await StdioConnection.open({
         ...launch,
         env: this.#o.environment(launch.env),
         platform: this.#o.platform,
-        connectTimeoutMs: this.#o.connectTimeoutMs,
-        clientInfo: this.#o.clientInfo,
-        onNotification: (method) => {
-          if (method === "notifications/tools/list_changed") void this.#refresh(e);
-          if (method === "notifications/prompts/list_changed") void this.#refreshPrompts(e); // EF-03 of SPEC-MCP-011
-        },
-        onLost: (reason) => this.#lost(e, reason),
-        signal: this.#shutdown.signal,
-      });
+        ...common,
+      }) : await HttpConnection.open({ ...common, url, headers, transport: e.d.transport as "http" | "sse", fetch: this.#o.fetch });
       if (this.#closed) return void (await conn.close(0));
       e.conn = conn;
-      const published = await this.#publish(e, await conn.listTools(this.#o.connectTimeoutMs));
-      if (conn.capabilities["prompts"]) e.prompts = await conn.listPrompts(this.#o.connectTimeoutMs).catch(() => []);
+      const published = await this.#publish(e, await conn.listTools(common.connectTimeoutMs));
+      if (conn.capabilities["prompts"]) e.prompts = await conn.listPrompts(common.connectTimeoutMs).catch(() => []);
+      if (conn.lost === "authentification requise") throw new AuthenticationRequired("Authentification requise (/connectors).");
+      if (conn.lost) throw new ConnectionError("Connexion perdue pendant l'initialisation.");
       e.state = "connected";
       e.error = undefined;
       e.attempts = 0;
@@ -220,7 +233,8 @@ export class ConnectorManager {
       await e.conn?.close(0);
       e.conn = undefined;
       if (this.#closed && /interrompu|démarrage annulé/.test(message)) { e.settle(); return; }
-      this.#fail(e, message, !this.#closed && err instanceof ConnectionError && !/programme introuvable|version du protocole/.test(message));
+      if (err instanceof AuthenticationRequired) return this.#authentication(e);
+      this.#fail(e, message, !this.#closed && err instanceof ConnectionError && !/programme introuvable|version du protocole|URL non sécurisée|autre origine|En-têtes.*invalides/.test(message));
     }
   }
 
@@ -253,13 +267,13 @@ export class ConnectorManager {
     return connectorTool(info, qualified, {
       server: e.d.name,
       descriptionMax: this.#o.descriptionMax,
-      timeoutMs: this.#o.toolTimeoutMs,
+      timeoutMs: e.d.timeoutMs ?? this.#o.toolTimeoutMs,
       outputLimit: e.d.maxOutputTokens ?? this.#o.outputInlineLimit,
       estimateTokens: this.#o.estimateTokens,
       store: this.#o.store,
       call: (name, args, o) => {
         if (!e.live.has(qualified)) return Promise.reject(new Error(`the tool ${info.name} is no longer published by the server.`));
-        if (!e.conn || e.state !== "connected") return Promise.reject(new Error(`disconnected${e.error ? ` (${e.error})` : ""}; reconnection in progress.`));
+        if (!e.conn || e.state !== "connected") return Promise.reject(new Error("disconnected; reconnect or authenticate the connector before using its tools."));
         return e.conn.callTool(name, args, o);
       },
       overflowed: () => {
@@ -328,7 +342,10 @@ export class ConnectorManager {
   #lost(e: Entry, reason: string): void {
     if (this.#closed) return;
     e.stderr = e.conn?.stderrTail() ?? [];
+    const closing = e.conn?.close(0);
+    if (closing) { this.#disconnecting.add(closing); void closing.finally(() => this.#disconnecting.delete(closing)).catch(() => {}); }
     e.conn = undefined;
+    if (reason === "authentification requise") return this.#authentication(e);
     const last = e.stderr.slice(-5);
     this.#o.report(`avertissement : connecteur ${e.d.name} : connexion perdue (${reason}) ; reconnexion automatique.${last.length ? ` Dernières lignes d'erreur : ${last.join(" | ")}` : ""}`); // CA-03
     this.#o.changed({ kind: "lost", name: e.d.name, reason });
@@ -354,6 +371,12 @@ export class ConnectorManager {
     e.timer = setTimeout(() => this.#schedule(e), delay);
   }
 
+  #authentication(e: Entry): void {
+    clearTimeout(e.timer); e.state = "auth_required"; e.error = "authentification requise (/connectors)";
+    e.settle(); this.#o.report(`Connecteur ${e.d.name} : authentification requise (/connectors).`);
+    this.#o.changed({ kind: "failed", name: e.d.name, reason: "authentication required" });
+  }
+
   /** Step 4: every connection closed, every server process stopped (SPEC-MCP-002 EF-03). */
   async close(): Promise<void> {
     this.#closed = true;
@@ -366,6 +389,6 @@ export class ConnectorManager {
         e.conn = undefined;
       }),
     );
-    await Promise.allSettled([...this.#connecting, ...[...this.#entries.values()].flatMap((e) => e.reconnecting ? [e.reconnecting] : [])]);
+    await Promise.allSettled([...this.#connecting, ...this.#disconnecting, ...[...this.#entries.values()].flatMap((e) => e.reconnecting ? [e.reconnecting] : [])]);
   }
 }

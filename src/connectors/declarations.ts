@@ -1,10 +1,12 @@
 // Implements: SPEC-MCP-001 (§ 5.1 locations and format, § 5.3 steps 1 to 3, FA-01, EF-01, EF-04, ERR-01 to ERR-03, RG-01),
 //             SPEC-MCP-021 (§ 5.1, § 5.3, EF-01 to EF-03, ERR-01), SPEC-PER-019 (§ 5.3, FA-01, FA-02, EF-01, EF-02, RG-01)
+// Supports: SPEC-MCP-003 (CA-03, secure declarations and request timeout), gap E-146.
 // The effective connectors of a session: declarations read by scope, validated, resolved by priority, then filtered by
 // the managed lists and by the approval of the project connectors.
 
 import { parse, type ParseError } from "jsonc-parser";
 import { fingerprint } from "../shared/fingerprint";
+import { secureConnectorUrl } from "./url";
 
 export type ConnectorScope = "managed" | "cli" | "local" | "project" | "user" | "extension";
 
@@ -20,6 +22,8 @@ export interface ConnectorDeclaration {
   readonly cwd?: string;
   readonly url?: string;
   readonly headers: Readonly<Record<string, string>>;
+  /** Supports: SPEC-MCP-003: declaration timeout in milliseconds, after scope resolution. */
+  readonly timeoutMs?: number;
   /** Threshold of large outputs for this connector (SPEC-MCP-020 EF-03), in estimated tokens. */
   readonly maxOutputTokens?: number;
   /** Digest of the declaration as written (SPEC-PER-019 RG-01). */
@@ -113,6 +117,11 @@ function readSource(src: ConnectorSource, warnings: string[]): ConnectorDeclarat
     const problems: string[] = [];
     if (transport === "stdio" && (typeof d["command"] !== "string" || d["command"].trim() === "")) problems.push("commande absente");
     if (transport !== "stdio" && typeof d["url"] !== "string") problems.push("URL absente");
+    if ((transport === "http" || transport === "sse") && typeof d["url"] === "string" && !d["url"].startsWith("${")) {
+      try { secureConnectorUrl(d["url"].replace(/\$\{[^}]+\}/g, "localhost")); } catch { problems.push("URL non sécurisée refusée"); }
+    }
+    if (d["timeout"] !== undefined && !(Number.isInteger(d["timeout"]) && (d["timeout"] as number) > 0 && (d["timeout"] as number) <= 86_400_000)) problems.push("timeout doit être un entier de 1 à 86400000 millisecondes");
+    if (d["headersCommand"] !== undefined) problems.push("headersCommand non disponible dans cette version");
     if (d["args"] !== undefined && !strings(d["args"])) problems.push("args doit être une liste de textes");
     if (d["env"] !== undefined && !stringMap(d["env"])) problems.push("env doit associer des noms à des textes");
     if (d["headers"] !== undefined && !stringMap(d["headers"])) problems.push("headers doit associer des noms à des textes");
@@ -133,6 +142,7 @@ function readSource(src: ConnectorSource, warnings: string[]): ConnectorDeclarat
       cwd: typeof d["cwd"] === "string" ? d["cwd"] : undefined,
       url: typeof d["url"] === "string" ? d["url"] : undefined,
       headers: (d["headers"] as Record<string, string> | undefined) ?? {},
+      timeoutMs: typeof d["timeout"] === "number" ? d["timeout"] : undefined,
       maxOutputTokens: typeof d["maxOutputTokens"] === "number" ? d["maxOutputTokens"] : undefined,
       fingerprint: fingerprint({ name, declaration: raw }),
       ...(src.scope === "managed" && d["required"] === true ? { required: true } : {}),
