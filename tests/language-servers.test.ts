@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import { LanguageManager } from "../src/languages/manager";
 import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { PROJECT_DIR } from "./helpers/hooks";
@@ -109,13 +110,21 @@ test("SPEC-OUT-004/CA-10, SPEC-INT-006/CA-04 — passive diagnostics disabled: t
 
 test("SPEC-INT-006/CA-03 — publication after five seconds: edit returns at three seconds and a later request receives the diagnostics", async () => {
   const ws = workspace(), peer = languageServer(ws, { delayMs: 5_000 }), path = ws.write("project/code.ts", "const value = 1;\n");
-  const other = ws.write("project/note.txt", "note"); let editResultAt = 0;
-  const p = new ScriptedProvider([call("read_file", { path }), call("edit_file", { path, old_text: "value", new_text: "BAD" }), () => { editResultAt = Date.now(); return { delayMs: 2_500, ...call("read_file", { path: other }) }; }, { text: "checked" }]);
+  const other = ws.write("project/note.txt", "note"); let editResultAt = 0, waitStarted = 0;
+  const original = LanguageManager.prototype.changed;
+  const timing = spyOn(LanguageManager.prototype, "changed").mockImplementation(function (this: LanguageManager, ...args: Parameters<LanguageManager["changed"]>) {
+    waitStarted = performance.now(); return original.apply(this, args);
+  });
+  try {
+  const p = new ScriptedProvider([call("read_file", { path }), call("edit_file", { path, old_text: "value", new_text: "BAD" }), () => { editResultAt = performance.now(); return { delayMs: 2_500, ...call("read_file", { path: other }) }; }, { text: "checked" }]);
   const result = await cli(["--non-interactive", "--allow-rule", "edit_file", "change"], ws, { provider: p, env: productEnv(ws), userConfig: { lsp: { servers: { types: peer.declaration } } } });
   expect(result.code).toBe(0); expect(history(p, 2)).not.toContain("Type mismatch"); expect(history(p, 3)).toContain("Language server diagnostics"); expect(history(p, 3)).toContain("Type mismatch");
   const changed = peer.messages().find((m) => m.method === "textDocument/didChange" || (m.method === "textDocument/didOpen" && m.params.textDocument.text.includes("BAD")));
   expect(changed).toBeDefined();
-  expect(editResultAt - changed.at).toBeGreaterThanOrEqual(2_800); expect(editResultAt - changed.at).toBeLessThan(4_500);
+  // The wait begins in the product before the child receives didChange; its IPC latency is outside this clock.
+  expect(waitStarted).toBeGreaterThan(0);
+  expect(editResultAt - waitStarted).toBeGreaterThanOrEqual(2_800); expect(editResultAt - waitStarted).toBeLessThan(4_500);
+  } finally { timing.mockRestore(); }
 }, 20_000);
 
 test("SPEC-INT-006/CA-02 — repeated crashes: after three restarts the language server is unavailable", async () => {

@@ -2,6 +2,7 @@
 // Read-only access to the resolved identity, with the runtime overrides allowed by RG-03.
 // Supports: SPEC-CFG-003 (§ 5.7 points 2, 3), gap E-121: runtime overrides cannot replace the distribution anchor.
 // Supports: SPEC-CAD-002 (CA-19: explicit language fallback warning), gap E-133.
+// Supports: SPEC-CAD-002 (CA-13: complete startup override snapshot), gap E-145.
 
 import { isOverridable, isServiceUrl, MODEL_TIERS, OVERRIDABLE_VARIABLES, type ModelTier } from "./runtime-catalog";
 import type { IdentityValue, ModelTierValue, ResolvedIdentity } from "./resolver";
@@ -89,6 +90,7 @@ export class Identity {
    * `environment` maps variable names (without prefix) to raw values.
    */
   applyOverrides(environment: Readonly<Record<string, string>>, managed: Readonly<Record<string, string>> = {}, allowEnvironment = true): void {
+    this.#overrides.clear(); // Each application replaces the complete startup snapshot.
     const apply = (source: IdentityOverride["source"], entries: Readonly<Record<string, string>>) => {
       for (const [name, value] of Object.entries(entries)) {
         if (!this.#resolved.values[name] && !OVERRIDABLE_VARIABLES.has(name)) continue;
@@ -101,7 +103,7 @@ export class Identity {
             this.warnings.push({ code: "ERR-13", message: `\`${name}\` doit référencer une gamme définie.` });
             continue;
           }
-        } else if (isServiceUrl(name) && !isSecureUrl(value)) {
+        } else if (isServiceUrl(name) && !isSecureIdentityUrl(value)) {
           this.warnings.push({ code: "ERR-14", message: `URL non sécurisée refusée pour \`${name}\`.` });
           continue;
         }
@@ -118,9 +120,11 @@ export function pickLanguage(value: IdentityValue, language: string, defaultLang
   return value[language] ?? value[defaultLanguage] ?? Object.values(value)[0] ?? "";
 }
 
-function isSecureUrl(value: string): boolean {
+/** URLs of identity services never carry credentials or fragments. */
+export function isSecureIdentityUrl(value: string): boolean {
   try {
     const url = new URL(value);
+    if (url.username || url.password || url.hash) return false;
     return url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname));
   } catch {
     return false;

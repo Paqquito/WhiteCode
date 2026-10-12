@@ -5,7 +5,7 @@
 import type { ResolvedModel } from "../providers/catalog";
 
 export class FallbackPolicy {
-  readonly #main: ResolvedModel;
+  #main: ResolvedModel;
   readonly #backup: ResolvedModel;
   readonly #threshold: number;
   readonly #cooldownMs: number;
@@ -25,6 +25,13 @@ export class FallbackPolicy {
     return this.#backup;
   }
 
+  /** Supports: SPEC-CMD-045 EF-02: an explicit selection replaces the main model and resets cooling. */
+  setMain(model: ResolvedModel): void {
+    this.#main = model;
+    this.#overloads = 0;
+    this.#until = undefined;
+  }
+
   /** Model for the next request; EF-03: back to the main model once the cooling period is over (CA-02). */
   model(): ResolvedModel {
     if (this.#until !== undefined && this.#clock() >= this.#until) this.#until = undefined;
@@ -33,7 +40,7 @@ export class FallbackPolicy {
 
   /** Step 1: an overload of the main model; true when the next attempt switches to the backup model (step 2, CA-01). */
   overloaded(model: ResolvedModel): boolean {
-    if (model !== this.#main) return false; // FA-01: an overloaded backup follows the normal retries
+    if (model !== this.#main || this.#main.id === this.#backup.id) return false; // FA-01: an overloaded backup follows the normal retries
     this.#overloads++;
     if (this.#overloads < this.#threshold) return false;
     this.#overloads = 0;

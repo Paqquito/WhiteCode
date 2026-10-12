@@ -1,5 +1,5 @@
 {
-  "increment": "lot 9, incrément 27",
+  "increment": "lot 9, incrément 28",
   "claims": {
     "SPEC-AGT-001": [
       "CA-01"
@@ -49,6 +49,7 @@
     ],
     "SPEC-API-006": [
       "CA-01",
+      "CA-02",
       "CA-03",
       "CA-04",
       "CA-05"
@@ -76,7 +77,10 @@
       "CA-06",
       "CA-08",
       "CA-09",
+      "CA-10",
+      "CA-11",
       "CA-12",
+      "CA-13",
       "CA-14",
       "CA-15",
       "CA-17",

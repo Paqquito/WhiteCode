@@ -13,6 +13,7 @@
 // Supports: SPEC-OBS-012 (CA-01/02, destinations and announcement), SPEC-OBS-015 (CA-05), SPEC-OBS-021 (CA-01/02), gap E-141.
 // Supports: SPEC-IHM-019 (CA-01/02), SPEC-IHM-020 (CA-02), SPEC-CMD-072 (CA-01), SPEC-MOD-001 (CA-06), gap E-142.
 // Composition root of a session: options → identity and settings → provider → engine → automated output, or the
+// Supports: SPEC-CAD-002 (CA-13), SPEC-API-006 (CA-02, unknown identifiers with minimal capabilities), gap E-145.
 // interactive application (lot 5).
 
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
@@ -361,6 +362,14 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const policyGuard = new ManagedPolicyGuard(policyLocations.managedSettingsFile, identity.resolved.policyAnchor, systemPolicy, deps.policyFileProtection, cachePolicy);
   let policyCapability: PolicyCapability = deps.policyCapability ?? "local";
   if (serve?.transport === "network" || argv[0] === "remote-access" || argv[0] === "ssh-session") policyCapability = "remote";
+  const applyIdentityOverrides = (view: EnvironmentView, preferences?: Settings) => {
+    const managed = preferences ?? Settings.load({ sources: [
+      { scope: "managed", name: policyLocations.managedSettingsFile, text: readManagedPolicy(policyLocations.managedSettingsFile, identity.resolved.policyAnchor, policyCapability, deps.policyFileProtection).settingsText },
+      ...(systemPolicy ? [{ scope: "managed" as const, name: systemPolicy.name, text: systemPolicy.read().settingsText }] : []),
+      { scope: "managed", name: cachePolicy.name, text: cachePolicy.read(policyCapability).settingsText },
+    ], projectTrusted: false });
+    identity.applyOverrides(view.identityOverrides(identity.overridableCandidates), managed.get<Record<string, string>>("identity.services"));
+  };
   const assertPolicy = () => {
     const issues = policyGuard.check(policyCapability);
     if (issues.length > 0) throw new RunError(issues.map((i) => i.message).join("\n"), ExitCode.BlockedByPolicy);
@@ -427,7 +436,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // SPEC-MOD-012: `<famille> [<opération>] …` is an administration operation, never a session (EF-04).
   if (!serve && looksLikeSubcommand(argv)) {
     const env = new EnvironmentView(identity.get("ENV_PREFIX"), deps.environment);
-    identity.applyOverrides(env.identityOverrides(identity.overridableCandidates));
+    applyIdentityOverrides(env);
     if (env.ownBoolean("OFFLINE_MINIMAL") === true) {
       const command = parseSubcommand(argv);
       if (["extension", "catalog", "connector", "remote-access", "ssh-session"].includes(command.family) && command.operation !== undefined && !command.options.has("help") && !(["extension", "catalog", "connector"].includes(command.family) && ["validate", "list"].includes(command.operation))) {
@@ -447,8 +456,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   };
   const opt = (name: string) => parsed.options.get(name);
   let env = new EnvironmentView(identity.get("ENV_PREFIX"), deps.environment);
-  identity.applyOverrides(env.identityOverrides(identity.overridableCandidates));
   if (["control-listen", "control-connect", "remote-session", "reopen-remote"].some((name) => parsed.options.has(name))) policyCapability = "remote";
+  applyIdentityOverrides(env);
 
   if (opt("help")) {
     streams.writeOut(helpText(identity));
@@ -539,6 +548,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     env = new EnvironmentView(identity.get("ENV_PREFIX"), { ...deps.environment, ...imposed });
     loaded = loadAll(env);
   }
+  applyIdentityOverrides(env, loaded.firstPass);
   const offlineMinimal = env.ownBoolean("OFFLINE_MINIMAL") === true;
   await recoverUserState(loaded.locations.userStateFile, (message) => err(`avertissement : ${message}`));
   if (offlineMinimal && (serve?.transport === "network" || ["control-listen", "control-connect", "remote-session", "reopen-remote"].some((name) => parsed.options.has(name)))) {
@@ -833,14 +843,15 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const effective = effectiveCapabilities(resolution.capabilities, providerId);
   const resolvedModel = { ...resolution, capabilities: effective.capabilities };
   for (const d of effective.degradations) earlyDebug.push(["api", "degraded capability", { model: resolution.id, provider: providerId, effect: d }]);
-  // Decision D-10: a model without tool calls cannot run the agent.
-  if (!resolvedModel.capabilities.toolCalling) {
-    const where = resolvedModel.source === "none" ? "absent du catalogue de la distribution et de models.extraCatalog" : "déclaré sans la capacité toolCalling";
+  // SPEC-API-006 CA-02 supersedes D-10 for identifiers absent from the catalogue.
+  const warnMinimalModel = (model: ResolvedModel) => { if (model.source === "none") err(`avertissement : le modèle ${model.id} est absent du catalogue : capacités minimales (texte et outils), autres capacités non déclarées.`); };
+  if (!resolvedModel.capabilities.toolCalling && resolvedModel.source !== "none") {
     throw new RunError(
-      `Le modèle ${resolvedModel.id} (${providerId}) est ${where} : les appels d'outils sont indispensables. Déclarez-le avec "capabilities": { "toolCalling": true } dans models.extraCatalog de vos paramètres utilisateur, ou choisissez un autre modèle.`,
+      `Le modèle ${resolvedModel.id} (${providerId}) est déclaré sans la capacité toolCalling : les appels d'outils sont indispensables. Déclarez-le avec "capabilities": { "toolCalling": true } dans models.extraCatalog de vos paramètres utilisateur, ou choisissez un autre modèle.`,
       ExitCode.UsageOrConfiguration,
     );
   }
+  warnMinimalModel(resolvedModel);
   if (resolvedModel.source === "extra") err(`avertissement : capacités du modèle ${resolvedModel.id} lues dans models.extraCatalog (catalogue complémentaire).`);
 
   // Credentials and endpoint of the configured provider.
@@ -1361,9 +1372,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     if (isResolveFailure(backup)) err(`avertissement : modèle de repli inconnu : ${fallbackValue} ; il est ignoré.`);
     else if (backup.id === resolvedModel.id) earlyDebug.push(["api", "backup model identical to the main one: ignored", {}]); // ERR-02
     else if (!allowedByList(backup, fallbackValue)) err("avertissement : Modèle de repli non autorisé : il est ignoré."); // ERR-01
-    else if (!backup.capabilities.toolCalling) err(`avertissement : le modèle de repli ${backup.id} n'est pas déclaré avec les appels d'outils : il est ignoré.`);
+    else if (!backup.capabilities.toolCalling && backup.source !== "none") err(`avertissement : le modèle de repli ${backup.id} n'est pas déclaré avec les appels d'outils : il est ignoré.`);
     else if (maxCost !== undefined && !effectivePricing(backup, overrides, referenceCurrency, (message) => err(`avertissement : ${message}`))) err(`avertissement : le modèle de repli ${backup.id} n'a pas de tarif, incompatible avec le plafond de coût : il est ignoré.`);
     else {
+      warnMinimalModel(backup);
       fallback = new FallbackPolicy({
         main: resolvedModel,
         backup: { ...backup, capabilities: effectiveCapabilities(backup.capabilities, providerId).capabilities },
@@ -2433,7 +2445,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       let model: ResolvedModel = currentModel;
       if (wanted && wanted !== "inherit") {
         const r = deps.catalog.resolve(wanted, providerId, identity, resolveOptions);
-        if (!isResolveFailure(r) && allowedByList(r, wanted) && r.capabilities.toolCalling) model = { ...r, capabilities: effectiveCapabilities(r.capabilities, providerId).capabilities };
+        if (!isResolveFailure(r) && allowedByList(r, wanted) && (r.capabilities.toolCalling || r.source === "none")) { model = { ...r, capabilities: effectiveCapabilities(r.capabilities, providerId).capabilities }; warnMinimalModel(model); }
         else emit({ type: "warning", message: `Modèle de l'agent ${def.name} non autorisé : modèle hérité.` });
       }
       // EF-02: the mode of the caller, or the one of the definition when it is not more permissive.
@@ -2876,9 +2888,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     if (!allowedByList(r, value)) return { refused: `Ce modèle n'est pas autorisé par votre configuration : ${r.id}.` };
     if (r.lifecycle?.status === "retired") return { refused: `Le modèle ${r.id} a été retiré.` };
     const model: ResolvedModel = { ...r, capabilities: effectiveCapabilities(r.capabilities, providerId).capabilities };
-    if (!model.capabilities.toolCalling) return { refused: `Le modèle ${model.id} ne prend pas en charge les appels d'outils.` };
+    if (!model.capabilities.toolCalling && model.source !== "none") return { refused: `Le modèle ${model.id} ne prend pas en charge les appels d'outils.` };
     if (ledger.snapshot.cap !== undefined && !pricingOf(model)) return { refused: `Le plafond de coût ne peut pas être garanti avec ${model.id}, qui n'a pas de tarif.` };
     currentModel = model;
+    fallback?.setMain(model);
+    warnMinimalModel(model);
     meter.setModel(model);
     effort = mapEffort(effort ?? (settings.get<string>("models.effort") as ApiEffort), model.capabilities.effort);
     transcript?.append("system", { event: "model_changed", model: model.id });

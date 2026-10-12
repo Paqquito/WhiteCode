@@ -8,6 +8,8 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Identity } from "../src/identity/identity";
 import { resolveIdentityText, runtimeIdentity } from "../src/identity/resolver";
 import { scanDirectory } from "../src/identity/files";
+import { VARIABLE_BY_NAME } from "../src/identity/catalog";
+import { suggest } from "../src/shared/suggest";
 import { BUILD_OPTIONS, resolveBuildOptions } from "../src/extension-points/build-options";
 import { publishSettingsSchema } from "./settings-schema";
 
@@ -75,8 +77,11 @@ function control(): void {
   for (const issue of issues) console.error(`Chaîne interdite « ${issue.term} » : ${issue.file}:${issue.line}:${issue.column}.`);
   if (issues.length) throw new Error("Contrôle anti-fuite refusé.");
   for (const file of manifest.map((d) => d.file)) {
-    const leak = /\{\{[A-Z][A-Z0-9_]*(\|[a-z]+)*\}\}/.exec(readFileSync(join(outDir, file)).toString("latin1"));
-    if (leak) throw new Error(`Variable non résolue dans ${file} : ${leak[0]}.`);
+    const leak = /\{\{\s*([A-Z][A-Z0-9_]*)\s*(\|\s*[a-z]+\s*)*\}\}/.exec(readFileSync(join(outDir, file)).toString("latin1"));
+    if (leak) {
+      const name = leak[1]!, unknown = !VARIABLE_BY_NAME.has(name), near = unknown ? suggest(name.slice(0, 256), VARIABLE_BY_NAME.keys(), 256)[0] : undefined;
+      throw new Error(`[ERR-06] Variable ${unknown ? "inconnue" : "non résolue"} dans ${file} : ${leak[0].slice(0, 300)}.${near ? ` Vouliez-vous dire ${near} ?` : " Vérifiez l'injection des ressources."}`);
+    }
   }
 }
 const record = (target: string, file: string) => manifest.push({ target, file, sha256: createHash("sha256").update(readFileSync(join(outDir, file))).digest("hex") });
@@ -94,11 +99,13 @@ for (const target of targets) {
 }
 publishSettingsSchema(root, outDir, { cli, version: RESOLVED_IDENTITY.version }); record("settings-schema", "config.schema.json");
 const inventory = Object.fromEntries(Object.entries(BUILD_OPTIONS).map(([name, definition]) => [name, { enabled: values[name as keyof typeof values], description: definition.description, specs: definition.specs }]));
-writeFileSync(join(outDir, "build-options.json"), JSON.stringify({ profile, options: inventory }, null, 2) + "\n"); record("build-options", "build-options.json"); control();
+// Supports: SPEC-CAD-002 (CA-11, FA-04); the official catalogue remains unavailable in this version.
+const disabledFeatures = [{ service: "SERVICE_MARKETPLACE", feature: "Catalogue officiel d'extensions", reason: RESOLVED_IDENTITY.values["SERVICE_MARKETPLACE"] ? "fonction non livrée" : "service non configuré" }];
+writeFileSync(join(outDir, "build-options.json"), JSON.stringify({ profile, options: inventory, disabledFeatures }, null, 2) + "\n"); record("build-options", "build-options.json"); control();
 const git = Bun.spawn(["git", "rev-parse", "HEAD"], { cwd: root, stdout: "pipe", stderr: "ignore" });
 const commitText = (await new Response(git.stdout).text()).trim(), commit = await git.exited === 0 && /^[a-f0-9]{40}$/.test(commitText) ? commitText : null;
 const receipt = join(outDir, "manifest.json");
-writeFileSync(receipt, JSON.stringify({ identity: RESOLVED_IDENTITY.hash, version: RESOLVED_IDENTITY.version, source: { commit, identity: SOURCE_IDENTITY_HASH }, build: { profile, options: values, privateTermsLoaded: options.has("--forbidden-terms") }, deliverables: manifest }, null, 2) + "\n");
+writeFileSync(receipt, JSON.stringify({ identity: RESOLVED_IDENTITY.hash, version: RESOLVED_IDENTITY.version, source: { commit, identity: SOURCE_IDENTITY_HASH }, build: { profile, options: values, disabledFeatures, privateTermsLoaded: options.has("--forbidden-terms") }, deliverables: manifest }, null, 2) + "\n");
 try {
   control();
   for (const d of manifest) if (createHash("sha256").update(readFileSync(join(outDir, d.file))).digest("hex") !== d.sha256) throw new Error(`Livrable modifié pendant la construction : ${d.file}.`);

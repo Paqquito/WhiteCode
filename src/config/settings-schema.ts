@@ -5,6 +5,7 @@
 // Single source of truth for setting keys: type, default, allowed scopes, owner sheet, merge rule, widening flags.
 
 import { Type, type TSchema } from "@sinclair/typebox";
+import { OVERRIDABLE_SERVICE_URLS } from "../identity/runtime-catalog";
 
 export const SCOPES = ["managed", "cli", "local", "project", "user"] as const;
 export type Scope = (typeof SCOPES)[number];
@@ -51,6 +52,8 @@ const enumOf = (values: readonly string[]) => Type.Union(values.map((v) => Type.
 const mode = () => enumOf(PERMISSION_MODES);
 
 export const SETTINGS: readonly SettingDef[] = [
+  // Supports: SPEC-CAD-002 (CA-13, EF-42), gap E-145; administration-only startup URL overrides.
+  { key: "identity.services", schema: Type.Object(Object.fromEntries(OVERRIDABLE_SERVICE_URLS.map((name) => [name, Type.Optional(str())])), { additionalProperties: false }), default: {}, scopes: [G], owner: "SPEC-CAD-002" },
   { key: "ui.reducedMotion", schema: bool(), default: false, scopes: [U], owner: "SPEC-IHM-038" },
   // Models, thinking and effort
   { key: "models.selected", schema: str(), scopes: [U, P, G, C], owner: "SPEC-MOT-001" },

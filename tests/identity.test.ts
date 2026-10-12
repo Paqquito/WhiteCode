@@ -62,7 +62,7 @@ describe("SPEC-CAD-002 identity", () => {
     const ws = workspace();
     const file = join(ws.root, "id.json");
     writeFileSync(file, JSON.stringify(data));
-    const proc = Bun.spawn(["bun", join(ROOT, "scripts/identity.ts"), "validate", file], { stdout: "pipe", stderr: "pipe" });
+    const proc = Bun.spawn([process.execPath, join(ROOT, "scripts/identity.ts"), "validate", file], { stdout: "pipe", stderr: "pipe" });
     expect(await proc.exited).toBe(2);
     expect(await new Response(proc.stderr).text()).toContain("ERR-04");
   });
@@ -123,6 +123,32 @@ describe("SPEC-CAD-002 identity", () => {
 });
 
 describe("SPEC-CAD-002 runtime catalogue", () => {
+  test("SPEC-CAD-002/CA-13 — managed services win over environment overrides in actual help and diagnostics", async () => {
+    const ws = workspace(), identity = loadIdentity();
+    ws.write("managed/policy.json", JSON.stringify({ identity: { services: { SERVICE_DOCS: "https://managed-docs.example/help" } } }));
+    const env = { [`${identity.get("ENV_PREFIX")}SERVICE_DOCS`]: "https://environment-docs.example/help" };
+    const help = await cli(["--help"], ws, { identity, env });
+    expect(help.code).toBe(0);
+    expect(help.stdout).toContain("https://managed-docs.example/help");
+    expect(help.stdout).not.toContain("https://environment-docs.example/help");
+    const diagnostic = await cli(["diagnostic", "validate"], ws, { identity: loadIdentity(), env });
+    expect(diagnostic.stdout).toContain("SERVICE_DOCS : paramètre géré");
+  });
+
+  test("TECH — user identity services cannot replace distribution or managed services", async () => {
+    const identity = loadIdentity();
+    const result = await cli(["--non-interactive", "/diagnose"], workspace(), { identity, userConfig: { identity: { services: { SERVICE_DOCS: "https://user-docs.example/help" } } } });
+    expect(result.stderr).toContain("`identity.services` n'est pas autorisé");
+    expect(identity.get("SERVICE_DOCS")).not.toContain("user-docs.example");
+  });
+
+  test("TECH — an invalid mandatory managed service blocks the agent before a model call", async () => {
+    const ws = workspace();
+    ws.write("managed/policy.json", JSON.stringify({ policy: { requiredKeys: ["identity.services"] }, identity: { services: { SERVICE_DOCS: "http://remote-docs.example/help" } } }));
+    const result = await cli(["--non-interactive", "x"], ws);
+    expect(result.code).toBe(4);
+    expect(result.stderr).toContain("identity.services");
+  });
   test("TECH — the runtime catalogue agrees with the build-time catalogue on overridable variables", async () => {
     const { VARIABLES } = await import("../src/identity/catalog");
     const { OVERRIDABLE_VARIABLES } = await import("../src/identity/runtime-catalog");

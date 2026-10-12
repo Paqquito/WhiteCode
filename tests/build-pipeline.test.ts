@@ -28,6 +28,35 @@ function fixture() {
   return { root, ws, build, manifest, run };
 }
 
+test("SPEC-CAD-002/CA-10 — an unknown variable in a product resource rejects the actual strict build with ERR-06 and a spelling suggestion", async () => {
+  const f = fixture(), entry = join(f.root, "src/main.ts");
+  writeFileSync(join(f.root, "unknown-template.txt"), "{{PRODCT}}");
+  writeFileSync(entry, readFileSync(entry, "utf8") + '\nimport resource from "../unknown-template.txt" with { type: "text" }; console.log(resource);\n');
+  const result = await f.build();
+  expect(result.code).not.toBe(0);
+  expect(result.stderr).toContain("ERR-06");
+  expect(result.stderr).toContain("PRODUCT");
+  expect(existsSync(join(f.root, "dist/manifest.json"))).toBe(false);
+  writeFileSync(join(f.root, "unknown-template.txt"), "{{MISSING_VAR}}");
+  const distant = await f.build();
+  expect(distant.code).not.toBe(0);
+  expect(distant.stderr).toContain("Variable inconnue");
+  expect(distant.stderr).toContain("Vouliez-vous dire");
+  expect(existsSync(join(f.root, "dist/manifest.json"))).toBe(false);
+}, 150_000);
+
+test("SPEC-CAD-002/CA-11 — without a marketplace service, the built executable hides the official catalogue and its build report lists the disabled feature", async () => {
+  const f = fixture();
+  expect(loadIdentity().has("SERVICE_MARKETPLACE")).toBe(false);
+  expect((await f.build()).code).toBe(0);
+  const report = f.manifest();
+  expect(report.build.disabledFeatures).toContainEqual({ service: "SERVICE_MARKETPLACE", feature: "Catalogue officiel d'extensions", reason: "service non configuré" });
+  const binary = report.deliverables.find((d: { target: string }) => d.target === "current").file;
+  const output = await f.run(binary, ["--help"]);
+  expect(output.code).toBe(0);
+  expect(output.stdout).not.toMatch(/catalogue officiel|official.catalog|marketplace/i);
+}, 150_000);
+
 test("SPEC-BLD-001/CA-01, SPEC-BLD-003/CA-02, SPEC-BLD-007/CA-02 — two stable builds and two actual identities: fingerprints match and a new name replaces the original in executable output", async () => {
   const f = fixture();
   const first = await f.build(["--identity", "identity/test-omega.identity.json"]);

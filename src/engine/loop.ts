@@ -3,6 +3,7 @@
 // Supports: SPEC-MOT-008 (§ 5.3 step 3, EF-02, EF-03: messages typed during the work, at the safe point), SPEC-MOT-007 (reminders before each request), decision D-12 (append-only history), gaps E-021 (retries around the SDK), E-022, E-056 (retry after a partial response), E-072 (empty final response), SPEC-SES-001 (EF-01)
 // Supports: SPEC-CFG-003 (policy check before context compaction), gap E-120.
 // Supports: SPEC-MOD-005 (CA-04, CA-05: actual result model and shared request admission), gap E-139.
+// Supports: SPEC-API-001 (tool calls require the effective model capability), gap E-145.
 
 import type { HookBus } from "../extension-points/hooks";
 import type { ApiEffort, ModelPricing, ResolvedModel } from "../providers/catalog";
@@ -257,10 +258,11 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
       // SPEC-API-005: the backup model while the main one is overloaded, then the main one again (EF-03).
       requestModel = deps.fallback?.model() ?? deps.model;
       requestPricing = deps.pricingForModel ? deps.pricingForModel(requestModel) : requestModel === deps.model ? pricing : requestModel.pricing;
+      const tools = conv.toolsForModel(requestModel.capabilities.toolCalling);
       const base: ModelRequest = {
         model: requestModel,
         system: conv.system,
-        tools: conv.tools,
+        tools,
         history: conv.messages,
         maxOutputTokens: Math.min(deps.maxOutputTokens, requestModel.maxOutputTokens),
         thinking: deps.thinking,
@@ -294,10 +296,12 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
               deps.emit(event);
               break;
             case "tool_call":
+              if (!requestModel.capabilities.toolCalling) throw new ProviderError("malformed_response", "Le modèle n'a pas déclaré la capacité d'appels d'outils.");
               deps.emit({ type: "tool_call", callId: event.call.callId, name: event.call.name, input: event.call.input });
               execution.submit(event.call);
               break;
             case "message_complete":
+              if (!requestModel.capabilities.toolCalling && event.assistant.toolCalls.length > 0) throw new ProviderError("malformed_response", "Le modèle n'a pas déclaré la capacité d'appels d'outils.");
               complete = event;
               break;
           }

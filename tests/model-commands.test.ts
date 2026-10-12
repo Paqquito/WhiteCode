@@ -40,14 +40,35 @@ describe("SPEC-CMD-045 /switch-model", () => {
     await run.done;
   }, 20_000);
 
-  test("TECH — SPEC-CMD-045/EF-02, FA-01 — the control channel: the next request uses the new model, an unknown model is refused", async () => {
+  test("TECH — switching to an unknown identifier with a configured fallback uses that identifier and retains history", async () => {
+    const ws = workspace(), provider = new ScriptedProvider([{ text: "one" }, { text: "two" }, { text: "three" }]);
+    const host = new Host(ws, { provider, init: {}, userConfig: { models: { fallback: "small" } } });
+    host.user("first");
+    await host.waitFor((m) => m.type === "turn_completed");
+    const minimal = await host.request("select_model", { model: "some-local-model" });
+    expect(JSON.stringify(minimal)).toContain("some-local-model");
+    host.user("second");
+    await host.waitFor((m) => m.type === "turn_completed" && JSON.stringify(m).includes("two"));
+    await host.request("select_model", { model: "small" });
+    host.user("third");
+    await host.waitFor((m) => m.type === "turn_completed" && JSON.stringify(m).includes("three"));
+    host.feed.end();
+    expect((await host.finish()).code).toBe(0);
+    expect(provider.requests.map((r) => r.model.id)).toEqual(["test-medium", "some-local-model", "test-small"]);
+    expect(provider.requests[1]!.tools.length).toBeGreaterThan(0);
+    expect(provider.requests[2]!.tools.length).toBeGreaterThan(0);
+    expect(JSON.stringify(provider.requests[2]!.history)).toContain("one");
+    expect(provider.requests[1]!.model.capabilities.images).toBe(false);
+  }, 20_000);
+
+  test("TECH — SPEC-CMD-045/EF-02, FA-01 — the control channel: the next request uses the new model, an incompatible known model is refused", async () => {
     const ws = workspace();
     const p = new ScriptedProvider([{ text: "un" }, { text: "deux" }]);
     const h = new Host(ws, { provider: p, init: {} });
     h.user("premier");
     await h.waitFor((m) => m.type === "turn_completed");
     const ok = await h.request("select_model", { model: "small" });
-    const refused = await h.request("select_model", { model: "modele-inexistant" });
+    const refused = await h.request("select_model", { model: "test-no-tools" });
     h.user("second");
     await h.waitFor((m) => m.type === "turn_completed" && JSON.stringify(m).includes("deux"));
     h.feed.end();

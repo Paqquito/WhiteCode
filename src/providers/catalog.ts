@@ -1,6 +1,7 @@
 // Implements: SPEC-API-006 (EF-01 to EF-06, FA-01, CA-02), SPEC-API-007 (`models.identifierMap`), SPEC-API-001 (FA-02)
 // Supports: decisions D-06, D-09, D-10, D-12, D-13; gaps E-010, E-025, E-040, E-041, E-043
 // Model catalogue supplied by the distribution. Capabilities are neutral, optional and have a documented default.
+// Supports: SPEC-API-006 (CA-02: unknown identifiers keep minimal capabilities), gap E-145.
 
 import { Type, type Static } from "@sinclair/typebox";
 import { compileSchema } from "../shared/schema";
@@ -84,7 +85,7 @@ export type ModelEntry = Static<typeof ModelEntrySchema>;
 export type ModelCatalogData = Static<typeof ModelCatalogSchema>;
 
 export interface ModelCapabilities {
-  /** Tool calls in the provider protocol; required to use the model as an agent (D-10). */
+  /** Tool calls in the provider protocol. Unknown identifiers assume text and tools (SPEC-API-001 FA-02). */
   readonly toolCalling: boolean;
   /** `none`: no thinking; `optional`: can be switched on or off; `always`: cannot be disabled (D-13). */
   readonly thinking: "none" | "optional" | "always";
@@ -235,7 +236,7 @@ export class ModelCatalog {
       tier: tierOfId,
       contextWindow: entry?.contextWindow ?? options.unknownContextWindow,
       maxOutputTokens: entry?.maxOutputTokens ?? 16_000,
-      capabilities: capabilitiesOf(entry),
+      capabilities: entry ? capabilitiesOf(entry) : { ...DEFAULT_CAPABILITIES, toolCalling: true },
       pricing: entry?.pricing,
       providerOptions: entry?.providerOptions ?? {},
       currency: this.#data.currency,

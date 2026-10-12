@@ -1,11 +1,13 @@
 // Implements: SPEC-CFG-001 (EF-01 to EF-05, RG-01 to RG-08, FA-01 to FA-03), SPEC-CFG-002 (EF-03, ERR-01 to ERR-03, RG-02)
 // Supports: SPEC-CFG-003 (shared key validation), gap E-120.
+// Supports: SPEC-CAD-002 (CA-13: secure administration-only service overrides), gap E-145.
 // Loads the settings scopes, validates each key, merges them by priority and records the origin of every value.
 
 import { existsSync, readFileSync } from "node:fs";
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import { compileRaw } from "../shared/schema";
 import { suggest } from "../shared/suggest";
+import { isSecureIdentityUrl } from "../identity/identity";
 import { isKnownPrefix, SETTING_BY_KEY, type Origin, type Scope, type SettingDef } from "./settings-schema";
 import { parseAmount, parseDuration, parseSize } from "./units";
 
@@ -94,6 +96,7 @@ function typeName(def: SettingDef): string {
 }
 
 function convert(def: SettingDef, value: unknown): unknown {
+  if (def.key === "identity.services" && Object.values(value as Record<string, string>).some((url) => !isSecureIdentityUrl(url))) return undefined;
   switch (def.kind) {
     case "duration":
       return parseDuration(value);

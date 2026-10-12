@@ -1,5 +1,7 @@
 // Reference provider `openai_compatible` (decision D-10). Local fake server; optional integration test on a real local server.
 import { afterEach, describe, expect, test } from "bun:test";
+import { runTurn } from "../src/engine/loop";
+import { bench, probe } from "./helpers/engine";
 import { buildChatRequest, OpenAICompatibleProvider, toChatMessages } from "../src/providers/openai-compatible";
 import type { ModelEvent, ModelRequest } from "../src/providers/types";
 import { cli, loadIdentity, testModel, workspace } from "./helpers/env";
@@ -157,13 +159,48 @@ describe("D-09 / D-10 configuration of the provider and the model", () => {
     expect(r.stderr).toContain("models.identifierMap.medium");
   });
 
-  test("D-10 — a model without tool calls is refused at start-up", async () => {
+  test("D-10 — a known model declared without tool calls is refused at start-up", async () => {
     const declared = await cli(["--non-interactive", "--model", "test-no-tools", "x"], workspace());
     expect(declared.code).toBe(2);
     expect(declared.stderr).toContain("toolCalling");
-    const absent = await cli(["--non-interactive", "--model", "some-local-model", "x"], workspace());
-    expect(absent.code).toBe(2);
-    expect(absent.stderr).toContain("absent du catalogue");
+  });
+
+  test("SPEC-API-006/CA-02 — an identifier absent from the catalogue runs with minimal capabilities and a warning", async () => {
+    const ws = workspace(), path = ws.write("project/minimal.txt", "MINIMAL_TOOLS_28\n");
+    server = startFakeOpenAI([{ toolCalls: [{ id: "minimal_read", name: "read_file", arguments: JSON.stringify({ path }) }] }, { text: "MINIMAL_TOOLS_28" }]);
+    const result = await cli(["--non-interactive", "--model", "some-local-model", "x"], ws, { userConfig: withServer(server.baseURL, { permissions: { allowRules: ["read_file"] } }) });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe("MINIMAL_TOOLS_28\n");
+    expect(result.stderr).toContain("absent du catalogue");
+    expect(result.stderr).toContain("capacités minimales");
+    expect(server.requests).toHaveLength(2);
+    expect(server.requests[0]!.body.model).toBe("some-local-model");
+    expect(JSON.stringify(server.requests[0]!.body.tools)).toContain("read_file");
+    expect(JSON.stringify(server.requests[1]!.body.messages)).toContain("MINIMAL_TOOLS_28");
+    expect(server.requests[0]!.body.reasoning_effort).toBeUndefined();
+  });
+
+  test("TECH — a model declared without tools cannot execute unexpected streamed tool calls", async () => {
+    const calls: unknown[] = [];
+    const b = bench([{ toolCalls: [{ name: "probe", input: {} }] }], { model: "test-no-tools", tools: [probe("probe", { calls })] });
+    const result = await runTurn(b.deps, "x", new AbortController().signal);
+    expect(result.stopCause).toBe("error");
+    expect(calls).toHaveLength(0);
+    expect(b.provider.requests[0]!.tools).toHaveLength(0);
+  });
+
+  test("TECH — a model declared without tools rejects tool calls carried only by the completed message", async () => {
+    class CompleteOnly extends ScriptedProvider {
+      override async *stream(request: ModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {
+        for await (const event of super.stream(request, signal)) if (event.type !== "tool_call") yield event;
+      }
+    }
+    const calls: unknown[] = [], provider = new CompleteOnly([{ toolCalls: [{ name: "probe", input: {} }] }]);
+    const b = bench([], { model: "test-no-tools", tools: [probe("probe", { calls })], deps: { provider } });
+    const result = await runTurn(b.deps, "x", new AbortController().signal);
+    expect(result.stopCause).toBe("error");
+    expect(provider.requests[0]!.tools).toHaveLength(0);
+    expect(calls).toHaveLength(0);
   });
 
   test("E-041 — a local model declared in models.extraCatalog is usable; a distribution model cannot be redeclared", async () => {
@@ -178,10 +215,12 @@ describe("D-09 / D-10 configuration of the provider and the model", () => {
   });
 
   test("D-16 — an entry of models.extraCatalog without an explicit toolCalling is ignored with a warning", async () => {
+    server = startFakeOpenAI([{ text: "minimal" }]);
     const entry = { id: "undeclared-model", provider: "openai_compatible", family: "local", label: "Local", contextWindow: 8192, maxOutputTokens: 2048 };
-    const r = await cli(["--non-interactive", "--model", "undeclared-model", "x"], workspace(), { userConfig: withServer("http://127.0.0.1:9/v1", { models: { extraCatalog: [entry] } }) });
+    const r = await cli(["--non-interactive", "--model", "undeclared-model", "x"], workspace(), { userConfig: withServer(server.baseURL, { models: { extraCatalog: [entry] } }) });
     expect(r.stderr).toContain('undeclared-model de models.extraCatalog ne déclare pas "capabilities": { "toolCalling": … }');
-    expect(r.code).toBe(2);
+    expect(r.code).toBe(0);
+    expect(JSON.stringify(server.requests[0]!.body.tools)).toContain("read_file");
   });
 
   test("D-16 — models added by models.extraCatalog stay subject to the managed models.allowList; the user cannot widen it", async () => {

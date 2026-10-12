@@ -125,7 +125,10 @@ describe("SPEC-CMD-039 /shortcuts edit", () => {
     expect(text).toContain("// Raccourcis clavier de");
     expect(text).toMatch(/\/\/ {3}app\.interrupt/);
     expect(readKeybindingsFile(file).error).toBeUndefined(); // EF-01
-    for (let i = 0; i < 50 && !existsSync(marker); i++) await sleep(100);
+    for (let i = 0; i < 50; i++) {
+      if (existsSync(marker) && readFileSync(marker, "utf8").replace(/\\/g, "/") === file.replace(/\\/g, "/")) break;
+      await sleep(100);
+    }
     expect(readFileSync(marker, "utf8").replace(/\\/g, "/")).toBe(file.replace(/\\/g, "/"));
     // Step 3: saved, it is read again and its errors are reported.
     await sleep(400);

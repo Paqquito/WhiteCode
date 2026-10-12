@@ -1,5 +1,6 @@
 // Implements: decision D-12 (append-only history within a segment), SPEC-MOT-001 (RG-01, RG-02), SPEC-MOT-023 (EF-02)
 // Supports: SPEC-SES-001 (every appended message is persisted), SPEC-SES-002 (history of a reopened session)
+// Supports: SPEC-API-006 (CA-02: a capability change starts a new request prefix without losing history), gap E-145.
 // Only appends, a new segment after a compaction, and the micro-compaction rewrite reserved to non append-only models.
 
 import type { ContentPart, HistoryMessage, SystemBlock, ToolDefinition, ToolResultPart } from "../providers/types";
@@ -9,6 +10,7 @@ export class Conversation {
   #tools: readonly ToolDefinition[];
   readonly #messages: HistoryMessage[] = [];
   #segment = 0;
+  #toolsEnabled?: boolean;
 
   constructor(system: readonly SystemBlock[], tools: readonly ToolDefinition[]) {
     this.#system = system;
@@ -25,6 +27,13 @@ export class Conversation {
 
   get tools(): readonly ToolDefinition[] {
     return this.#tools;
+  }
+
+  /** A model capability change replaces the advertised tool set, so it opens a new prefix epoch. */
+  toolsForModel(enabled: boolean): readonly ToolDefinition[] {
+    if (this.#toolsEnabled !== undefined && this.#toolsEnabled !== enabled) this.#segment++;
+    this.#toolsEnabled = enabled;
+    return enabled ? this.#tools : [];
   }
 
   get messages(): readonly HistoryMessage[] {
