@@ -7,7 +7,7 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { ExitCode } from "../cli/exit-codes";
-import { familyHelp, FAMILY_BY_NAME, FAMILY_CATALOG, parseSubcommand, SubcommandUsageError } from "../cli/families";
+import { orchestratorRefusal, familyHelp, FAMILY_BY_NAME, FAMILY_CATALOG, parseSubcommand, SubcommandUsageError } from "../cli/families";
 import type { EnvironmentView } from "../config/environment";
 import { loadConfiguration } from "../config/load";
 import { readManagedPolicy, validateManagedPolicy } from "../config/managed-policy";
@@ -39,6 +39,7 @@ import { readTranscriptReference } from "../session/transcript-access";
 import { renderValidation, validateExtension } from "../extensions/validate";
 import { catalogAdd, catalogList, catalogRemove, catalogUpdate, extensionAdd, extensionEnable, extensionList, extensionRemove, extensionUpdate, scopeOf, type ExtensionAdminContext } from "../extensions/admin";
 
+// Supports: SPEC-MOD-011 (CA-10, CA-11: explicit refusal before any session or service), gap E-140.
 export interface AdminDependencies {
   readonly validateCredential?: CredentialValidator;
   readonly credentialVault?: CredentialVault;
@@ -99,6 +100,10 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
     const all = FAMILY_CATALOG.flatMap((f) => f.operations.map((o) => `${f.name} ${o.name}`));
     const near = suggest(`${family.name} ${parsed.operation}`, all).slice(0, 3);
     err(`Commande inconnue : ${family.name} ${parsed.operation}.${near.length > 0 ? ` Vouliez-vous dire ${near.join(", ")} ?` : ""}`);
+    return ExitCode.UsageOrConfiguration;
+  }
+  if (parsed.options.has("orchestrator")) {
+    err(orchestratorRefusal(family.name, operation.name));
     return ExitCode.UsageOrConfiguration;
   }
   if (!operation.delivered) {

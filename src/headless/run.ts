@@ -88,7 +88,7 @@ import { connectWebSocket, listenWebSocket, type WsPeer, type WsServer } from ".
 import { ConnectorServerSession, DEFAULT_CAPABILITIES, Gate, SERVE_CAPABILITIES, WRITING_CAPABILITIES, type CallOutcome, type ServeCapability, type ServedTool } from "../connectors/server";
 import { ResponseExecution } from "../engine/executor";
 import { morePermissive } from "../control/protocol";
-import { familyHelp, FAMILY_BY_NAME, parseSubcommand, SubcommandUsageError } from "../cli/families";
+import { orchestratorRefusal, familyHelp, FAMILY_BY_NAME, parseSubcommand, SubcommandUsageError } from "../cli/families";
 import { createHash, randomUUID } from "node:crypto";
 import { AnthropicProvider } from "../providers/anthropic";
 import { effectiveCapabilities, isDeliveredProvider } from "../providers/adapters";
@@ -346,6 +346,8 @@ interface ServeRequest {
 }
 
 async function run(argv: readonly string[], deps: RunDependencies, err: (text: string) => void, holder: RunHolder, serve?: ServeRequest): Promise<number> {
+  // Supports: SPEC-MOD-011 (CA-10, CA-11), SPEC-MOD-012 (CA-11), gap E-140.
+  if (!serve && argv[0] === "--orchestrator" && looksLikeSubcommand(argv.slice(1))) argv = [argv[1]!, argv[0], ...argv.slice(2)];
   const { streams, identity, system } = deps;
   const policyEnv = new EnvironmentView(identity.get("ENV_PREFIX"), deps.environment);
   const policyLocations = computeLocations(identity, policyEnv, deps.cwd, system, deps.managedDir);
@@ -395,12 +397,13 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       if (e instanceof SubcommandUsageError) throw new RunError(e.message, ExitCode.UsageOrConfiguration);
       throw e;
     }
-    const allowed = new Set(["capabilities", "root", "transport", "approval-mode", "listen", "verbose", "help"]);
+    const allowed = new Set(["capabilities", "root", "transport", "approval-mode", "listen", "verbose", "help", "orchestrator"]);
     for (const name of p.options.keys()) if (!allowed.has(name)) throw new RunError(`Option non prise en charge par connector-server start : --${name}.`, ExitCode.UsageOrConfiguration);
     if (p.options.has("help")) {
       streams.writeOut(familyHelp(identity.get("PRODUCT_CLI"), FAMILY_BY_NAME.get("connector-server")!));
       return ExitCode.Success;
     }
+    if (p.options.has("orchestrator")) throw new RunError(orchestratorRefusal("connector-server", "start"), ExitCode.UsageOrConfiguration);
     if (p.args.length > 0) throw new RunError(`Argument inattendu : ${p.args[0]}.`, ExitCode.UsageOrConfiguration);
     const transport = p.options.get("transport") ?? "process";
     if (transport !== "process" && transport !== "network") throw new RunError(`Transport inconnu : ${String(transport)} (process ou network).`, ExitCode.UsageOrConfiguration);
@@ -412,6 +415,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     };
     const mode = p.options.get("approval-mode");
     const inner = ["--non-interactive", "--ephemeral", ...(request.root ? ["--cwd", request.root] : []), ...(typeof mode === "string" ? ["--approval-mode", mode] : []), ...(p.options.has("verbose") ? ["--verbose"] : [])];
+    // SPEC-MOD-012 CA-11: visible before service composition; protocol stdout remains machine-readable.
+    streams.writeErr("Rôle : service de connecteur ; lieu d’exécution : poste local.\n");
     return run(inner, deps, err, holder, request);
   }
   // SPEC-MOD-012: `<famille> [<opération>] …` is an administration operation, never a session (EF-04).
@@ -448,6 +453,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     streams.writeOut(versionText(identity));
     return ExitCode.Success;
   }
+  if (parsed.options.has("orchestrator")) throw new RunError(orchestratorRefusal(), ExitCode.UsageOrConfiguration);
   if (["/login", "/logout"].includes(parsed.prompt?.trim() ?? "") && opt("request-format") !== "jsonl" && opt("result-format") !== "jsonl" && !opt("non-interactive") && !opt("control-channel") && !opt("control-listen") && !opt("control-connect")) {
     return runSubcommand(["auth", parsed.prompt!.trim().slice(1)], { streams, identity, catalog: deps.catalog, env, cwd: deps.cwd, system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, profilePolicyReader: deps.profilePolicyReader, policyFileProtection: deps.policyFileProtection, cachePolicy, credentialVault: deps.credentialVault, validateCredential: deps.validateCredential, signal: deps.signal, assertPolicy });
   }

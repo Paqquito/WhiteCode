@@ -95,6 +95,17 @@ class Client {
 
 const toolNames = (m: Message) => ((m["result"] as { tools: Array<{ name: string }> }).tools ?? []).map((t) => t.name);
 
+test("SPEC-MOD-012/CA-11 — a connector service announces its role and local execution before handling protocol messages", async () => {
+  const provider = new ScriptedProvider([]); const client = new Client(workspace(), [], { provider });
+  const initialized = await client.initialize();
+  expect(initialized["result"]).toBeDefined();
+  const announcement = "Rôle : service de connecteur ; lieu d’exécution : poste local.";
+  expect(client.stderr).toContain(announcement);
+  expect(client.stderr.indexOf(announcement)).toBeLessThan(client.stderr.indexOf("Serveur de connecteur prêt"));
+  expect(provider.requests).toHaveLength(0);
+  expect((await client.end()).code).toBe(0);
+});
+
 describe("SPEC-MOD-008 capabilities and limits", () => {
   test("SPEC-MOD-008/CA-01 — a server launched without capabilities: only reading and run_agent are listed", async () => {
     const ws = workspace();

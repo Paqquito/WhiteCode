@@ -6,6 +6,73 @@ import { ScriptedProvider } from "./helpers/scripted-provider";
 
 const PROJECT_DIR = loadIdentity().get("PROJECT_DIR");
 
+test("TECH — a value-taking option cannot swallow a coordination flag and launch a service", async () => {
+  for (const args of [["--orchestrator", "connector-server", "start", "--root"], ["connector-server", "start", "--root", "--orchestrator"]]) {
+    const ws = workspace(); ws.write("project/--orchestrator/.keep", "");
+    let factories = 0;
+    const provider = new ScriptedProvider([]);
+    const result = await cli(args, ws, { provider, extra: { providerFactory: () => { factories++; return provider; } } });
+    expect(result.code).toBe(2); expect(result.stdout).toBe(""); expect(factories).toBe(0);
+    expect(result.stderr).not.toContain("Rôle : service de connecteur");
+  }
+  const ws = workspace(); ws.write("project/--orchestrator/.keep", "");
+  const literal = await cli(["connector-server", "start", "--root=--orchestrator"], ws, { provider: new ScriptedProvider([]) });
+  expect(literal.code).toBe(0); expect(literal.stderr).toContain("Rôle : service de connecteur");
+});
+
+test("TECH — an unavailable coordination role cannot enter the authentication command shortcuts", async () => {
+  for (const command of ["/login", "/logout"]) {
+    const result = await cli(["--orchestrator", command], workspace());
+    expect(result.code).toBe(2); expect(result.stderr).toContain("ne dispose pas de la capacité de coordination");
+    expect(result.stdout).toBe("");
+  }
+});
+
+test("TECH — a leading coordination flag stays before the literal-argument separator", async () => {
+  const ws = workspace(); ws.write("sample.json", "{}");
+  const provider = new ScriptedProvider([]);
+  const result = await cli(["--orchestrator", "config", "validate", "--", join(ws.root, "sample.json")], ws, { provider });
+  expect(result.code).toBe(2); expect(result.stderr).toContain("opération d'administration");
+  expect(provider.requests).toHaveLength(0);
+});
+
+test("TECH — a coordination word after the separator is ordinary prompt text", async () => {
+  const provider = new ScriptedProvider([{ text: "done" }]);
+  const result = await cli(["--non-interactive", "--", "--orchestrator"], workspace(), { provider });
+  expect(result.code).toBe(0); expect(JSON.stringify(provider.requests[0]!.history)).toContain("--orchestrator");
+});
+
+test("SPEC-MOD-011/CA-10 — the coordination role belongs to a session and is rejected on all hosting services", async () => {
+  for (const family of ["direct-server", "connector-server", "remote-access", "service", "session-runner", "job-runner"]) {
+    for (const args of [[family, "start", "--orchestrator"], ["--orchestrator", family, "start"]]) {
+      const ws = workspace(); const provider = new ScriptedProvider([]);
+      const result = await cli(args, ws, { provider });
+      expect(result.code).toBe(2); expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("appartient à une session");
+      expect(provider.requests).toHaveLength(0);
+      expect(existsSync(join(ws.configHome, "sessions"))).toBe(false);
+    }
+  }
+});
+
+test("SPEC-MOD-011/CA-11 — a session engine without coordination capability refuses before any session or model request", async () => {
+  for (const args of [["--non-interactive", "--orchestrator", "go"], ["direct-server", "connect", "wss://example.test", "--orchestrator"], ["job", "create", "sample", "--orchestrator"]]) {
+    const ws = workspace(); const provider = new ScriptedProvider([]);
+    const result = await cli(args, ws, { provider });
+    expect(result.code).toBe(2); expect(result.stderr).toContain("ne dispose pas de la capacité de coordination");
+    expect(provider.requests).toHaveLength(0); expect(existsSync(join(ws.configHome, "sessions"))).toBe(false);
+  }
+});
+
+test("TECH — coordination flags have no value, do not apply to administration, and preserve help without effects", async () => {
+  const wrong = await cli(["config", "validate", "--orchestrator"], workspace());
+  expect(wrong.code).toBe(2); expect(wrong.stderr).toContain("opération d'administration");
+  const value = await cli(["direct-server", "start", "--orchestrator=false"], workspace());
+  expect(value.code).toBe(2); expect(value.stderr).toContain("n’accepte pas de valeur");
+  const help = await cli(["--orchestrator", "connector-server", "start", "--help"], workspace());
+  expect(help.code).toBe(0); expect(help.stdout).toContain("Serveur de connecteur"); expect(help.stderr).toBe("");
+});
+
 describe("SPEC-MOD-011 global options", () => {
   test("SPEC-MOD-011/CA-01 — a misspelled option fails with a suggestion", async () => {
     const r = await cli(["--non-interactiv", "x"], workspace());

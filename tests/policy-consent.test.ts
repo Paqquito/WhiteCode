@@ -32,6 +32,17 @@ function attest(ws: Workspace) {
   return ws.write(`managed/${policyConsentFileName(receipt.principal, receipt.organizationId, receipt.perimeter)}`, text);
 }
 
+test("TECH — unavailable coordination is refused before a policy dialog or consent receipt", async () => {
+  const ws = workspace(); provision(ws, { hooksConfig: { disabled: false } });
+  const provider = new ScriptedProvider([]);
+  const terminal = interactive(["--orchestrator"], ws, { provider, rows: 60, extra: { now } });
+  const result = await terminal.done;
+  expect(result.code).toBe(2); expect(result.stderr).toContain("capacité de coordination");
+  expect(terminal.all().join("\n")).not.toContain("Paramètres sensibles de votre organisation");
+  expect(existsSync(join(ws.configHome, "remote-policy-consent-receipt.json"))).toBe(false);
+  expect(provider.requests).toHaveLength(0);
+});
+
 async function accept(ws: Workspace, provider = new ScriptedProvider([]), persist = true) {
   const terminal = interactive([], ws, { provider, rows: 60, env: productEnv(ws), extra: { now } });
   await terminal.waitFor((t) => t.includes("Paramètres sensibles de votre organisation"), "policy consent dialog");

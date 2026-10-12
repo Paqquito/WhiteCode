@@ -1,4 +1,5 @@
 // Implements: SPEC-MOD-012 (§ 5.1 structure, § 5.2 naming, § 5.3 catalogue of families and operations, § 5.4 common options, EF-01, RN-A to RN-H)
+// Supports: SPEC-MOD-011 (CA-10, CA-11: session coordination role), gap E-140.
 // Supports: gaps E-066 (operations delivered in lot 1), E-126 (local authorised policy recovery verification).
 
 export interface OperationDef {
@@ -155,7 +156,7 @@ export const FAMILY_BY_NAME: ReadonlyMap<string, FamilyDef> = new Map(FAMILY_CAT
 
 /** Common options of the sub-commands (§ 5.4): `true` when the option takes a value. */
 /** § 5.4 of SPEC-MOD-012, plus the options proper to an operation: `--lean-context` (SPEC-EXT-004), `--installable` (SPEC-EXT-002). */
-export const COMMON_OPTIONS: Readonly<Record<string, boolean>> = { json: false, scope: true, force: false, "preserve-data": false, name: true, verbose: false, help: false, "lean-context": true, installable: false, capabilities: true, root: true, transport: true, "approval-mode": true, listen: true };
+export const COMMON_OPTIONS: Readonly<Record<string, boolean>> = { json: false, scope: true, force: false, "preserve-data": false, name: true, verbose: false, help: false, "lean-context": true, installable: false, capabilities: true, root: true, transport: true, "approval-mode": true, listen: true, orchestrator: false };
 
 export interface ParsedSubcommand {
   readonly family: string;
@@ -165,6 +166,16 @@ export interface ParsedSubcommand {
 }
 
 export class SubcommandUsageError extends Error {}
+
+/** The coordination role belongs to a session; the current engine exposes no coordination capability. */
+export function orchestratorRefusal(family?: string, operation?: string): string {
+  const invocation = family && operation ? family + " " + operation : undefined;
+  const services = ["connector-server start", "direct-server start", "remote-access start", "service start", "session-runner start", "job-runner start"];
+  if (invocation && services.includes(invocation)) return "--orchestrator : le rôle coordinateur appartient à une session, pas à un service ou à un superviseur.";
+  const sessions = ["direct-server connect", "ssh-session connect", "resident-agent attach", "background-session attach", "job create", "job reply"];
+  if (!family || (invocation && sessions.includes(invocation))) return "--orchestrator : le moteur de session ne dispose pas de la capacité de coordination ; lancement refusé.";
+  return "--orchestrator : cette option de session ne s'applique pas à une opération d'administration.";
+}
 
 /** Parses `<family> [<operation>] [arguments] [options]`; an option outside § 5.4 is refused as unknown (§ 5.1). */
 export function parseSubcommand(argv: readonly string[]): ParsedSubcommand {
@@ -183,9 +194,10 @@ export function parseSubcommand(argv: readonly string[]): ParsedSubcommand {
     const eq = token.indexOf("=");
     const name = token.slice(2, eq === -1 ? undefined : eq);
     if (!(name in COMMON_OPTIONS)) throw new SubcommandUsageError(`Option inconnue : --${name}.`);
+    if (name === "orchestrator" && eq !== -1) throw new SubcommandUsageError("--orchestrator n’accepte pas de valeur.");
     if (COMMON_OPTIONS[name]) {
       const value = eq !== -1 ? token.slice(eq + 1) : argv[++i];
-      if (value === undefined || value === "") throw new SubcommandUsageError(`Valeur manquante pour --${name}.`);
+      if (value === undefined || value === "" || (eq === -1 && value.startsWith("--"))) throw new SubcommandUsageError(`Valeur manquante pour --${name}.`);
       options.set(name, value);
     } else options.set(name, true);
   }

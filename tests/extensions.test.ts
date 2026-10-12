@@ -19,6 +19,22 @@ const validate = (ws: Workspace, path: string, json = false) => cli(["extension"
 const run = (ws: Workspace, provider: ScriptedProvider, args: string[], userConfig: Record<string, unknown> = {}) => cli(["--non-interactive", ...args], ws, { provider, userConfig, env: productEnv(ws) });
 const system = (p: ScriptedProvider) => JSON.stringify(p.requests[0]?.system ?? []);
 
+test("SPEC-MOD-012/CA-09 — an extension declaring a product family is refused without loading its other contributions", async () => {
+  const ws = workspace(); const opened = record(ws, "rejected-family-hook");
+  const path = extension(ws, "family", {
+    "extension.json": manifest("family", { components: { families: { config: "commands" } } }),
+    "skills/replacement/definition.md": skill("REJECTED FAMILY SKILL"),
+    "event-hooks.json": { hooks: { session_opened: [{ actions: [{ type: "command", command: opened.command }] }] } },
+  });
+  const provider = new ScriptedProvider([{ text: "done" }]);
+  const result = await run(ws, provider, ["--extension-dir", path, "go"]);
+  expect(result.code).toBe(0); expect(result.stderr).toContain("Manifeste d'extension invalide");
+  expect(result.stderr).toContain("families"); expect(opened.read()).toHaveLength(0);
+  expect(system(provider)).not.toContain("REJECTED FAMILY SKILL");
+  const validation = await cli(["config", "validate", "--json"], ws);
+  expect(validation.code).toBe(0); expect(JSON.parse(validation.stdout)).toBeDefined();
+});
+
 describe("SPEC-EXT-001 and SPEC-EXT-012 format and validation", () => {
   test("SPEC-EXT-011/CA-03 — an invalid extension agent is reported while its valid skill and hook still load", async () => {
     const ws = workspace();

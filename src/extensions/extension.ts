@@ -1,4 +1,5 @@
 // Implements: SPEC-EXT-001 (§ 5.1 structure, § 5.2 manifest, § 5.3 variables, FA-01, EF-01 to EF-03, ERR-01 to ERR-03, CA-02, CA-03)
+// Supports: SPEC-MOD-012 (CA-09: no extension-contributed product family), gap E-140.
 // An extension folder: its manifest validated against the published schema, its components found by convention or
 // by the `components` field, never outside the folder.
 
