@@ -1,6 +1,7 @@
 // Implements: SPEC-CFG-002 (EF-02, § 6 widening keys, § 6.1 catalogue for the keys of lot 1)
 // Supports: SPEC-CFG-003 (policy.requiredKeys), SPEC-PER-001 (detachedWaitTimeout catalogue), gap E-120.
 // Supports: SPEC-PER-004/014/018 (approval instructions, denial thresholds, managed consent), gap E-138.
+// Supports: SPEC-IHM-020 (user theme and immediate application), gap E-142.
 // Single source of truth for setting keys: type, default, allowed scopes, owner sheet, merge rule, widening flags.
 
 import { Type, type TSchema } from "@sinclair/typebox";
@@ -263,6 +264,7 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "engine.output.schemaMaxDepth", schema: int(1, 100), default: 12, scopes: [U], owner: "SPEC-MOD-004" },
   // SPEC-IHM-001, SPEC-IHM-002: rendering and layout of the interactive interface (lot 5; values in English, gap E-093).
   { key: "ui.colorMode", schema: enumOf(["auto", "none", "16", "256", "truecolor"]), default: "auto", scopes: [U], owner: "SPEC-IHM-001" },
+  { key: "ui.theme", schema: enumOf(["dark", "light", "dark-accessible", "light-accessible"]), default: "dark", scopes: [U], owner: "SPEC-IHM-020", hot: true },
   { key: "ui.maxFramesPerSecond", schema: int(1, 240), default: 30, scopes: [U], owner: "SPEC-IHM-001" },
   { key: "ui.minColumns", schema: int(10, 1_000), default: 60, scopes: [U], owner: "SPEC-IHM-001" },
   { key: "ui.unicodeLevel", schema: enumOf(["full", "restricted", "ascii"]), default: "full", scopes: [U], owner: "SPEC-IHM-001" },

@@ -3,6 +3,7 @@
 // keeps the draft, the queue of messages and the stashed drafts, shows the permission dialog in a fixed zone, and hands
 // the messages to the session one at a time.
 // Supports: SPEC-IHM-038 (EF-03, CA-02: no waiting animation in reduced motion).
+// Supports: SPEC-IHM-019 (CA-01/02, choices and preview), SPEC-IHM-020 (CA-02), SPEC-CMD-072 (CA-01), SPEC-IHM-005 (CA-07), SPEC-MOD-001 (CA-06), gap E-142.
 
 import type { Terminal } from "../platform/terminal";
 import type { ApprovalRequest, HumanAnswer, HumanApprovalChannel } from "../permissions/resolver";
@@ -14,6 +15,7 @@ import { KeyParser, type InputEvent, type KeyEvent } from "../ui/keys";
 import { box, layoutNode, text, type LayoutContext, type Node } from "../ui/layout";
 import type { Scheduler } from "../ui/screen";
 import { tone, type Tone } from "../ui/style";
+import { themeLines, type Theme } from "../ui/theme";
 import { openTerminalSession, type TerminalSession } from "../ui/terminal-session";
 import { spansToLines, type Cell, type Span } from "../ui/text";
 import { recognize } from "../commands/recognize";
@@ -81,7 +83,8 @@ export type ChoiceAnswer = { readonly kind: "options"; readonly labels: readonly
 interface ChoiceDialog {
   readonly title: string;
   readonly header?: string;
-  readonly options: ReadonlyArray<{ readonly label: string; readonly description?: string }>;
+  readonly options: ReadonlyArray<{ readonly label: string; readonly description?: string; readonly disabledReason?: string }>;
+  readonly preview?: (index: number) => void;
   readonly multiple: boolean;
   /** A free answer is offered as the last option (EF-01 of SPEC-OUT-033). */
   readonly other: boolean;
@@ -149,6 +152,7 @@ export interface AppOptions {
   readonly attachments?: (text: string, pasted: readonly string[]) => readonly string[];
   /** Rich text of the answers (SPEC-IHM-003, SPEC-IHM-004) and differences of the changes (SPEC-IHM-005). */
   readonly render?: { readonly markdown: MarkdownOptions; readonly diff: DiffOptions };
+  readonly theme?: Theme;
   readonly clock?: () => number;
   readonly scheduler?: Scheduler;
 }
@@ -156,6 +160,8 @@ export interface AppOptions {
 export class InteractiveApp {
   readonly #o: AppOptions;
   readonly #view: ViewContext;
+  #theme: Theme | undefined;
+  #render: AppOptions["render"];
   readonly #keys = new KeyParser();
   #keymap: Keymap;
   readonly #editor: Editor;
@@ -209,8 +215,9 @@ export class InteractiveApp {
 
   constructor(o: AppOptions) {
     this.#o = o;
-    const render = o.render;
-    this.#view = { unicode: o.capabilities.unicode, ...(render ? { markdown: (c: string) => new MarkdownRenderer(render.markdown, o.capabilities.unicode).render(c) } : {}) };
+    this.#render = o.render;
+    this.#theme = o.theme;
+    this.#view = { unicode: o.capabilities.unicode, ...(o.render ? { markdown: (c: string) => new MarkdownRenderer(this.#render!.markdown, o.capabilities.unicode).render(c) } : {}) };
     this.#editor = new Editor(o.settings.inputMaxChars);
     this.#keymap = o.keymap ?? new Keymap();
     this.#queue = [...(o.restored?.queue ?? [])];
@@ -291,6 +298,7 @@ export class InteractiveApp {
       state: this.#viewState,
       title: settings.title,
       markdown: this.#view.markdown,
+      theme: (lines, width) => themeLines(lines, this.#theme, width, this.#o.capabilities.colors),
       onClose: () => {
         this.#transcriptView = undefined;
         this.#session?.screen.resume();
@@ -384,6 +392,8 @@ export class InteractiveApp {
     this.#confirm?.resolve(false);
     this.#confirm = undefined;
     this.#secret?.resolve(undefined);
+    this.#choice?.resolve({ kind: "cancelled" });
+    this.#capture?.resolve(undefined);
   }
 
   /** Next entry of the user: a message, or the exit (step 3 of § 5.2). */
@@ -553,7 +563,16 @@ export class InteractiveApp {
   commit(node: Node): void {
     if (!this.#session) return;
     const columns = this.#o.terminal.columns > 0 ? this.#o.terminal.columns : 80;
-    this.#session.screen.commit(layoutNode(node, columns, this.#ctx(columns)).lines);
+    this.#session.screen.commit(themeLines(layoutNode(node, columns, this.#ctx(columns)).lines, this.#theme, columns, this.#o.capabilities.colors));
+  }
+
+  /** A preview changes only this application, including the active stream and alternate transcript view. */
+  setTheme(theme: Theme, render: NonNullable<AppOptions["render"]>): void {
+    this.#theme = theme;
+    this.#render = render;
+    this.#streamRenderer = undefined;
+    this.#transcriptView?.refresh();
+    this.#redraw();
   }
 
   notice(t: Tone, message: string): void {
@@ -628,9 +647,9 @@ export class InteractiveApp {
     const count = this.#approvals.length > 1 ? ` (1/${this.#approvals.length})` : "";
     const rows: Node[] = [text([{ text: r.toolName, style: { bold: true } }, { text: ` : ${r.summary}` }])];
     if (r.requester) rows.push(text([{ text: `Demandé par : ${r.requester}`, style: { dim: true } }])); // EF-04
-    if (r.change && this.#o.render) {
+    if (r.change && this.#render) {
       // SPEC-IHM-005 EF-01: the change presented as a difference before the decision.
-      rows.push(diffNode(r.change, { ...this.#o.render.diff, maxDisplayedLines: Math.min(this.#o.render.diff.maxDisplayedLines, 40) }));
+      rows.push(diffNode(r.change, { ...this.#render.diff, maxDisplayedLines: Math.min(this.#render.diff.maxDisplayedLines, 40) }));
     } else if (r.preview) {
       // EF-01: exactly what will be written; a long preview is cut with the number of hidden lines.
       const lines = r.preview.replace(/\n$/, "").split("\n");
@@ -687,8 +706,9 @@ export class InteractiveApp {
    * A question with options, entirely usable from the keyboard (EF-04 of SPEC-OUT-033): arrows, numbers, space to mark
    * with several answers, Enter to validate, Échap to give no answer; the last option is a free answer.
    */
-  choose(title: string, options: ReadonlyArray<{ readonly label: string; readonly description?: string }>, o: { readonly multiple?: boolean; readonly header?: string; readonly other?: boolean } = {}): Promise<ChoiceAnswer> {
+  choose(title: string, options: ReadonlyArray<{ readonly label: string; readonly description?: string; readonly disabledReason?: string }>, o: { readonly multiple?: boolean; readonly header?: string; readonly other?: boolean; readonly selected?: number; readonly preview?: (index: number) => void } = {}): Promise<ChoiceAnswer> {
     if (this.#exiting) return Promise.resolve({ kind: "cancelled" });
+    if (options.length === 0 && o.other === false) return Promise.resolve({ kind: "cancelled" });
     return new Promise((resolve) => {
       this.#choice = {
         title,
@@ -696,7 +716,8 @@ export class InteractiveApp {
         options,
         multiple: o.multiple === true,
         other: o.other !== false,
-        selected: 0,
+        selected: Math.max(0, Math.min(o.selected ?? 0, options.length - 1)),
+        ...(o.preview ? { preview: o.preview } : {}),
         marked: new Set(),
         shownAt: this.#now,
         resolve: (answer) => {
@@ -737,6 +758,7 @@ export class InteractiveApp {
     const count = c.options.length + (c.other ? 1 : 0);
     const pick = (index: number) => {
       if (c.other && index === c.options.length) return c.resolve({ kind: "other", text: "\u0000" });
+      if (c.options[index]?.disabledReason) { this.#redraw(); return; }
       if (c.multiple) {
         if (c.marked.has(index)) c.marked.delete(index);
         else c.marked.add(index);
@@ -745,18 +767,20 @@ export class InteractiveApp {
       }
       c.resolve({ kind: "options", labels: [c.options[index]!.label] });
     };
-    if (e.name === "up") c.selected = (c.selected + count - 1) % count;
-    else if (e.name === "down") c.selected = (c.selected + 1) % count;
+    if (e.name === "up" || action === "dialog.previous") c.selected = (c.selected + count - 1) % count;
+    else if (e.name === "down" || action === "dialog.next") c.selected = (c.selected + 1) % count;
     else if (e.name === "escape" || action === "dialog.refuse") return c.resolve({ kind: "cancelled" }); // FA-01: no answer
     else if (e.text === " " && c.multiple && c.selected < c.options.length) return pick(c.selected);
     else if (e.name === "enter") {
       if (c.multiple && c.marked.size > 0 && c.selected !== c.options.length) return c.resolve({ kind: "options", labels: [...c.marked].sort((a, b) => a - b).map((i) => c.options[i]!.label) });
-      if (c.multiple && c.selected < c.options.length) return c.resolve({ kind: "options", labels: [c.options[c.selected]!.label] });
+      if (c.multiple && c.selected < c.options.length && !c.options[c.selected]?.disabledReason) return c.resolve({ kind: "options", labels: [c.options[c.selected]!.label] });
       return pick(c.selected);
     } else if (e.text !== undefined && /^[1-9]$/.test(e.text) && Number(e.text) <= count) {
       c.selected = Number(e.text) - 1;
+      if (!c.options[c.selected]?.disabledReason) c.preview?.(c.selected);
       return pick(c.selected);
     } else return;
+    if (!c.options[c.selected]?.disabledReason) c.preview?.(c.selected);
     this.#redraw();
   }
 
@@ -765,11 +789,20 @@ export class InteractiveApp {
     const labels = [...c.options.map((o) => o.label), ...(c.other ? ["Autre (réponse libre)"] : [])];
     const lines = labels.map((label, i) => {
       const box = c.multiple && i < c.options.length ? (c.marked.has(i) ? "[x] " : "[ ] ") : "";
-      const description = c.options[i]?.description;
+      const description = [c.options[i]?.description, c.options[i]?.disabledReason ? `verrouillé : ${c.options[i]!.disabledReason}` : undefined].filter(Boolean).join(" · ");
       return text([{ text: `${i === c.selected ? "❯" : " "} ${i + 1}. ${box}`, style: i === c.selected ? { bold: true } : {} }, { text: label, style: i === c.selected ? { bold: true } : {} }, ...(description ? [{ text: ` — ${description}`, style: { dim: true } }] : [])]);
     });
     const hint = c.multiple ? "↑↓ · Espace : cocher · Entrée : valider · Échap : sans réponse" : "↑↓ ou chiffre · Entrée : choisir · Échap : sans réponse";
-    return box([text([...(c.header ? [{ text: `[${c.header}] `, style: { dim: true } }] : []), { text: c.title, style: { bold: true } }]), ...lines, text([{ text: hint, style: { dim: true } }])], { border: { style: t.style }, padding: { left: 1, right: 1 } });
+    return { kind: "render", render: (width, ctx) => {
+      // Keep the selected entry visible; descriptions may wrap and consume more than one row.
+      const room = Math.max(1, this.#o.terminal.rows - this.#o.settings.inputMinHeight - 8);
+      const heights = lines.map((line) => layoutNode(line, Math.max(1, width - 4), ctx).lines.length);
+      let start = c.selected, end = start + 1, used = heights[start] ?? 1;
+      while (end < lines.length && used + heights[end]! <= room) used += heights[end++]!;
+      while (start > 0 && used + heights[start - 1]! <= room) used += heights[--start]!;
+      const range = start > 0 || end < lines.length ? ` · options ${start + 1}–${end}/${lines.length}` : "";
+      return layoutNode(box([text([...(c.header ? [{ text: `[${c.header}] `, style: { dim: true } }] : []), { text: c.title + range, style: { bold: true } }]), ...lines.slice(start, end), text([{ text: hint, style: { dim: true } }])], { border: { style: t.style }, padding: { left: 1, right: 1 } }), width, ctx);
+    } };
   }
 
   confirm(message: string, yes = "Oui", no = "Non"): Promise<boolean> {
@@ -833,6 +866,8 @@ export class InteractiveApp {
   forceExit(): void {
     this.#exiting = true;
     this.#secret?.resolve(undefined);
+    this.#choice?.resolve({ kind: "cancelled" });
+    this.#capture?.resolve(undefined);
     this.#turn?.abort();
     this.#confirm?.resolve(false);
     this.#saveState();
@@ -1288,15 +1323,16 @@ export class InteractiveApp {
     }
     if (this.#stream) {
       // § 5.2 of SPEC-IHM-003: the content being produced is rendered by its probable intention.
-      if (this.#o.render && !this.#streamRenderer) this.#streamRenderer = new MarkdownRenderer(this.#o.render.markdown, this.#view.unicode);
+      if (this.#render && !this.#streamRenderer) this.#streamRenderer = new MarkdownRenderer(this.#render.markdown, this.#view.unicode);
       stream.push(modelView(this.#streamRenderer ? this.#streamRenderer.render(this.#stream) : this.#stream, this.#view));
     }
     if (this.running) stream.push(activityView(this.#activity, this.#now - this.#turnStarted, this.#spinner, this.#view));
-    return composeFrame(
+    const frame = composeFrame(
       { stream: stream.length > 0 ? box(stream) : undefined, panels, input: this.#inputNode(size.columns, ctx), status: this.#statusNode() },
       size,
       { unicode: this.#view.unicode, minColumns: this.#o.settings.minColumns, retainedLines: this.#o.settings.retainedLines },
     );
+    return { ...frame, lines: themeLines(frame.lines, this.#theme, size.columns, this.#o.capabilities.colors) };
   }
 
   /** The input area: a frame, the prompt, the text and its caret, at most `ui.inputMaxHeight` lines around the caret. */

@@ -4,6 +4,7 @@
 // contents folded with a summary; moves by line, page, item and turn; an incremental search that unfolds what it finds;
 // a horizontal scroll for the wide contents. It is read-only, opened on the alternate screen so that closing it gives the
 // previous screen back exactly, and the session goes on behind it.
+// Supports: SPEC-IHM-020 (semantic colours of the active theme), gap E-142.
 
 import type { Terminal } from "../platform/terminal";
 import type { Capabilities } from "../ui/capabilities";
@@ -84,6 +85,7 @@ export class TranscriptView {
     readonly state: ViewState;
     readonly title: string;
     readonly markdown?: (content: string) => Node;
+    readonly theme?: (lines: readonly Cell[][], width: number) => Cell[][];
     readonly onClose: () => void;
   }) {
     this.#term = o.terminal;
@@ -94,7 +96,7 @@ export class TranscriptView {
     this.#ctx = { unicode: o.capabilities.unicode, narrow: false };
     this.#onClose = o.onClose;
     this.#title = o.title;
-    this.#screen = new Screen({ terminal: o.terminal, capabilities: o.capabilities, maxFramesPerSecond: 60, source: (size) => ({ lines: this.#frame(size) }) });
+    this.#screen = new Screen({ terminal: o.terminal, capabilities: o.capabilities, maxFramesPerSecond: 60, source: (size) => { const lines = this.#frame(size); return { lines: o.theme?.(lines, size.columns) ?? lines }; } });
   }
 
   /** § 5.1, FA-03: the alternate screen, so that the closing gives the previous screen back exactly (EF-02, CA-03). */

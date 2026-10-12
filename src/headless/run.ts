@@ -11,6 +11,7 @@
 // Supports: SPEC-CFG-010 (CA-01, CA-02: concurrent choices and corrupt-state recovery), gap E-134.
 // Supports: SPEC-PER-004/018 (approval model and versioned consent), SPEC-PER-014 (session denials), SPEC-MOD-005 (CA-16), gap E-138.
 // Supports: SPEC-OBS-012 (CA-01/02, destinations and announcement), SPEC-OBS-015 (CA-05), SPEC-OBS-021 (CA-01/02), gap E-141.
+// Supports: SPEC-IHM-019 (CA-01/02), SPEC-IHM-020 (CA-02), SPEC-CMD-072 (CA-01), SPEC-MOD-001 (CA-06), gap E-142.
 // Composition root of a session: options → identity and settings → provider → engine → automated output, or the
 // interactive application (lot 5).
 
@@ -160,6 +161,7 @@ import { readUsage, writeUsage } from "../interactive/usage";
 import type { DiffOptions } from "../ui/diff-view";
 import { DEFAULT_CODE_THEME } from "../ui/highlight";
 import type { MarkdownOptions } from "../ui/markdown";
+import { THEMES, resolveTheme, type ThemeId } from "../ui/theme";
 
 /** Options of the rich text, of the colouring of code and of the differences (SPEC-IHM-003 to SPEC-IHM-005). */
 function renderOptions(settings: { get<T>(key: string): T }): { markdown: MarkdownOptions; diff: DiffOptions } {
@@ -569,6 +571,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   phase("environnement, options et configuration");
   // SPEC-CFG-005: the settings files are checked before each request; `liveSettings` holds the effective values.
   let liveSettings = settings;
+  let activeTheme = settings.get<ThemeId>("ui.theme");
+  let themePreviewActive = false;
   const reloader = new SettingsReloader({
     files: loaded.sources.filter((source) => source.scope !== "cli" && source.name !== systemPolicy?.name && source.name !== cachePolicy.name),
     fixed: cliSource ? [cliSource] : [],
@@ -763,16 +767,18 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const managedAllow = allowSources.find((s) => s.origin === "managed");
   const allowList = (managedAllow ?? allowSources[0])?.value as string[] | undefined;
   const allowedByList = (r: ResolvedModel, value: string) => {
-    if (allowList === undefined) return true;
+    const sources = liveSettings.valuesByScope("models.allowList").filter((s) => s.origin !== "default");
+    const effective = (sources.find((s) => s.origin === "managed") ?? sources[0])?.value as string[] | undefined;
+    if (effective === undefined) return true;
     const names = new Set([r.id, ...(r.tier ? [TIER_ALIAS_OF[r.tier]] : []), value]);
-    return allowList.some((a) => names.has(a));
+    return effective.some((a) => names.has(a));
   };
   let modelValue = settings.get<string | undefined>("models.selected") ?? "default";
   if (typeof opt("model") === "string" && settings.origin("models.selected") === "managed" && opt("model") !== modelValue) {
     err(`avertissement : le modèle est imposé par votre organisation : ${modelValue} s'applique, --model ${String(opt("model"))} est ignoré.`); // CA-03, ERR-02
   }
   // SPEC-SES-002 step 4, EF-05: the model of the reopened session, unless --model says otherwise and while it is allowed.
-  if (reopened?.model && settings.origin("models.selected") !== "cli") {
+  if (reopened?.model && !["cli", "managed"].includes(settings.origin("models.selected"))) {
     const previous = deps.catalog.resolve(reopened.model, providerId, identity, resolveOptions);
     if (!isResolveFailure(previous) && allowedByList(previous, reopened.model)) modelValue = reopened.model;
     else err(`avertissement : le modèle de la session (${reopened.model}) n'est plus disponible ; le modèle par défaut est utilisé.`);
@@ -2037,6 +2043,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     const reload = reloader.check();
     if (!reload) return;
     liveSettings = reload.settings;
+    if (reload.changed.includes("ui.theme") && !themePreviewActive) {
+      activeTheme = liveSettings.get<ThemeId>("ui.theme");
+      app?.setTheme(resolveTheme(activeTheme, identity.get("BRAND_COLOR_PRIMARY")), renderOptions(liveSettings));
+    }
     const hot = reload.changed.filter(isHotKey);
     const cold = reload.changed.filter((k) => !isHotKey(k));
     if (hot.length > 0) {
@@ -2202,6 +2212,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       completion,
       usage: completionUsage,
       render: renderOptions(settings),
+      theme: resolveTheme(activeTheme, identity.get("BRAND_COLOR_PRIMARY")),
       shell: { enabled: settings.get<boolean>("ui.shellMode.enabled"), label: shellOf({ platform: system.platform, hasPosix: posixShell !== undefined, hasPowerShell: powerShell !== undefined })?.label ?? "le shell" },
       transcript: {
         defaultDetail: settings.get<string>("ui.transcript.defaultDetail"),
@@ -2244,6 +2255,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     beforeRequest: () => {
       assertPolicy();
       applySettingsChanges();
+      if (!allowedByList(currentModel, currentModel.id)) throw new Error(`Le modèle courant ${currentModel.id} n'est plus autorisé ; utilisez /switch-model ou redémarrez la session.`);
+      const imposed = managedModelId();
+      if (imposed !== undefined && imposed !== currentModel.id) throw new Error(`Le modèle ${imposed} est désormais imposé ; un redémarrage ou /switch-model ${imposed} est nécessaire avant une nouvelle requête.`);
       refreshSkills();
       refreshConnectorTools();
     },
@@ -2831,10 +2845,19 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
    * SPEC-CMD-045 § 5.3: the alias resolved and allowed (EF-01, FA-01), then applied from the next request (EF-02), the
    * thresholds of the context computed again. A price is required under a cost cap (SPEC-MOD-005).
    */
+  const managedModelId = (): string | undefined => {
+    if (!liveSettings.isManaged("models.selected")) return undefined;
+    const value = liveSettings.get<string>("models.selected");
+    if (settings.isManaged("models.selected") && value === settings.get<string>("models.selected")) return resolvedModel.id; // Includes a retirement substitution admitted at startup.
+    const imposed = deps.catalog.resolve(value, providerId, identity, resolveOptions);
+    return isResolveFailure(imposed) ? value : imposed.id;
+  };
   const switchModel = (value: string): { model: ResolvedModel } | { refused: string } => {
     const r = deps.catalog.resolve(value, providerId, identity, resolveOptions);
     if (isResolveFailure(r)) return { refused: `Modèle inconnu : ${value}. Alias admis : large, medium, small, default, ou un identifiant complet.` };
-    if (!allowedByList(r, value)) return { refused: `Ce modèle n'est pas autorisé par votre configuration : ${r.id}. Modèles autorisés : ${allowList!.join(", ")}.` };
+    const imposed = managedModelId();
+    if (imposed !== undefined && r.id !== imposed) return { refused: `Modèle imposé par votre organisation : ${imposed} (${liveSettings.sourcesOf("managed", "models.selected").join(", ")}).` };
+    if (!allowedByList(r, value)) return { refused: `Ce modèle n'est pas autorisé par votre configuration : ${r.id}.` };
     if (r.lifecycle?.status === "retired") return { refused: `Le modèle ${r.id} a été retiré.` };
     const model: ResolvedModel = { ...r, capabilities: effectiveCapabilities(r.capabilities, providerId).capabilities };
     if (!model.capabilities.toolCalling) return { refused: `Le modèle ${model.id} ne prend pas en charge les appels d'outils.` };
@@ -2891,8 +2914,24 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         app?.openTranscript();
         return { silent: true };
       case "switch-model": {
-        const [value, flag] = args.trim().split(/\s+/);
-        if (!value) return { refused: "Usage : /switch-model <modèle> [défaut]." };
+        let [value, flag] = args.trim().split(/\s+/);
+        if (!value) {
+          if (!app) return { refused: "Usage : /switch-model <modèle> [défaut]." };
+          applySettingsChanges();
+          const origin = liveSettings.origin("models.selected");
+          const locked = origin === "managed" || origin === "cli";
+          const imposed = managedModelId() ?? currentModel.id;
+          const source = `${origin === "managed" ? "politique gérée" : "option CLI"} : ${liveSettings.sourcesOf(origin, "models.selected").join(", ") || "--model"}`;
+          const models = [...deps.catalog.entries, ...local.entries].filter((m) => m.provider === providerId).map((m) => deps.catalog.resolve(m.id, providerId, identity, resolveOptions)).filter((m): m is ResolvedModel => !isResolveFailure(m) && allowedByList(m, m.id) && m.lifecycle?.status !== "retired" && effectiveCapabilities(m.capabilities, providerId).capabilities.toolCalling && (ledger.snapshot.cap === undefined || pricingOf(m) !== undefined));
+          const choices = models.map((m) => ({ label: m.id, description: `${m.label ?? m.id}${m.id === currentModel.id ? " (actuel)" : ""} · fenêtre ${m.contextWindow} jetons · réflexion : ${m.capabilities.effort.join(", ") || "aucune"}${m.tier ? ` · alias ${TIER_ALIAS_OF[m.tier]}` : ""}`, ...(locked && m.id !== imposed ? { disabledReason: source } : {}) }));
+          const answer = await app.choose("Choisir le modèle", choices, { other: false, selected: models.findIndex((m) => m.id === currentModel.id) });
+          if (answer.kind !== "options") return { silent: true };
+          applySettingsChanges();
+          if ((liveSettings.origin("models.selected") === "managed" || liveSettings.origin("models.selected") === "cli") && answer.labels[0] !== (managedModelId() ?? currentModel.id)) return { refused: "Le modèle est verrouillé par une configuration prioritaire." };
+          value = answer.labels[0]!;
+          if (!locked && await app.confirm("Enregistrer ce modèle pour les prochaines sessions ?", "Oui", "Non")) flag = "défaut";
+          applySettingsChanges();
+        }
         const r = switchModel(value);
         if ("refused" in r) return { refused: r.refused }; // FA-01
         let note = `Modèle : ${r.model.label ?? r.model.id} (${r.model.id}), à partir de la prochaine requête.`;
@@ -2915,6 +2954,31 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           } else note += ` Attention : le contexte (${occupied} jetons) dépasse la fenêtre de ce modèle ; utilisez /condense.`;
         }
         return { shown: text(note), note };
+      }
+      case "appearance": {
+        if (!app || args.trim()) return { refused: "Usage : /appearance, dans une session interactive." };
+        applySettingsChanges();
+        const original = activeTheme;
+        let accepted = false;
+        const preview = (index: number) => { activeTheme = THEMES[index]!.id; app.setTheme(resolveTheme(activeTheme, identity.get("BRAND_COLOR_PRIMARY")), renderOptions(liveSettings)); };
+        themePreviewActive = true;
+        try {
+          const answer = await app.choose("Choisir le thème", THEMES.map((t) => ({ label: t.label, description: `${t.description}${t.id === original ? " (actuel)" : ""}` })), { other: false, selected: THEMES.findIndex((t) => t.id === original), preview });
+          if (answer.kind !== "options") return { silent: true };
+          assertPolicy();
+          const selected = THEMES.findIndex((t) => t.label === answer.labels[0]);
+          preview(selected);
+          accepted = true;
+          try {
+            setValueInSettingsFile(locations.userSettingsFile, ["ui", "theme"], activeTheme, system.platform);
+            applySettingsChanges();
+            const note = "Thème enregistré dans la configuration utilisateur.";
+            return { shown: text(note), note };
+          } catch (error) { const note = `Thème appliqué pour cette session seulement ; enregistrement impossible : ${maskSecrets((error as Error).message)}.`; return { shown: text(note), note }; }
+        } finally {
+          themePreviewActive = false;
+          if (!accepted) { activeTheme = original; app.setTheme(resolveTheme(original, identity.get("BRAND_COLOR_PRIMARY")), renderOptions(liveSettings)); }
+        }
       }
       case "reasoning-level": {
         // SPEC-CMD-022: validated against the model (EF-01, FA-01); recorded, except `max`, valid for this session only.

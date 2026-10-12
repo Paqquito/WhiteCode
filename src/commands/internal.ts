@@ -1,6 +1,7 @@
 // Implements: SPEC-CMD-001 (§ 5.3 rank 1, § 5.5 kinds, EF-13 widening attribute declared by each internal command), SPEC-CMD-023 (§ 5.2), SPEC-CMD-030 (§ 5.2), SPEC-IHM-008 (EF-06), SPEC-CMD-002 (§ 5.3),
 //             SPEC-CMD-009, SPEC-CMD-006, SPEC-CMD-059, SPEC-CMD-058, SPEC-CMD-024 (§ 5.2: commands of the user)
 // The internal commands of this version. Each one declares its kind and whether it widens what the agent may do.
+// Supports: SPEC-IHM-019 (model selector), SPEC-CMD-072 (appearance command), gap E-142.
 
 import type { InternalCommand } from "./catalog";
 
@@ -24,7 +25,8 @@ export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
   { name: "spending", description: "Affiche la consommation et le coût estimé de la session, par modèle.", kind: "display", widening: false },
   { name: "background-tasks", description: "Liste les tâches de fond de la session.", kind: "display", widening: false },
   { name: "skill-list", description: "Liste les compétences disponibles, par source.", kind: "display", widening: false },
-  { name: "switch-model", description: "Change de modèle pour la suite de la session (défaut : l'enregistre pour les suivantes).", kind: "action", widening: false, usage: "<modèle> [défaut]" },
+  { name: "switch-model", description: "Choisit le modèle ; avec un argument, le change pour les prochains tours (défaut : l'enregistre).", kind: "action", widening: false, usage: "[modèle] [défaut]" },
+  { name: "appearance", description: "Choisit le thème avec aperçu ; Échap rétablit le thème initial.", kind: "action", widening: false, interactiveOnly: true },
   { name: "reasoning-level", description: "Règle le niveau de réflexion (low, medium, high ; max pour cette session seulement).", kind: "action", widening: false, usage: "<niveau>" },
   { name: "planning", description: "Passe en mode planification ; avec une description, l'envoie au modèle.", kind: "mixed", widening: false, usage: "[description]" },
   { name: "condense", description: "Résume la conversation pour libérer le contexte, selon les consignes données.", kind: "action", widening: false, usage: "[consignes]" },
