@@ -57,6 +57,8 @@ export interface CostTotals {
 export interface TurnResult {
   readonly stopCause: StopCause;
   readonly message?: string;
+  /** English diagnostic for a parent model; the visible message remains in French. */
+  readonly modelMessage?: string;
   readonly refusalCategory?: string | null;
   readonly iterations: number;
   readonly usage: UsageTotals;

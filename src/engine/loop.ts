@@ -2,6 +2,7 @@
 //             SPEC-API-003 (§ 5.1, § 5.3, FA-01, FA-02, EF-01 to EF-06, ERR-01 to ERR-03, RG-01, CA-01 to CA-04), SPEC-API-002 (FA-01, CA-02)
 // Supports: SPEC-MOT-008 (§ 5.3 step 3, EF-02, EF-03: messages typed during the work, at the safe point), SPEC-MOT-007 (reminders before each request), decision D-12 (append-only history), gaps E-021 (retries around the SDK), E-022, E-056 (retry after a partial response), E-072 (empty final response), SPEC-SES-001 (EF-01)
 // Supports: SPEC-CFG-003 (policy check before context compaction), gap E-120.
+// Supports: SPEC-MOD-005 (CA-04, CA-05: actual result model and shared request admission), gap E-139.
 
 import type { HookBus } from "../extension-points/hooks";
 import type { ApiEffort, ModelPricing, ResolvedModel } from "../providers/catalog";
@@ -37,10 +38,14 @@ export interface LoopDeps {
   readonly effort?: ApiEffort;
   /** Iteration limit of this turn when no run limits are given; undefined = no limit (interactive default, gap E-018). */
   readonly maxIterations?: number;
+  /** A saved child's admitted requests; kept when the same agent is resumed. */
+  readonly requestCounter?: { count: number };
   /** Limits of the whole execution, shared by every turn (SPEC-MOD-005). */
   readonly limits?: RunLimits;
   /** Price used for the budget and the cost (catalogue or authorised override, gap E-055). */
   readonly pricing?: ModelPricing;
+  /** Authorised prices apply to backup models too (managed cap, CA-14). */
+  readonly pricingForModel?: (model: ResolvedModel) => ModelPricing | undefined;
   readonly retry?: RetryPolicy;
   readonly maxOutputContinuations: number;
   readonly maxStopHookContinuations: number;
@@ -101,7 +106,13 @@ function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 /** Final message of an error that is not retried, or whose attempts are exhausted (EF-05: cause and possible action). */
-function finalMessage(e: ProviderError, attempts: number): string {
+function finalMessage(e: ProviderError, attempts: number, forModel = false): string {
+  if (forModel) {
+    if (e.kind === "authentication" || e.kind === "permission") return "Check the API credentials and provider permissions.";
+    if (e.kind === "rate_limit") return `The provider rate limit was reached after ${attempts} attempts. Retry later or reduce concurrent runs.`;
+    if (RETRYABLE.has(e.kind)) return `The model service failed after ${attempts} attempts. Retry later or check the connection.`;
+    return `The model request failed (${e.kind}). Review the model and provider configuration before retrying.`;
+  }
   switch (e.kind) {
     case "authentication":
     case "permission":
@@ -140,6 +151,8 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
   let costUnknown = false;
   let continuing = false;
   let emptyRelaunched = false;
+  let lastModel = deps.model.id;
+  const requests = deps.requestCounter ?? { count: 0 };
 
   // Duration limit (FA-03): the turn's own signal is aborted at the deadline; an interruption keeps its own cause.
   const local = new AbortController();
@@ -147,6 +160,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
   const onParentAbort = () => local.abort();
   if (signal.aborted) local.abort();
   else signal.addEventListener("abort", onParentAbort, { once: true });
+  const unsubscribeStop = limits.onStop(() => local.abort());
   const remaining = limits.remainingMs();
   const deadlineTimer =
     remaining === undefined
@@ -158,30 +172,45 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
   const turnSignal = local.signal;
 
   const persist = (type: Parameters<TranscriptWriter["append"]>[0], data: Record<string, unknown>) => deps.transcript?.append(type, data);
-  const finish = (stopCause: StopCause, message?: string): TurnResult => {
+  const finish = (stopCause: StopCause, message?: string, modelMessage?: string): TurnResult => {
+    if (limits.stopped) { stopCause = limits.stopped.cause; message = limits.stopped.message; modelMessage = undefined; }
+    unsubscribeStop();
     clearTimeout(deadlineTimer);
     signal.removeEventListener("abort", onParentAbort);
     const confirmed = usageUnknown || costUnknown ? undefined : cost;
     const result: TurnResult = {
       stopCause,
       message,
+      modelMessage,
       refusalCategory,
       iterations,
       usage: { ...usage },
       cost: { confirmed, currency: deps.model.currency },
       durationMs: now() - started,
       finalText,
-      model: deps.model.id,
+      model: lastModel,
     };
     persist("system", { event: "turn_end", stopCause, message, iterations, usage: result.usage, cost: result.cost });
     deps.transcript?.flush();
     deps.emit({ type: "turn_completed", result });
     return result;
   };
-  const interrupted = () => (durationExceeded ? finish("duration_limit", limits.beforeRequest()?.message ?? "Durée maximale atteinte.") : finish("interrupted", "Interrompu."));
+  const interrupted = () => {
+    if (limits.stopped) return finish(limits.stopped.cause, limits.stopped.message);
+    if (durationExceeded) { const reason = { cause: "duration_limit" as const, message: limits.beforeRequest()?.message ?? "Durée maximale atteinte." }; limits.stop(reason); return finish(reason.cause, reason.message); }
+    return finish("interrupted", "Interrompu.");
+  };
+  const requestStop = () => {
+    const global = limits.beforeRequest();
+    if (global) { limits.stop(global); return global; }
+    if (deps.maxIterations !== undefined && requests.count >= deps.maxIterations) return { cause: "iteration_limit" as const, message: `Nombre maximal d'itérations de cet agent atteint (${deps.maxIterations}).` };
+    return undefined;
+  };
 
+  try {
   // Steps 1 and 2: input and `prompt_submitted` hook.
   const gate = await deps.hooks.promptSubmitted(prompt);
+  if (turnSignal.aborted) return interrupted();
   if (gate.block) return finish("blocked", gate.block);
   conv.appendUser(content);
   const userRecord = persist("user", { content });
@@ -192,15 +221,15 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
   for (;;) {
     if (turnSignal.aborted) return interrupted();
     // FA-01, FA-03 of SPEC-MOD-005: limits checked before each request.
-    const stop = limits.beforeRequest();
+    const stop = requestStop();
     if (stop) return finish(stop.cause, stop.message);
     deps.beforeRequest?.();
 
     // SPEC-MOT-012: before the request, between two iterations (RG-01); a compaction refused by the budget stops the run.
     if (deps.context) {
       const context = await deps.context.beforeRequest(turnSignal);
-      if (context.stop) return finish(context.stop.cause, context.stop.message);
       if (turnSignal.aborted) return interrupted();
+      if (context.stop) return finish(context.stop.cause, context.stop.message);
     }
 
     // SPEC-MOT-007: reminders, tagged (EF-01), appended and never removed (D-12), persisted with their type (EF-04).
@@ -223,15 +252,17 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
     let requestModel = deps.model;
     let requestPricing = pricing;
     for (let attempt = 0; ; attempt++) {
+      const stop = requestStop();
+      if (stop) return finish(stop.cause, stop.message);
       // SPEC-API-005: the backup model while the main one is overloaded, then the main one again (EF-03).
       requestModel = deps.fallback?.model() ?? deps.model;
-      requestPricing = requestModel === deps.model ? pricing : requestModel.pricing;
+      requestPricing = deps.pricingForModel ? deps.pricingForModel(requestModel) : requestModel === deps.model ? pricing : requestModel.pricing;
       const base: ModelRequest = {
         model: requestModel,
         system: conv.system,
         tools: conv.tools,
         history: conv.messages,
-        maxOutputTokens: deps.maxOutputTokens,
+        maxOutputTokens: Math.min(deps.maxOutputTokens, requestModel.maxOutputTokens),
         thinking: deps.thinking,
         effort: deps.effort,
         segment: conv.segment,
@@ -247,6 +278,11 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
       execution = new ResponseExecution({ ...deps.executor, emit: deps.emit }, turnSignal);
       let text = "";
       try {
+        // No await separates the last check from this slot: concurrent agents cannot overbook the run.
+        limits.countIteration();
+        requests.count++;
+        iterations++;
+        lastModel = requestModel.id;
         const stream = deps.provider.stream(modelRequest, turnSignal);
         for await (const event of stream) {
           switch (event.type) {
@@ -286,6 +322,8 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
           persist("system", { event: "fallback", from: requestModel.id, to: deps.fallback.backup.id });
         }
         if (RETRYABLE.has(e.kind) && attempt < maxRetries) {
+          const stop = requestStop();
+          if (stop) return finish(stop.cause, stop.message);
           const delayMs = retryDelayMs(attempt, e.retryAfterMs, deps.retry?.random);
           // EF-04: the wait is visible and interruptible (FA-02, CA-04).
           deps.emit({ type: "retry", attempt: attempt + 1, maxRetries, delayMs, reason: e.message });
@@ -301,12 +339,11 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
         }
         const message = finalMessage(e, attempt + 1);
         await deps.hooks.turnFailed(message);
-        return finish("error", message);
+        if (turnSignal.aborted) return interrupted();
+        return finish("error", message, finalMessage(e, attempt + 1, true));
       }
     }
 
-    iterations++;
-    limits.countIteration();
     const response = complete!;
     deps.fallback?.succeeded();
     const responseCost = costOf(requestPricing, response.usage);
@@ -352,6 +389,8 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
     // A response that continues a truncated one completes its text (FA-02, CA-05).
     finalText = continuing ? finalText + assistant.text : assistant.text;
     continuing = false;
+
+    if (turnSignal.aborted) return interrupted();
 
     if (stopReason === "refusal") {
       refusalCategory = response.refusalCategory;
@@ -403,6 +442,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
 
     // Step 9: `turn_completed` hook, bounded by RG-06.
     const after = await deps.hooks.turnCompleted(finalText);
+    if (turnSignal.aborted) return interrupted();
     if (after.continueWith && stopHookContinuations < deps.maxStopHookContinuations) {
       stopHookContinuations++;
       conv.appendUser([{ type: "text", text: after.continueWith }]);
@@ -411,5 +451,10 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
       continue;
     }
     return finish("completed");
+  }
+  } finally {
+    unsubscribeStop();
+    clearTimeout(deadlineTimer);
+    signal.removeEventListener("abort", onParentAbort);
   }
 }

@@ -1,5 +1,6 @@
 // Implements: SPEC-MOD-005 (§ 5.1, § 5.2 points 2 to 5, FA-01, FA-03, FA-06, EF-01 to EF-04, EF-07, RG-02, CA-01, CA-06)
-// Counters of one execution, shared by every turn (and, later, every sub-agent, EF-04).
+// Supports: SPEC-MOD-005 (CA-05: slots consumed before sending, shared by concurrent agents).
+// Counters of one execution, shared by every turn and sub-agent (EF-04).
 
 import type { BudgetLedger } from "./budget";
 
@@ -24,6 +25,8 @@ export class RunLimits {
   readonly #warned = new Set<string>();
   readonly #clock: () => number;
   readonly #startedAt: number;
+  #stopped: { cause: "iteration_limit" | "duration_limit"; message: string } | undefined;
+  readonly #stopListeners = new Set<() => void>();
 
   constructor(readonly options: RunLimitsOptions) {
     this.#clock = options.clock ?? Date.now;
@@ -42,8 +45,23 @@ export class RunLimits {
     this.#iterations++;
   }
 
+  get stopped(): { cause: "iteration_limit" | "duration_limit"; message: string } | undefined { return this.#stopped; }
+
+  stop(reason: { cause: "iteration_limit" | "duration_limit"; message: string }): void {
+    if (this.#stopped) return;
+    this.#stopped = reason;
+    for (const listener of this.#stopListeners) listener();
+  }
+
+  onStop(listener: () => void): () => void {
+    this.#stopListeners.add(listener);
+    if (this.#stopped) listener();
+    return () => { this.#stopListeners.delete(listener); };
+  }
+
   /** Checked before each request (§ 5.2 point 3). */
   beforeRequest(): { cause: "iteration_limit" | "duration_limit"; message: string } | undefined {
+    if (this.#stopped) return this.#stopped;
     const o = this.options;
     if (o.maxIterations !== undefined && this.#iterations >= o.maxIterations) return { cause: "iteration_limit", message: `Nombre maximal d'itérations atteint (${o.maxIterations}).` };
     if (this.deadlineReached()) return { cause: "duration_limit", message: `Durée maximale atteinte (${o.durationSeconds ?? "?"} s).` };

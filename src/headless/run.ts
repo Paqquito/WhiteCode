@@ -1140,14 +1140,14 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   };
   type AgentPermissionContext = LoopDeps["executor"]["permissionContext"];
   const mainPermissionContext: AgentPermissionContext = () => loopDeps.executor.permissionContext();
-  const skillTool = (depth: number, caller: ToolLookup, parentContext: AgentPermissionContext, allows: Rule[]) => createUseSkillTool({
+  const skillTool = (depth: number, caller: ToolLookup, parentContext: AgentPermissionContext, allows: Rule[], callerMaxIterations?: number) => createUseSkillTool({
     expand: (skill, content) => productSkillContext(skill, content),
     skills: () => skillSet,
     session: () => sessionId,
     activate: (skill) => activateSkill(skill, allows),
     runInAgent: (skill, content, signal) => depth >= maxAgentDepth
       ? Promise.resolve({ text: "This skill cannot start an agent beyond agents.maxDepth.", isError: true })
-      : runSubagent({ description: `skill ${skill.name}`, prompt: content }, BUILT_IN_AGENTS[0]!, signal, depth, caller, parentContext),
+      : runSubagent({ description: `skill ${skill.name}`, prompt: content }, BUILT_IN_AGENTS[0]!, signal, depth, caller, parentContext, callerMaxIterations),
   }) as never;
   const useSkillTool = skillTool(0, registry, mainPermissionContext, skillAllows);
   // SPEC-OUT-001 CA-01: `use_skill` too is presented only when --toolset names it.
@@ -1174,8 +1174,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   agentCatalog();
   const maxAgentDepth = settings.get<number>("agents.maxDepth");
   // SPEC-OUT-016: one instance per depth, so that the delegation stops at `agents.maxDepth` (FA-03, EF-05).
-  const spawnTool = (depth: number, caller: ToolLookup, parentContext: AgentPermissionContext = mainPermissionContext) =>
-    createSpawnAgentTool({ agents: agentCatalog, maxParallel: settings.get<number>("agents.maxParallel"), launch: (input, def, signal) => runSubagent(input, def, signal, depth, caller, parentContext) }) as never;
+  const spawnTool = (depth: number, caller: ToolLookup, parentContext: AgentPermissionContext = mainPermissionContext, callerMaxIterations?: number) =>
+    createSpawnAgentTool({ agents: agentCatalog, maxParallel: settings.get<number>("agents.maxParallel"), launch: (input, def, signal) => runSubagent(input, def, signal, depth, caller, parentContext, callerMaxIterations) }) as never;
   if (maxAgentDepth >= 1 && agentsInToolset) registry.addStatic(spawnTool(0, registry));
   // SPEC-OUT-020, SPEC-OUT-022: the tools of the work items and of the background tasks, named in --toolset like the others.
   const inToolset = (name: string) => toolsetNames === undefined || toolsetNames.includes(name) || (toolsetNames.length === 1 && toolsetNames[0] === "default");
@@ -1336,7 +1336,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     else if (backup.id === resolvedModel.id) earlyDebug.push(["api", "backup model identical to the main one: ignored", {}]); // ERR-02
     else if (!allowedByList(backup, fallbackValue)) err("avertissement : Modèle de repli non autorisé : il est ignoré."); // ERR-01
     else if (!backup.capabilities.toolCalling) err(`avertissement : le modèle de repli ${backup.id} n'est pas déclaré avec les appels d'outils : il est ignoré.`);
-    else if (maxCost !== undefined && !backup.pricing) err(`avertissement : le modèle de repli ${backup.id} n'a pas de tarif, incompatible avec le plafond de coût : il est ignoré.`);
+    else if (maxCost !== undefined && !effectivePricing(backup, overrides, referenceCurrency, (message) => err(`avertissement : ${message}`))) err(`avertissement : le modèle de repli ${backup.id} n'a pas de tarif, incompatible avec le plafond de coût : il est ignoré.`);
     else {
       fallback = new FallbackPolicy({
         main: resolvedModel,
@@ -2266,6 +2266,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       return effort;
     },
     limits,
+    pricingForModel: pricingOf,
     get pricing() {
       return pricingOf(currentModel);
     },
@@ -2347,8 +2348,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       thinking: { ...loopDeps.thinking, enabled: false },
       purpose: "side",
     };
-    const pricingOf = model === resolvedModel ? pricing : model.pricing;
-    const admission = ledger.admit(requestBound(request, pricingOf), "web");
+    const webPricing = pricingOf(model);
+    const admission = ledger.admit(requestBound(request, webPricing), "web");
     if (!admission.admitted) throw new Error(admission.message);
     let answer = "";
     try {
@@ -2356,7 +2357,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         if (event.type === "message_complete") {
           answer = event.assistant.text.trim();
           if (event.usageReported === false) ledger.keepConservatively(admission.reservation);
-          else ledger.settle(admission.reservation, costOf(pricingOf, event.usage));
+          else ledger.settle(admission.reservation, costOf(webPricing, event.usage));
         }
       }
     } catch (e) {
@@ -2373,7 +2374,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     ...(a.classifier ? { classifier: { decide: (r, s) => a.classifier!.decide({ ...r, requester, ...agentScope() }, s) } } : {}),
     ...(a.habilitatedHook ? { habilitatedHook: { decide: (r, s) => a.habilitatedHook!.decide({ ...r, requester, ...agentScope() }, s) } } : {}),
   });
-  const runSubagent = async (input: SpawnAgentInput, definition: AgentDefinition | undefined, signal: AbortSignal, depth: number, caller: ToolLookup, parentContext: AgentPermissionContext): Promise<{ text: string; isError: boolean }> => {
+  const runSubagent = async (input: SpawnAgentInput, definition: AgentDefinition | undefined, signal: AbortSignal, depth: number, caller: ToolLookup, parentContext: AgentPermissionContext, callerMaxIterations?: number): Promise<{ text: string; isError: boolean }> => {
     let agent: { readonly name: string; readonly deps: LoopDeps; readonly caller: ToolLookup; readonly skillAllows: Rule[] };
     let id: string;
     if (input.resume !== undefined) {
@@ -2386,6 +2387,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       id = input.resume;
     } else {
       const def = definition!;
+      const childMaxIterations = Math.min(def.maxIterations ?? Infinity, callerMaxIterations ?? loopDeps.maxIterations ?? Infinity);
+      const childCap = Number.isFinite(childMaxIterations) ? childMaxIterations : undefined;
       // § 5.1: the parameter, then the definition, then `agents.defaultModel`, then the model of the caller; a model not
       // allowed gives way to the caller's, with a warning (ERR-02).
       const wanted = input.model ?? (def.model && def.model !== "inherit" ? def.model : undefined) ?? settings.get<string | undefined>("agents.defaultModel");
@@ -2422,8 +2425,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         (name !== "spawn_agent" || depth + 1 < maxAgentDepth) &&
         ((mode !== "planning" && requestedMode !== "planning") || READING_TOOLS.has(name));
       const view = restrictedView(caller, allowed, replaced);
-      replaced.set("spawn_agent", spawnTool(depth + 1, view, childContext));
-      replaced.set("use_skill", skillTool(depth + 1, view, childContext, agentSkillAllows));
+      replaced.set("spawn_agent", spawnTool(depth + 1, view, childContext, childCap));
+      replaced.set("use_skill", skillTool(depth + 1, view, childContext, agentSkillAllows, childCap));
       // SPEC-AGT-002 EF-03: an agent limited to some hosts (the guide: the official documentation) reads nothing else.
       if (def.webHosts) {
         const hosts = def.webHosts.map((h) => (h === "$SERVICE_DOCS" ? docsUrl?.hostname : h)).filter((h): h is string => h !== undefined);
@@ -2497,7 +2500,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           afterToolResults: undefined,
           beforeRequest: undefined,
           fallback: undefined,
-          ...(def.maxIterations !== undefined ? { maxIterations: def.maxIterations } : {}),
+          maxIterations: childCap,
+          requestCounter: { count: 0 },
           agentId,
           // Permission outcomes feed the session counters; ordinary child output stays in its own context.
           emit: (e) => {
@@ -2530,12 +2534,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     }
     debug.log("agents", "finished", { id, cause: result.stopCause, ms: result.durationMs });
     const report = result.finalText.trim();
-    if (result.stopCause === "interrupted") return { text: `The sub-agent ${id} was interrupted before its report.`, isError: true };
-    if (result.stopCause !== "completed" && report === "") return { text: `The sub-agent failed: ${result.message ?? result.stopCause}.`, isError: true }; // ERR-02
     const tokens = result.usage.inputTokens + result.usage.outputTokens;
     // EF-02: the report only, with its statistics and the id that resumes it.
     const stats = `[agent ${id} (${agent.name}) · ${Math.round(result.durationMs / 1000)} s · ${result.iterations} iteration${result.iterations > 1 ? "s" : ""} · ${tokens} tokens]`;
-    return { text: `${report || "(The sub-agent ended without a final text.)"}\n\n${stats}`, isError: false };
+    const failure = result.stopCause !== "completed" ? `The sub-agent stopped (${result.stopCause}).${result.modelMessage ? ` ${result.modelMessage}` : ""}${report ? " Partial report follows." : ""}\n\n` : "";
+    return { text: `${failure}${report || "(The sub-agent ended without a final text.)"}\n\n${stats}`, isError: result.stopCause !== "completed" };
   };
 
   // SPEC-MOD-010 EF-05, CA-06: the journal of the start-up, shown with `engine.startup.verboseLog`.
@@ -4009,6 +4012,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const budget = ledger.snapshot;
   const combined = {
     ...combineResults(results),
+    iterations: limits.iterations,
+    ...(limits.stopped ? { stopCause: limits.stopped.cause, message: limits.stopped.message } : {}),
     cost: { currency: budget.currency, confirmed: budget.unknownCost ? undefined : budget.confirmed, conservative: budget.conservative, reserved: budget.reserved, cap: budget.cap },
   };
   deferredMaintenance(); // after the run: never before the display (EF-04)

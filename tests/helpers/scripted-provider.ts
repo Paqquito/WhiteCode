@@ -16,7 +16,7 @@ export interface ScriptedResponse {
   /** The provider sends no usage information. */
   readonly noUsage?: boolean;
   /** Fails after the text and the tool calls (a partial response), with this provider error. */
-  readonly error?: { readonly kind: ProviderErrorKind; readonly retryAfterMs?: number; readonly status?: number };
+  readonly error?: { readonly kind: ProviderErrorKind; readonly retryAfterMs?: number; readonly status?: number; readonly message?: string };
 }
 
 /** A response, or a function of the request that gives it (a value known only during the run, such as an id). */
@@ -62,7 +62,7 @@ export class ScriptedProvider implements ModelProvider {
       });
     }
     if (signal.aborted) throw new ProviderError("aborted", "aborted");
-    if (step.error) throw new ProviderError(step.error.kind, `simulated ${step.error.kind}`, step.error.status, step.error.retryAfterMs);
+    if (step.error) throw new ProviderError(step.error.kind, step.error.message ?? `simulated ${step.error.kind}`, step.error.status, step.error.retryAfterMs);
     const native = [
       { type: "thinking", thinking: "", signature: `sig-${counter}` },
       ...(step.text ? [{ type: "text", text: step.text }] : []),

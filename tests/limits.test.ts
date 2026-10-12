@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { BudgetLedger, formatAmount, requestBound } from "../src/engine/budget";
 import { RunLimits } from "../src/engine/limits";
 import { runTurn } from "../src/engine/loop";
+import { NEUTRAL_HOOKS } from "../src/extension-points/hooks";
 import type { ApiEffort } from "../src/providers/catalog";
 import { cli, loadIdentity, testModel, workspace } from "./helpers/env";
-import { bench } from "./helpers/engine";
+import { bench, probe } from "./helpers/engine";
 import { ScriptedProvider } from "./helpers/scripted-provider";
 
 const identity = loadIdentity();
@@ -15,6 +16,170 @@ const tool = (n: number) => ({ text: `step ${n}`, toolCalls: [{ name: "read_file
 const json = (stdout: string) => JSON.parse(stdout) as Record<string, any>;
 
 describe("SPEC-MOD-005 limits", () => {
+  test("TECH — shared stops keep their cause across the prompt gate and an after-tool hook", async () => {
+    for (const phase of ["prompt", "tool"] as const) {
+      const limits = new RunLimits({ maxIterations: phase === "prompt" ? 1 : 2 });
+      let enter!: () => void;
+      let release!: () => void;
+      const entered = new Promise<void>((resolve) => { enter = resolve; });
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      const parent = bench(phase === "prompt" ? [] : [{ text: "partial", toolCalls: [{ name: "probe", input: {} }] }], {
+        tools: [probe("probe")], deps: { limits }, hooks: { ...NEUTRAL_HOOKS,
+          ...(phase === "prompt" ? { promptSubmitted: async () => { enter(); await released; return { block: "blocked" }; } } : { afterTool: async () => { enter(); await released; return { stopTurn: true }; } }),
+        },
+      });
+      const pending = runTurn(parent.deps, "parent", new AbortController().signal);
+      await entered;
+      const child = bench([tool(1)], { deps: { limits } });
+      await runTurn(child.deps, "child", new AbortController().signal);
+      release();
+      expect((await pending).stopCause).toBe("iteration_limit");
+      expect(parent.events.find((event) => event.type === "turn_completed")).toMatchObject({ result: { stopCause: "iteration_limit" } });
+      if (phase === "prompt") expect(parent.conversation.messages).toHaveLength(0);
+      else expect(parent.toolResults()).toHaveLength(1);
+    }
+  });
+
+  test("TECH — a nested agent cannot receive more iterations than its own caller's limit", async () => {
+    const ws = workspace();
+    for (const [name, cap] of [["one", 1], ["five", 5]] as const) ws.write(`home/config/agents/${name}.md`, `---\nname: ${name}\ndescription: Limited agent.\nmaxIterations: ${cap}\n---\nPerform the task.\n`);
+    const provider = new ScriptedProvider([{ toolCalls: [{ name: "spawn_agent", input: { role: "one", description: "child", prompt: "go" } }] }, { text: "done" }], [
+      { toolCalls: [{ name: "spawn_agent", input: { role: "five", description: "grandchild", prompt: "go" } }] }, tool(1), { text: "cannot receive more turns" },
+    ]);
+    const r = await cli(["--non-interactive", "--max-iterations", "10", "go"], ws, { provider, userConfig: { agents: { maxDepth: 3 } } });
+    expect(r.code).toBe(0);
+    const children = provider.requests.filter((request) => request.purpose === "subagent");
+    expect(children).toHaveLength(2);
+    expect(new Set(children.map((request) => request.agent)).size).toBe(2);
+  });
+
+  test("TECH — a shared stop during the final hook cannot produce a successful turn or event", async () => {
+    const limits = new RunLimits({ maxIterations: 2 });
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const parent = bench([{ text: "parent answer" }], { deps: { limits }, hooks: { ...NEUTRAL_HOOKS, turnCompleted: async () => { enter(); await released; return {}; } } });
+    const pending = runTurn(parent.deps, "parent", new AbortController().signal);
+    await entered;
+    const child = bench([tool(1)], { deps: { limits } });
+    expect((await runTurn(child.deps, "child", new AbortController().signal)).stopCause).toBe("iteration_limit");
+    release();
+    expect((await pending).stopCause).toBe("iteration_limit");
+    expect(parent.events.find((event) => event.type === "turn_completed")).toMatchObject({ result: { stopCause: "iteration_limit" } });
+  });
+
+  test("TECH — an empty failed child's authentication diagnostic reaches the parent in English", async () => {
+    const provider = new ScriptedProvider([{ toolCalls: [{ name: "spawn_agent", input: { description: "child", prompt: "go" } }] }, { text: "done" }], [{ error: { kind: "authentication", status: 401, message: "Authentification refusée par le serveur du modèle." } }]);
+    const r = await cli(["--non-interactive", "go"], workspace(), { provider });
+    expect(r.code).toBe(0);
+    const history = JSON.stringify(provider.requests.at(-1)!.history);
+    expect(history).toContain("Check the API credentials");
+    expect(history).not.toContain("Clé d'API refusée");
+    expect(history).not.toContain("Authentification refusée");
+  });
+
+  test("TECH — a child's partial report exposes its local halt cause as an unsuccessful tool result", async () => {
+    const ws = workspace(); ws.write("home/config/agents/one.md", '---\nname: one\ndescription: One request.\nmaxIterations: 1\n---\nPerform one request.\n');
+    const provider = new ScriptedProvider([{ toolCalls: [{ name: "spawn_agent", input: { role: "one", description: "child", prompt: "go" } }] }, { text: "parent done" }], [{ ...tool(1), text: "I still need to verify the change." }]);
+    const r = await cli(["--non-interactive", "--max-iterations", "10", "go"], ws, { provider });
+    expect(r.code).toBe(0);
+    const result = provider.requests.at(-1)!.history.flatMap((message) => message.role === "user" ? message.parts : []).find((part) => part.type === "tool_result");
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain("iteration_limit");
+    expect(JSON.stringify(result)).toContain("Partial report follows.");
+    expect(JSON.stringify(result)).toContain("I still need to verify the change.");
+  });
+
+  test("SPEC-MOD-005/CA-04 — an unavailable primary model switches to the backup, including result and transcript metadata", async () => {
+    const ws = workspace();
+    const provider = new ScriptedProvider([{ error: { kind: "overloaded", retryAfterMs: 0 } }, { text: "backup result" }]);
+    const r = await cli(["--non-interactive", "--model", "large", "--backup-model", "small", "--result-format", "json", "go"], ws, { provider, userConfig: { models: { fallbackAfterOverloads: 1 } } });
+    expect(r.code).toBe(0);
+    expect(provider.requests.map((request) => request.model.id)).toEqual(["test-large", "test-small"]);
+    expect(json(r.stdout)).toMatchObject({ model: "test-small", result: "backup result" });
+    expect(r.stderr).toContain("modèle de repli test-small");
+    const sessions = join(ws.configHome, "sessions");
+    const files = readdirSync(sessions, { recursive: true }).map(String).filter((file) => file.endsWith(".jsonl"));
+    const records = readFileSync(join(sessions, files[0]!), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(records.some((record) => record.data.event === "fallback" && record.data.from === "test-large" && record.data.to === "test-small")).toBe(true);
+  });
+
+  test("SPEC-MOD-005/CA-05 — the parent and two concurrent children share the limit, including requests still in flight", async () => {
+    const provider = new ScriptedProvider([
+      { toolCalls: [1, 2].map((n) => ({ name: "spawn_agent", input: { description: `child ${n}`, prompt: `task ${n}` } })) },
+      { text: "parent must not request again" },
+    ], [{ ...tool(1), delayMs: 30 }, { ...tool(2), delayMs: 30 }, { text: "no child remainder" }]);
+    const r = await cli(["--non-interactive", "--max-iterations", "3", "--result-format", "json", "go"], workspace(), { provider });
+    expect(provider.requests).toHaveLength(3);
+    expect(provider.requests.filter((request) => request.purpose === "subagent")).toHaveLength(2);
+    expect(r.code).toBe(3);
+    expect(json(r.stdout)).toMatchObject({ haltReason: "iteration_limit", iterations: 3 });
+  });
+
+  test("SPEC-MOD-005/CA-14 — a user's zero price cannot override the administrator's pricing base under a managed cap", async () => {
+    const ws = workspace(); ws.write("managed/policy.json", JSON.stringify({ engine: { limits: { maxCost: 0.001 } } }));
+    const provider = new ScriptedProvider([{ text: "must not be sent" }]);
+    const r = await cli(["--non-interactive", "--model", "large", "--result-format", "json", "go"], ws, { provider, userConfig: { models: { pricingOverrides: { "test-large": { inputPerMTok: 0, outputPerMTok: 0, cacheReadPerMTok: 0, cacheWritePerMTok: 0 } } } } });
+    expect(r.code).toBe(3);
+    expect(provider.requests).toHaveLength(0);
+    expect(json(r.stdout)).toMatchObject({ haltReason: "budget_limit", cost: { cap: 0.001, confirmed: 0 } });
+  });
+
+  test("TECH — a child's own iteration limit applies while the shared execution still has room", async () => {
+    const ws = workspace(); ws.write("home/config/agents/one.md", '---\nname: one\ndescription: One request.\nmaxIterations: 1\n---\nPerform one request.\n');
+    const provider = new ScriptedProvider([{ toolCalls: [{ name: "spawn_agent", input: { role: "one", description: "one child", prompt: "go" } }] }, { text: "parent done" }], [tool(1), { text: "child must not request again" }]);
+    const r = await cli(["--non-interactive", "--max-iterations", "10", "go"], ws, { provider });
+    expect(r.code).toBe(0); expect(provider.requests.filter((request) => request.purpose === "subagent")).toHaveLength(1);
+  });
+
+  test("TECH — retries also consume a shared request slot and cannot cross the iteration cap", async () => {
+    const provider = new ScriptedProvider([{ error: { kind: "server", retryAfterMs: 0 } }, { text: "must not retry" }]);
+    const r = await cli(["--non-interactive", "--max-iterations", "1", "--result-format", "json", "go"], workspace(), { provider });
+    expect(r.code).toBe(3); expect(provider.requests).toHaveLength(1);
+    expect(json(r.stdout)).toMatchObject({ haltReason: "iteration_limit", iterations: 1 });
+  });
+
+  test("TECH — resuming the same child cannot replenish its own iteration limit", async () => {
+    const ws = workspace(); ws.write("home/config/agents/one.md", '---\nname: one\ndescription: One request.\nmaxIterations: 1\n---\nPerform one request.\n');
+    const provider = new ScriptedProvider([
+      { toolCalls: [{ name: "spawn_agent", input: { role: "one", description: "limited child", prompt: "first" } }] },
+      (request) => { const id = JSON.stringify(request.history).match(/agent-[a-f0-9]{8}/)?.[0]; expect(id).toBeDefined(); return { toolCalls: [{ name: "spawn_agent", input: { resume: id, description: "resume", prompt: "second" } }] }; },
+      { text: "done" },
+    ], [{ text: "child report" }, { text: "must not replenish" }]);
+    const r = await cli(["--non-interactive", "--max-iterations", "10", "go"], ws, { provider });
+    expect(r.code).toBe(0); expect(provider.requests.filter((request) => request.purpose === "subagent")).toHaveLength(1);
+    expect(JSON.stringify(provider.requests.at(-1)?.history)).toContain("iteration_limit");
+  });
+
+  test("TECH — a failed final slot is reported in the turn and never waits for a futile retry", async () => {
+    let sleeps = 0;
+    const b = bench([{ error: { kind: "rate_limit", retryAfterMs: 3_600_000 } }, { text: "never" }], { deps: { limits: new RunLimits({ maxIterations: 1 }), retry: { maxRetries: 3, sleep: async () => { sleeps++; } } } });
+    const r = await runTurn(b.deps, "go", new AbortController().signal);
+    expect(r).toMatchObject({ stopCause: "iteration_limit", iterations: 1 });
+    expect(sleeps).toBe(0); expect(b.provider.requests).toHaveLength(1);
+    expect(b.events.find((event) => event.type === "turn_completed")).toMatchObject({ result: { iterations: 1 } });
+  });
+
+  test("TECH — a background child's global limit also stops its parent's in-flight request", async () => {
+    const provider = new ScriptedProvider([
+      { toolCalls: [{ name: "spawn_agent", input: { description: "background", prompt: "go", detached: true } }] },
+      { text: "partial parent", delayMs: 200 },
+    ], [{ ...tool(1), delayMs: 30 }, { text: "must not make fourth request" }]);
+    const r = await cli(["--non-interactive", "--max-iterations", "3", "--result-format", "json", "go"], workspace(), { provider });
+    expect(r.code).toBe(3); expect(provider.requests).toHaveLength(3);
+    expect(json(r.stdout)).toMatchObject({ haltReason: "iteration_limit", iterations: 3 });
+  });
+
+  test("TECH — fallback admission uses the managed price even when the catalogue has no backup price", async () => {
+    const ws = workspace(); ws.write("managed/policy.json", JSON.stringify({ engine: { limits: { maxCost: 10 } }, models: { pricingOverrides: { "test-small": { inputPerMTok: 1_000_000, outputPerMTok: 1_000_000, cacheReadPerMTok: 1_000_000, cacheWritePerMTok: 1_000_000 } } } }));
+    const provider = new ScriptedProvider([{ error: { kind: "overloaded", retryAfterMs: 0 } }, { text: "must not evade managed price" }]);
+    const r = await cli(["--non-interactive", "--model", "large", "--backup-model", "small", "--result-format", "json", "go"], ws, { provider, userConfig: { models: { fallbackAfterOverloads: 1 } } });
+    expect(r.code).toBe(3); expect(provider.requests).toHaveLength(1);
+    expect(json(r.stdout)).toMatchObject({ haltReason: "budget_limit", cost: { cap: 10 } });
+    expect(r.stderr).toContain("modèle de repli test-small");
+  });
+
   test("SPEC-MOD-005/CA-01 — a limit of 3 iterations and a fourth requested: the run stops on the iteration limit with a partial result", async () => {
     const provider = new ScriptedProvider([tool(1), tool(2), tool(3), tool(4), { text: "never" }]);
     const r = await cli(["--non-interactive", "--max-iterations", "3", "--result-format", "json", "go"], workspace(), { provider });
