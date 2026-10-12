@@ -2,6 +2,7 @@
 //             SPEC-AGT-018 (§ 5.3 steps 1 and 4), SPEC-OUT-022 (§ 5.3 steps 2 to 4, FA-01, EF-02 to EF-04, CA-01 to CA-03)
 // Background tasks of a session: a shell command, an agent or a monitor that go on while the conversation continues.
 // Each writes its output to its own file; its end is announced to its owner exactly once, at the next request.
+// Supports: SPEC-AGT-017 (CA-02), SPEC-AGT-018 (CA-01), gap E-147.
 
 import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -20,6 +21,10 @@ export interface BackgroundTask {
   exitCode?: number | null;
   /** The report of an agent, or the cause of the end. */
   summary?: string;
+  /** Visible activity of an agent; counters use reported events only. */
+  activity?: string;
+  toolCalls?: number;
+  tokens?: number;
   readonly outputFile: string;
 }
 
@@ -52,6 +57,7 @@ export class BackgroundTasks {
   readonly #notes: Reminder[] = [];
   #next = 1;
   readonly #listeners: Array<() => void> = [];
+  readonly #foreground = new Map<symbol, () => string | undefined>();
 
   constructor(options: BackgroundOptions) {
     this.#o = options;
@@ -63,6 +69,30 @@ export class BackgroundTasks {
 
   get running(): readonly BackgroundTask[] {
     return this.tasks.filter((t) => t.status === "running");
+  }
+
+  get outputLimitBytes(): number { return this.#o.maxOutputBytes; }
+  get hasForeground(): boolean { return this.#foreground.size > 0; }
+
+  /** Offers an already authorized command; newest active command wins, without another launch. */
+  offerForeground(detach: () => string | undefined): () => void {
+    const key = Symbol();
+    this.#foreground.set(key, detach); this.#changed();
+    return () => { if (this.#foreground.delete(key)) this.#changed(); };
+  }
+
+  detachForeground(): string | undefined {
+    for (const [key, detach] of [...this.#foreground].reverse()) {
+      const id = detach(); this.#foreground.delete(key); this.#changed();
+      if (id) return id;
+    }
+    return undefined;
+  }
+
+  updateActivity(id: string, activity: string, toolCalls = 0, tokens = 0): void {
+    const task = this.#tasks.get(id);
+    if (!task || task.status !== "running") return;
+    task.activity = activity; task.toolCalls = toolCalls; task.tokens = tokens; this.#changed();
   }
 
   onChange(listener: () => void): void {

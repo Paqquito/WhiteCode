@@ -1,11 +1,12 @@
 // Implements: SPEC-OUT-008 (§ 5.3 points 1, 2 and 8, § 6, EF-01, EF-05, EF-07, EF-10, ERR-01 to ERR-03, RG-01, RG-02, CA-01 to CA-04, CA-06, CA-07), SPEC-OUT-009 (§ 5.3, EF-01, EF-04 to EF-07, FA-01, CA-01, CA-03 to CA-05)
 // Supports: gap E-052 (sandbox not delivered), SPEC-OUT-008 (FA-01, CA-05 `detached`), SPEC-AGT-017 (§ 5.3, EF-01), SPEC-PER-007 to SPEC-PER-009 (tool check, gap E-109)
+// Supports: SPEC-AGT-017 (CA-02: transfer the authorized process without restarting it), gap E-147.
 
 import descriptionPosix from "../../prompts/tools/run_shell.md" with { type: "text" };
 import descriptionPowerShell from "../../prompts/tools/run_powershell.md" with { type: "text" };
 import descriptionPowerShellLegacy from "../../prompts/tools/run_powershell_5_1.md" with { type: "text" };
 import { dangerousPowerShell } from "../permissions/powershell-danger";
-import { formatShellResult } from "./shell-runtime";
+import { formatShellResult, type ShellResult } from "./shell-runtime";
 import { startShellTask } from "./background-tools";
 import { analyseShellCommand, type ShellVerdict } from "../permissions/command-analysis";
 import { textOutcome, type Tool, type ToolContext, type ToolOutcome } from "./types";
@@ -93,11 +94,55 @@ function shellTool(name: "run_shell" | "run_powershell", run: (ctx: ToolContext,
   };
 }
 
+async function foregroundShell(ctx: ToolContext, input: ShellInput, timeout: number, powershell: boolean): Promise<ToolOutcome> {
+  const run = (signal: AbortSignal, output?: (chunk: string) => void) => powershell
+    ? ctx.shell!.runPowerShell(input.command, timeout, signal, output)
+    : ctx.shell!.runPosix(input.command, timeout, signal, output);
+  const outcome = (r: ShellResult) => textOutcome(formatShellResult(r, timeout), r.timedOut || r.interrupted, r.timedOut ? "timeout" : r.interrupted ? "interrupted" : undefined);
+  const background = ctx.background;
+  if (!background || ctx.agentName) return outcome(await run(ctx.signal));
+  const controller = new AbortController();
+  const abort = () => controller.abort(ctx.signal.reason);
+  if (ctx.signal.aborted) abort(); else ctx.signal.addEventListener("abort", abort, { once: true });
+  const buffered: string[] = [];
+  let bytes = 0, capped = false, transferred = false, finished = false;
+  let output = (chunk: string) => {
+    if (capped) return;
+    bytes += Buffer.byteLength(chunk, "utf8");
+    if (bytes > background.outputLimitBytes) { capped = true; buffered.push("\n[Foreground output truncated before transfer.]\n"); }
+    else buffered.push(chunk);
+  };
+  const pending = run(controller.signal, (chunk) => output(chunk));
+  let resolveTransfer!: (result: ToolOutcome) => void;
+  const transfer = new Promise<ToolOutcome>((resolve) => { resolveTransfer = resolve; });
+  const withdraw = background.offerForeground(() => {
+    if (finished || controller.signal.aborted) return undefined;
+    const task = background.start("shell", input.description ?? input.command.slice(0, 80), async (signal, write) => {
+      const stop = () => controller.abort(signal.reason);
+      if (signal.aborted) stop(); else signal.addEventListener("abort", stop, { once: true });
+      let outputFailed = false;
+      try {
+        for (const chunk of buffered) write(chunk);
+        buffered.length = 0;
+        output = capped ? () => {} : (chunk) => { try { write(chunk); } catch { outputFailed = true; stop(); } };
+        const result = await pending;
+        if (outputFailed) throw new Error("The background task output could not be written.");
+        return { status: result.timedOut ? "timed_out" as const : result.interrupted ? "stopped" as const : result.exitCode === 0 ? "completed" as const : "failed" as const, exitCode: result.exitCode, summary: result.cwdNotice };
+      } catch (error) {
+        stop(); await pending.catch(() => {}); throw error;
+      } finally { signal.removeEventListener("abort", stop); }
+    });
+    ctx.signal.removeEventListener("abort", abort);
+    transferred = true;
+    resolveTransfer(textOutcome(`Moved the running command to background task ${task.id} without restarting it. Read its output with background_output (task_id ${task.id}) and stop it with background_stop.`));
+    return task.id;
+  });
+  try { return await Promise.race([pending.then((result) => { finished = true; return outcome(result); }), transfer]); }
+  finally { withdraw(); if (!transferred) ctx.signal.removeEventListener("abort", abort); }
+}
+
 export const runShellTool: Tool<ShellInput> = {
-  ...shellTool("run_shell", async (ctx, input, timeout) => {
-    const r = await ctx.shell!.runPosix(input.command, timeout, ctx.signal);
-    return textOutcome(formatShellResult(r, timeout), r.timedOut || r.interrupted, r.timedOut ? "timeout" : r.interrupted ? "interrupted" : undefined);
-  }),
+  ...shellTool("run_shell", (ctx, input, timeout) => foregroundShell(ctx, input, timeout, false)),
   inputSchema: schema("Shell command"),
   // ERR-02: without a POSIX shell (Windows), the tool is not registered.
   isEnabled: (env) => env.shells?.posix !== undefined,
@@ -105,10 +150,7 @@ export const runShellTool: Tool<ShellInput> = {
 };
 
 export const runPowerShellTool: Tool<ShellInput> = {
-  ...shellTool("run_powershell", async (ctx, input, timeout) => {
-    const r = await ctx.shell!.runPowerShell(input.command, timeout, ctx.signal);
-    return textOutcome(formatShellResult(r, timeout), r.timedOut || r.interrupted, r.timedOut ? "timeout" : r.interrupted ? "interrupted" : undefined);
-  }),
+  ...shellTool("run_powershell", (ctx, input, timeout) => foregroundShell(ctx, input, timeout, true)),
   inputSchema: schema("PowerShell command"),
   isEnabled: (env) => env.shells?.powershell !== undefined, // FA-01
   // EF-01, CA-01: the edition is stated so that the model adapts its syntax.

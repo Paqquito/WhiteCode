@@ -15,6 +15,7 @@
 // Composition root of a session: options → identity and settings → provider → engine → automated output, or the
 // Supports: SPEC-CAD-002 (CA-13), SPEC-API-006 (CA-02, unknown identifiers with minimal capabilities), gap E-145.
 // Supports: SPEC-MCP-003 (CA-01/02/03, shared network settings and authentication status), gap E-146.
+// Supports: SPEC-AGT-017 (CA-02), SPEC-AGT-018 (CA-01), gap E-147.
 // interactive application (lot 5).
 
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
@@ -1213,7 +1214,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const maxAgentDepth = settings.get<number>("agents.maxDepth");
   // SPEC-OUT-016: one instance per depth, so that the delegation stops at `agents.maxDepth` (FA-03, EF-05).
   const spawnTool = (depth: number, caller: ToolLookup, parentContext: AgentPermissionContext = mainPermissionContext, callerMaxIterations?: number) =>
-    createSpawnAgentTool({ agents: agentCatalog, maxParallel: settings.get<number>("agents.maxParallel"), launch: (input, def, signal) => runSubagent(input, def, signal, depth, caller, parentContext, callerMaxIterations) }) as never;
+    createSpawnAgentTool({ agents: agentCatalog, maxParallel: settings.get<number>("agents.maxParallel"), launch: (input, def, signal, progress) => runSubagent(input, def, signal, depth, caller, parentContext, callerMaxIterations, progress) }) as never;
   if (maxAgentDepth >= 1 && agentsInToolset) registry.addStatic(spawnTool(0, registry));
   // SPEC-OUT-020, SPEC-OUT-022: the tools of the work items and of the background tasks, named in --toolset like the others.
   const inToolset = (name: string) => toolsetNames === undefined || toolsetNames.includes(name) || (toolsetNames.length === 1 && toolsetNames[0] === "default");
@@ -1877,6 +1878,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const shellObservations: Reminder[] = [];
   // The interactive application shows the events itself (SPEC-MOD-001 § 5.2 step 5).
   let app: InteractiveApp | undefined;
+  background.onChange(() => app?.refresh());
   const permissionDenials = new PermissionDenials(() => ({ consecutive: liveSettings.get<number>("permissions.denials.maxConsecutive"), total: liveSettings.get<number>("permissions.denials.maxTotal") }));
   const emit = (event: EngineEvent) => {
     if (event.type === "permission") {
@@ -2224,6 +2226,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         })(),
       tasks: () => taskList.tasks.filter((t) => t.owner === MAIN_AGENT),
       backgroundTasks: () => background.running.length,
+      canBackground: () => background.hasForeground,
+      backgroundCurrent: () => background.detachForeground(),
+      backgroundActivity: () => background.running.filter((task) => task.kind === "agent"),
       describeCall: (name, input) => {
         try {
           return registry.get(name)?.summary(input as never) ?? "";
@@ -2426,7 +2431,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     ...(a.classifier ? { classifier: { decide: (r, s) => a.classifier!.decide({ ...r, requester, ...agentScope() }, s) } } : {}),
     ...(a.habilitatedHook ? { habilitatedHook: { decide: (r, s) => a.habilitatedHook!.decide({ ...r, requester, ...agentScope() }, s) } } : {}),
   });
-  const runSubagent = async (input: SpawnAgentInput, definition: AgentDefinition | undefined, signal: AbortSignal, depth: number, caller: ToolLookup, parentContext: AgentPermissionContext, callerMaxIterations?: number): Promise<{ text: string; isError: boolean }> => {
+  const runSubagent = async (input: SpawnAgentInput, definition: AgentDefinition | undefined, signal: AbortSignal, depth: number, caller: ToolLookup, parentContext: AgentPermissionContext, callerMaxIterations?: number, progress?: (event: EngineEvent) => void): Promise<{ text: string; isError: boolean }> => {
     let agent: { readonly name: string; readonly deps: LoopDeps; readonly caller: ToolLookup; readonly skillAllows: Rule[] };
     let id: string;
     if (input.resume !== undefined) {
@@ -2579,7 +2584,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     activeSubagents.add(id);
     let result: TurnResult;
     try {
-      result = await runTurn(agent.deps, startup ? `${startup}\n\n${input.prompt}` : input.prompt, signal);
+      result = await runTurn({ ...agent.deps, emit: (event) => { progress?.(event); agent.deps.emit(event); } }, startup ? `${startup}\n\n${input.prompt}` : input.prompt, signal);
     } finally {
       activeSubagents.delete(id);
       // Skill grants never escape this agent's turn, including when it is resumed.
@@ -3585,7 +3590,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       case "background-tasks": {
         // SPEC-CMD-070 CA-01: the active tasks are listed, with their state.
         const tasks = background.tasks;
-        const lines = tasks.length === 0 ? ["Aucune tâche de fond."] : tasks.map((t) => `${t.id}  ${t.status === "running" ? "en cours" : t.status}  ${t.description}${t.status === "running" ? ` (${Math.round((Date.now() - t.startedAt) / 1000)} s)` : ""}`);
+        const lines = tasks.length === 0 ? ["Aucune tâche de fond."] : tasks.map((t) => `${t.id}  ${t.status === "running" ? "en cours" : t.status}  ${t.description}${t.status === "running" ? ` (${Math.round((Date.now() - t.startedAt) / 1000)} s)` : ""}${t.activity ? ` · ${t.activity} · ${t.toolCalls ?? 0} outils · ${t.tokens ?? 0} jetons` : ""}`);
         return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
       }
       case "skill-list": {

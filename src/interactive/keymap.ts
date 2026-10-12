@@ -2,6 +2,7 @@
 //             EF-01 to EF-07, ERR-01 to ERR-04, RG-01 to RG-03, CA-01 to CA-06)
 // Catalogue of the actions of the interface, their default combinations and their customisation. The most specific
 // context answers first: dialog, then input area, then application.
+// Supports: SPEC-AGT-017 (CA-02, customizable background transfer action), gap E-147.
 
 import { comboOf, type KeyEvent } from "../ui/keys";
 
@@ -24,6 +25,7 @@ export const ACTIONS: readonly ActionDef[] = [
   { id: "mode.cycle", context: "app", label: "Changer de mode de permission", defaults: ["shift+tab"] },
   { id: "input.toggleModal", context: "app", label: "Activer ou désactiver l'édition modale (contenu conservé)", defaults: ["alt+m"] },
   { id: "view.transcript", context: "app", label: "Ouvrir la vue plein écran de la transcription", defaults: ["alt+t"] },
+  { id: "task.background", context: "app", label: "Mettre la commande en cours en arrière-plan", defaults: ["alt+g"] }, // Supports: SPEC-AGT-017 CA-02, E-147.
   { id: "input.submit", context: "input", label: "Envoyer le message (en file pendant un tour)", defaults: ["enter"] },
   { id: "input.newline", context: "input", label: "Insérer un saut de ligne", defaults: ["shift+enter", "alt+enter", "ctrl+j"] },
   { id: "input.left", context: "input", label: "Caractère précédent", defaults: ["left", "ctrl+b"] },

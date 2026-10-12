@@ -1,9 +1,11 @@
 // Implements: SPEC-OUT-016 (§ 5.3 steps 1, 2, 6, FA-01, FA-02, EF-02, EF-03, EF-05, ERR-01, ERR-02, edge case: agents.maxParallel)
 // The model starts a sub-agent: the call itself changes nothing, the actions of the sub-agent are checked one by one by
 // its own executor. Calls of one response run together.
+// Supports: SPEC-AGT-018 (CA-01: current activity and counters), gap E-147.
 
 import description from "../../prompts/tools/spawn_agent.md" with { type: "text" };
 import type { AgentDefinition } from "../agents/definitions";
+import type { EventSink } from "../engine/events";
 import { textOutcome, type Tool } from "./types";
 
 export interface SpawnAgentInput {
@@ -18,7 +20,7 @@ export interface SpawnAgentInput {
 export interface SpawnAgentDeps {
   /** The agents available, read at each call (SPEC-AGT-005 EF-04). */
   readonly agents: () => ReadonlyMap<string, AgentDefinition>;
-  readonly launch: (input: SpawnAgentInput, definition: AgentDefinition | undefined, signal: AbortSignal) => Promise<{ readonly text: string; readonly isError: boolean }>;
+  readonly launch: (input: SpawnAgentInput, definition: AgentDefinition | undefined, signal: AbortSignal, progress?: EventSink) => Promise<{ readonly text: string; readonly isError: boolean }>;
   /** `agents.maxParallel`. */
   readonly maxParallel: number;
 }
@@ -72,8 +74,20 @@ export function createSpawnAgentTool(deps: SpawnAgentDeps): Tool<SpawnAgentInput
         if (!ctx.background) return textOutcome("Background tasks are not available in this session.", true, "unavailable");
         const task = ctx.background.start("agent", input.description, async (signal, write) => {
           await enter();
+          let activity = "Réflexion…", tools = 0, tokens = 0;
+          const names = new Map<string, string>();
+          const progress: EventSink = (event) => {
+            if (event.type === "tool_call") { names.set(event.callId, event.name); tools++; activity = `Vérification : ${event.name}…`; }
+            else if (event.type === "tool_started") activity = `Outil ${names.get(event.callId) ?? "en cours"}…`;
+            else if (event.type === "tool_result" || event.type === "thinking_delta") activity = "Réflexion…";
+            else if (event.type === "text_delta") activity = "Rédaction…";
+            else if (event.type === "retry") activity = "Nouvelle tentative…";
+            else if (event.type === "usage") tokens += event.usage.inputTokens + event.usage.outputTokens;
+            ctx.background!.updateActivity(task.id, activity, tools, tokens);
+          };
+          ctx.background!.updateActivity(task.id, activity, tools, tokens);
           try {
-            const report = await deps.launch(input, definition, signal);
+            const report = await deps.launch(input, definition, signal, progress);
             write(report.text);
             return { status: report.isError ? (signal.aborted ? "stopped" : "failed") : "completed", summary: report.text };
           } finally {

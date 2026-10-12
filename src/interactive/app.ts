@@ -3,6 +3,7 @@
 // keeps the draft, the queue of messages and the stashed drafts, shows the permission dialog in a fixed zone, and hands
 // the messages to the session one at a time.
 // Supports: SPEC-IHM-038 (EF-03, CA-02: no waiting animation in reduced motion).
+// Supports: SPEC-AGT-017 (CA-02), SPEC-AGT-018 (CA-01), gap E-147.
 // Supports: SPEC-IHM-019 (CA-01/02, choices and preview), SPEC-IHM-020 (CA-02), SPEC-CMD-072 (CA-01), SPEC-IHM-005 (CA-07), SPEC-MOD-001 (CA-06), gap E-142.
 
 import type { Terminal } from "../platform/terminal";
@@ -124,6 +125,10 @@ export interface AppOptions {
   readonly cycleMode?: () => void;
   /** Background tasks still running, stopped by the exit (SPEC-CMD-023 CA-01). */
   readonly backgroundTasks?: () => number;
+  /** Supports: SPEC-AGT-017 CA-02, SPEC-AGT-018 CA-01, gap E-147. */
+  readonly canBackground?: () => boolean;
+  readonly backgroundCurrent?: () => string | undefined;
+  readonly backgroundActivity?: () => readonly { readonly id: string; readonly activity?: string; readonly toolCalls?: number; readonly tokens?: number }[];
   /** The task list of the main agent, shown above the input area (SPEC-OUT-021 § 10). */
   readonly tasks?: () => ReadonlyArray<{ readonly subject: string; readonly status: string; readonly progressLabel?: string }>;
   /** Summary of a tool call for the flow. */
@@ -977,6 +982,13 @@ export class InteractiveApp {
       this.#dialogKey(approval, e, action);
       return;
     }
+    if (action === "task.background") {
+      try {
+        const id = this.#o.backgroundCurrent?.();
+        if (id) this.notice("info", `Commande transférée vers la tâche ${id}, sans redémarrage.`);
+      } catch { this.notice("warning", "Transfert impossible : la commande reste au premier plan."); }
+      this.#redraw(); return;
+    }
     if (action !== "app.interrupt" && action !== "app.exit") {
       this.#exitArmed = undefined;
       this.#hint = undefined;
@@ -1327,6 +1339,8 @@ export class InteractiveApp {
       stream.push(modelView(this.#streamRenderer ? this.#streamRenderer.render(this.#stream) : this.#stream, this.#view));
     }
     if (this.running) stream.push(activityView(this.#activity, this.#now - this.#turnStarted, this.#spinner, this.#view));
+    const background = this.#o.backgroundActivity?.() ?? [];
+    if (background.length > 0) panels.push(box(background.slice(-3).map((task) => text(`Agent ${task.id} · ${task.activity ?? "En attente…"} · ${task.toolCalls ?? 0} outil${task.toolCalls === 1 ? "" : "s"} · ${task.tokens ?? 0} jetons`, { overflow: "clip" })), { padding: { left: 2 } }));
     const frame = composeFrame(
       { stream: stream.length > 0 ? box(stream) : undefined, panels, input: this.#inputNode(size.columns, ctx), status: this.#statusNode() },
       size,
@@ -1403,7 +1417,7 @@ export class InteractiveApp {
         const c = this.#keymap.effective(id)[0];
         return c ? `${comboLabel(c)} : ${what}` : undefined;
       };
-      const hints = [hint("mode.cycle", "mode"), hint("app.interrupt", "interrompre, deux fois : quitter"), "/help : aide"].filter((h) => h !== undefined);
+      const hints = [hint("mode.cycle", "mode"), ...(this.#o.canBackground?.() ? [hint("task.background", "arrière-plan")] : []), hint("app.interrupt", "interrompre, deux fois : quitter"), "/help : aide"].filter((h) => h !== undefined);
       parts.push({ text: ` · ${hints.join(" · ")}` });
     }
     return text(parts.map((p) => ({ ...p, style: { dim: true, ...(p.style ?? {}) } })), { overflow: "clip" });
