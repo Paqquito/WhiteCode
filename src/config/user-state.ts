@@ -1,5 +1,6 @@
 // Implements: SPEC-CFG-010 (CA-01, CA-02, CA-03, EF-03, EF-04, FA-01, § 12: concurrent state and recovery).
 // Supports: gap E-134 (bounded exclusive lock, union of trust changes; explicit failure on sustained contention).
+// Supports: SPEC-PER-018 (consent version, date and revocation), gap E-138.
 import { lstatSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -12,6 +13,7 @@ export interface UserState {
   readonly trustedProjects?: readonly string[];
   readonly restrictedProjects?: readonly string[];
   readonly unrestrictedAccepted?: boolean;
+  readonly autoApproveConsent?: { readonly version: number; readonly at: string };
   readonly modelNotices?: Readonly<Record<string, string>>;
   readonly keyConfirmations?: Readonly<Record<string, boolean>>;
   readonly projects?: Readonly<Record<string, unknown>>;
@@ -28,6 +30,8 @@ function load(path: string): UserState {
   try { value = JSON.parse(readFileSync(path, "utf8")); } catch (error) { if (error instanceof SyntaxError) throw new CorruptState(); throw error; }
   if (!object(value) || ["trustedProjects", "restrictedProjects"].some((key) => value[key] !== undefined && (!Array.isArray(value[key]) || value[key].some((p) => typeof p !== "string"))) ||
       (value["unrestrictedAccepted"] !== undefined && typeof value["unrestrictedAccepted"] !== "boolean") ||
+      (value["autoApproveConsent"] !== undefined && (!object(value["autoApproveConsent"]) || !Number.isSafeInteger(value["autoApproveConsent"]["version"]) ||
+        typeof value["autoApproveConsent"]["at"] !== "string" || !Number.isFinite(Date.parse(value["autoApproveConsent"]["at"])))) ||
       (value["modelNotices"] !== undefined && (!object(value["modelNotices"]) || Object.values(value["modelNotices"]).some((p) => typeof p !== "string"))) ||
       (value["keyConfirmations"] !== undefined && (!object(value["keyConfirmations"]) || Object.entries(value["keyConfirmations"]).some(([key, answer]) => !/^[a-f0-9]{64}$/.test(key) || typeof answer !== "boolean"))) ||
       (value["projects"] !== undefined && (!object(value["projects"]) || Object.values(value["projects"]).some((p) => !object(p))))) throw new CorruptState();

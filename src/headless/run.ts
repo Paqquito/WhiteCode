@@ -9,6 +9,7 @@
 // Supports: SPEC-PER-001 (CA-09, CA-11, CA-18, CA-20 to CA-23, CA-33), SPEC-PER-028 (CA-03), gap E-131.
 // Supports: SPEC-SES-015 (CA-02), SPEC-OUT-037 (CA-01), SPEC-HOK-001 (CA-04), SPEC-CFG-007 (CA-04), gap E-132.
 // Supports: SPEC-CFG-010 (CA-01, CA-02: concurrent choices and corrupt-state recovery), gap E-134.
+// Supports: SPEC-PER-004/018 (approval model and versioned consent), SPEC-PER-014 (session denials), SPEC-MOD-005 (CA-16), gap E-138.
 // Composition root of a session: options → identity and settings → provider → engine → automated output, or the
 // interactive application (lot 5).
 
@@ -77,6 +78,8 @@ import { askTrust } from "../interactive/trust-dialog";
 import { USER_CONNECTORS_FILE } from "../connectors/session";
 import { nextMode, isModeAvailable, ModeError, ModeState, resolveInitialMode, unavailableReason, type ModeAvailability } from "../permissions/modes";
 import type { Authorities } from "../permissions/resolver";
+import { AUTO_APPROVE_CONSENT, AUTO_APPROVE_CONSENT_VERSION, autoApproveRules, ModelApprovalClassifier, PermissionDenials } from "../permissions/auto-approve";
+import { buildFlag } from "../extension-points/build-flags";
 import { ControlSession, type ControlEnd, type ControlOperations } from "../control/session";
 import { ControlError } from "../control/protocol";
 import { bearerMatches, FramedLink, isLoopback, originAllowed, parseListenAddress } from "../control/remote";
@@ -921,11 +924,29 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   }
 
   // Permission mode (SPEC-PER-003, SPEC-MOD-002 EF-02); it may change during the session (ModeState).
+  const autoConsentValid = () => {
+    const consent = readUserState(locations.userStateFile).autoApproveConsent;
+    return consent?.version === AUTO_APPROVE_CONSENT_VERSION ||
+      consent?.version !== 0 && liveSettings.get<boolean>("permissions.autoApprove.orgConsent");
+  };
+  const autoRequested = opt("approval-mode") === "auto_approve" || opt("approval-mode") === undefined &&
+    settings.get<PermissionMode>(nonInteractive ? "engine.nonInteractive.defaultPermissionMode" : "permissions.initialMode") === "auto_approve";
+  const autoConsentText = `${AUTO_APPROVE_CONSENT}${identity.has("SERVICE_DOCS") ? ` Documentation : ${identity.get("SERVICE_DOCS")}.` : ""}`;
+  if (autoRequested && buildFlag("permission_auto_approve") && !settings.get<boolean>("permissions.disableAutoApproveMode")) {
+    if (!autoConsentValid() && willBeInteractive) {
+      stopStartupInput?.(); stopStartupInput = undefined;
+      const accepted = await authDialog(streams.terminal!, autoConsentText, false, deps.signal, captureStartupInput);
+      assertPolicy();
+      if (accepted === true && !deps.signal?.aborted) await updateUserState(locations.userStateFile, { autoApproveConsent: { version: AUTO_APPROVE_CONSENT_VERSION, at: now().toISOString() } }, system.platform);
+    }
+    if (autoConsentValid() && settings.get<boolean>("permissions.autoApprove.orgConsent")) err("Approbation automatique : consentement fourni par votre organisation.");
+    if (!autoConsentValid() && nonInteractive) throw new RunError("Le consentement à l'approbation automatique est absent ou périmé.", ExitCode.UsageOrConfiguration);
+  }
   const availability: ModeAvailability = {
     allowUnrestrictedOption: opt("allow-unrestricted-mode") === true,
     disableUnrestricted: settings.get<boolean>("permissions.disableUnrestrictedMode"),
     disableAutoApprove: settings.get<boolean>("permissions.disableAutoApproveMode"),
-    autoApproveConsent: false,
+    get autoApproveConsent() { return autoConsentValid(); },
   };
   let modeState: ModeState;
   try {
@@ -1814,7 +1835,14 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const shellObservations: Reminder[] = [];
   // The interactive application shows the events itself (SPEC-MOD-001 § 5.2 step 5).
   let app: InteractiveApp | undefined;
+  const permissionDenials = new PermissionDenials(() => ({ consecutive: liveSettings.get<number>("permissions.denials.maxConsecutive"), total: liveSettings.get<number>("permissions.denials.maxTotal") }));
   const emit = (event: EngineEvent) => {
+    if (event.type === "permission") {
+      const before = permissionDenials.needsHuman;
+      permissionDenials.record(event.decision);
+      if (!before && permissionDenials.needsHuman && modeState.mode === "auto_approve" && (app || control?.authority || deps.authorities?.human || deps.authorities?.controlHost))
+        emit({ type: "warning", message: "Refus répétés : les prochaines décisions automatiques sont soumises à un humain." });
+    }
     deps.onEvent?.(event);
     stream?.engine(event);
     app?.onEngineEvent(event);
@@ -1960,6 +1988,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const reminders = new ReminderCenter(
     [
       dateChangeProducer(now),
+      permissionDenials,
       { type: "instructions", produce: () => instructionReminders.splice(0) },
       interruptionProducer(reopened?.history),
       { type: "hook_context", produce: () => hookContext.splice(0) },
@@ -2185,6 +2214,23 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     });
   }
 
+  const approvalDecisions: string[] = [];
+  const approvalClassifier = buildFlag("permission_auto_approve") ? new ModelApprovalClassifier({
+    provider, ledger, pricing: pricingOf, assertPolicy, redact: redactOutput,
+    model: () => {
+      const small = deps.catalog.resolve("small", providerId, identity, resolveOptions);
+      return !isResolveFailure(small) && allowedByList(small, "small") ? small : undefined;
+    },
+    context: (action) => maskSecrets(JSON.stringify((action.agent ? subagents.get(action.agent.id)?.deps.conversation.messages : undefined)?.slice(-4) ?? conversation.messages.slice(-4)).slice(-12000)),
+    instructions: () => ({ allow: liveSettings.get<string[]>("permissions.autoApprove.allow"), block: liveSettings.get<string[]>("permissions.autoApprove.block"), environment: liveSettings.get<string[]>("permissions.autoApprove.environment") }),
+    report: (decision, reason) => {
+      const message = `Classifieur d'approbation : ${decision} — ${maskSecrets(reason)}`;
+      approvalDecisions.push(message); if (approvalDecisions.length > 20) approvalDecisions.shift();
+      emit({ type: "warning", message });
+    },
+    usage: (model, event, cost) => emit({ type: "usage", model, usage: event.usage, cost }),
+  }) : undefined;
+  const approvalRules = (input: readonly Rule[], mode: PermissionMode = modeState.mode) => autoApproveRules(input, mode, { cwd, allowedDirectories, platform: system.platform });
   const loopDeps: LoopDeps = {
     beforeRequest: () => {
       assertPolicy();
@@ -2235,23 +2281,29 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       registry,
       hooks,
       // SPEC-PER-001 § 5.3 point c: the habilitated `approval_needed` hooks answer before any other authority.
-      authorities: { habilitatedHook: hooks.approvalHook, ...deps.authorities, ...(app ? { human: app.approvals } : {}), ...(control ? { controlHost: control.authority } : {}) },
+      authorities: { habilitatedHook: hooks.approvalHook, classifier: approvalClassifier, ...deps.authorities, classifierNeedsHuman: () => permissionDenials.needsHuman, ...(app ? { human: app.approvals } : {}), ...(control ? { controlHost: control.authority } : {}) },
       concurrency: settings.get<number>("engine.toolConcurrency"),
       toolTimeoutMs: settings.get<number>("engine.toolTimeout"),
       persistRule,
       fileHistory,
       largeResults: { store: resultStore, limit: settings.get<number>("tools.resultInlineLimit") },
       loopGuard,
-      permissionContext: () => ({
-        mode: modeState.mode,
-        rules: controlRules.length > 0 ? [...rules, ...controlRules] : rules,
-        sessionAllows: [...sessionAllows, ...skillAllows],
-        managedRulesOnly: liveSettings.get<boolean>("permissions.managedRulesOnly"),
-        cwd,
-        home: system.home,
-        platform: system.platform,
-        policyRefusal: policyRefusal(),
-      }),
+      permissionContext: () => {
+        if (modeState.mode === "auto_approve" && !isModeAvailable("auto_approve", availability)) {
+          modeState.set(nonInteractive ? "no_prompt" : "ask");
+          emit({ type: "warning", message: "Consentement à l'approbation automatique révoqué ou périmé : mode sûr appliqué." });
+        }
+        return {
+          mode: modeState.mode,
+          rules: approvalRules(controlRules.length > 0 ? [...rules, ...controlRules] : rules),
+          sessionAllows: approvalRules([...sessionAllows, ...skillAllows]),
+          managedRulesOnly: liveSettings.get<boolean>("permissions.managedRulesOnly"),
+          cwd,
+          home: system.home,
+          platform: system.platform,
+          policyRefusal: policyRefusal(),
+        };
+      },
       toolContext: (signal): ToolContext => ({
         platform: system.platform,
         home: system.home,
@@ -2262,6 +2314,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         readState,
         protectedLocations: protectedPaths,
         readDenied,
+        writeDenied: (path) => {
+          if (comparablePath(realTargetPath(path), system.platform) === comparablePath(realTargetPath(locations.userStateFile), system.platform)) return true;
+          try { const a = statSync(path), b = statSync(locations.userStateFile); return a.ino !== 0 && a.dev === b.dev && a.ino === b.ino; } catch { return false; }
+        },
         modelImages: currentModel.capabilities.images,
         ripgrepPath,
         taskList,
@@ -2314,6 +2370,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     ...(a.human ? { human: { request: (r, s) => a.human!.request({ ...r, requester }, s), ...(a.human.loopDetected ? { loopDetected: (i, s) => a.human!.loopDetected!(i, s) } : {}) } } : {}),
     ...(a.controlHost ? { controlHost: { decide: (r, s) => a.controlHost!.decide({ ...r, requester }, s) } } : {}),
     ...(a.delegate ? { delegate: { decide: (r, s) => a.delegate!.decide({ ...r, requester }, s) } } : {}),
+    ...(a.classifier ? { classifier: { decide: (r, s) => a.classifier!.decide({ ...r, requester, ...agentScope() }, s) } } : {}),
     ...(a.habilitatedHook ? { habilitatedHook: { decide: (r, s) => a.habilitatedHook!.decide({ ...r, requester, ...agentScope() }, s) } } : {}),
   });
   const runSubagent = async (input: SpawnAgentInput, definition: AgentDefinition | undefined, signal: AbortSignal, depth: number, caller: ToolLookup, parentContext: AgentPermissionContext): Promise<{ text: string; isError: boolean }> => {
@@ -2345,12 +2402,14 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       const childMode = (): PermissionMode => {
         const parentMode = parentContext().mode;
         if (parentMode === "no_prompt") return "no_prompt";
-        return requestedMode && !morePermissive(requestedMode, parentMode) ? requestedMode : parentMode;
+        const requested = def.approvalMode !== undefined && !isModeAvailable(def.approvalMode, availability) ? (nonInteractive ? "no_prompt" : "ask") : def.approvalMode;
+        return requested && !morePermissive(requested, parentMode) ? requested : parentMode;
       };
       const agentSkillAllows: Rule[] = [];
       const childContext: AgentPermissionContext = () => {
         const parent = parentContext();
-        return { ...parent, mode: childMode(), sessionAllows: [...parent.sessionAllows, ...agentSkillAllows] };
+        const mode = childMode();
+        return { ...parent, mode, rules: approvalRules(parent.rules, mode), sessionAllows: approvalRules([...parent.sessionAllows, ...agentSkillAllows], mode) };
       };
       const mode = childMode();
       // EF-01: the tools of the definition (or all) among those of the caller, minus the excluded ones; delegation only
@@ -2430,7 +2489,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           conversation: new Conversation(built.blocks, view.list().map((t) => ({ name: t.name, description: t.description(toolEnv), inputSchema: t.inputSchema }))),
           hooks: agentHooks,
           transcript: undefined,
-          reminders: undefined,
+          reminders: new ReminderCenter([permissionDenials.forAgent()], settings.get<number>("context.reminders.maxTokens"), estimateTokens),
           context: undefined,
           pendingNote: undefined,
           takeQueued: undefined,
@@ -2440,9 +2499,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           fallback: undefined,
           ...(def.maxIterations !== undefined ? { maxIterations: def.maxIterations } : {}),
           agentId,
-          // Its events stay its own; warnings reach the session.
+          // Permission outcomes feed the session counters; ordinary child output stays in its own context.
           emit: (e) => {
-            if (e.type === "warning" || e.type === "retry" || e.type === "usage") emit(e);
+            if (e.type === "warning" || e.type === "retry" || e.type === "usage" || e.type === "permission") emit(e);
           },
           executor: {
             ...loopDeps.executor,
@@ -2922,6 +2981,22 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         // a rule added after validation (EF-02, ERR-01) to the chosen scope, applied at once (EF-03).
         const scopeFiles: Record<string, string> = { user: locations.userSettingsFile, project: locations.projectSettingsFile, local: locations.localSettingsFile };
         const words = args.trim();
+        if (words === "classifier") {
+          const lines = ["Consignes du classifieur :", ...["allow", "block", "environment"].map((key) => `${key} : ${JSON.stringify(liveSettings.get<string[]>(`permissions.autoApprove.${key}`))}`), "Dernières décisions :", ...(approvalDecisions.length ? approvalDecisions : ["aucune"])];
+          return { shown: text(lines.join("\n")), note: lines.join("\n") };
+        }
+        if (words === "consent revoke") {
+          await updateUserState(locations.userStateFile, { autoApproveConsent: { version: 0, at: now().toISOString() } }, system.platform);
+          if (modeState.mode === "auto_approve") modeState.set(nonInteractive ? "no_prompt" : "ask");
+          return { note: "Consentement à l'approbation automatique révoqué ; mode sûr appliqué." };
+        }
+        if (words === "consent") {
+          if (!app || !buildFlag("permission_auto_approve") || settings.get<boolean>("permissions.disableAutoApproveMode")) return { refused: "Le consentement exige une interface humaine et un mode autorisé par votre organisation." };
+          if (!(await app.confirm(autoConsentText, "j'accepte", "annuler"))) return { silent: true };
+          assertPolicy(); if (controller.signal.aborted || app.exiting) return { silent: true };
+          await updateUserState(locations.userStateFile, { autoApproveConsent: { version: AUTO_APPROVE_CONSENT_VERSION, at: now().toISOString() } }, system.platform);
+          return { note: "Consentement enregistré ; le mode auto_approve est disponible dans le cycle des modes." };
+        }
         if (words === "") {
           const lines: string[] = [];
           for (const decision of ["allow", "ask", "deny"] as const) {

@@ -7,7 +7,7 @@ export interface ModeAvailability {
   readonly allowUnrestrictedOption: boolean;
   readonly disableUnrestricted: boolean;
   readonly disableAutoApprove: boolean;
-  /** Consent given by the user (SPEC-PER-018); not available in this version. */
+  /** Consent valid for the current version (SPEC-PER-018). */
   readonly autoApproveConsent: boolean;
 }
 
@@ -28,6 +28,7 @@ export function unavailableReason(mode: PermissionMode, a: ModeAvailability): st
   if (mode === "unrestricted" && a.disableUnrestricted) return "Ce mode est désactivé par votre administrateur.";
   if (mode === "unrestricted") return "Le mode unrestricted n'est accessible qu'avec l'option --allow-unrestricted-mode.";
   if (mode === "auto_approve" && a.disableAutoApprove) return "Ce mode est désactivé par votre administrateur.";
+  if (mode === "auto_approve" && buildFlag("permission_auto_approve") && !a.autoApproveConsent) return "Le consentement à l'approbation automatique est absent ou périmé.";
   return "Le mode d'approbation automatique n'est pas disponible dans cette version.";
 }
 

@@ -69,8 +69,9 @@ export interface ApprovalHook {
 }
 
 /** Approval classifier of `auto_approve` (SPEC-PER-004). */
+export type ClassifierVerdict = "allow" | "block" | "unavailable" | { readonly decision: "allow" | "block" | "unavailable"; readonly reason: string };
 export interface ApprovalClassifier {
-  decide(request: ApprovalRequest, signal: AbortSignal): Promise<"allow" | "block" | "unavailable">;
+  decide(request: ApprovalRequest, signal: AbortSignal): Promise<ClassifierVerdict>;
 }
 
 export interface Authorities {
@@ -80,6 +81,7 @@ export interface Authorities {
   readonly delegate?: DecisionDelegate;
   readonly habilitatedHook?: ApprovalHook;
   readonly classifier?: ApprovalClassifier;
+  readonly classifierNeedsHuman?: () => boolean;
 }
 
 export type Resolution =
@@ -122,14 +124,18 @@ export async function resolveAsk(
 
   // Point b: auto_approve, tool check or default origin: the classifier, never a hook nor a delegate.
   if (mode === "auto_approve" && (decision.origin === "tool_check" || decision.origin === "default")) {
-    const verdict = authorities.classifier ? await authorities.classifier.decide(request, signal) : "unavailable";
+    const answer = authorities.classifierNeedsHuman?.() && (authorities.human || authorities.controlHost)
+      ? { decision: "unavailable" as const, reason: "Repeated permission refusals require human review." }
+      : authorities.classifier ? await authorities.classifier.decide(request, signal) : "unavailable";
+    const verdict = typeof answer === "string" ? answer : answer.decision;
+    const detail = typeof answer === "string" ? "" : ` ${answer.reason}`;
     if (signal.aborted) return cancelled();
     if (verdict === "allow") return { decision: "allow", by: "classifier" };
-    if (verdict === "block") return { decision: "deny", by: "classifier", reason: "Blocked by the approval classifier." };
-    const host = await askHost({ ...request, reason: `${request.reason} (approval classifier unavailable)` }, authorities.controlHost, signal);
+    if (verdict === "block") return { decision: "deny", by: "classifier", reason: `Blocked by the approval classifier.${detail}` };
+    const host = await askHost({ ...request, reason: `${request.reason} (approval classifier unavailable)${detail}` }, authorities.controlHost, signal);
     if (host) return host;
-    if (authorities.human) return askHuman({ ...request, reason: `${request.reason} (approval classifier unavailable)` }, authorities.human, signal);
-    return { decision: "deny", by: "none", reason: noAuthority(request, "The approval classifier is unavailable.") };
+    if (authorities.human) return askHuman({ ...request, reason: `${request.reason} (approval classifier unavailable)${detail}` }, authorities.human, signal);
+    return { decision: "deny", by: "none", reason: noAuthority(request, `The approval classifier is unavailable.${detail}`) };
   }
 
   // Point c: other cases. Habilitated hook, then designated authority or human, otherwise refusal.

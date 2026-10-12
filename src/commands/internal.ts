@@ -29,7 +29,7 @@ export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
   { name: "planning", description: "Passe en mode planification ; avec une description, l'envoie au modèle.", kind: "mixed", widening: false, usage: "[description]" },
   { name: "condense", description: "Résume la conversation pour libérer le contexte, selon les consignes données.", kind: "action", widening: false, usage: "[consignes]" },
   { name: "preferences", description: "Affiche ou modifie un réglage de l'utilisateur.", kind: "action", widening: true, usage: "[clé [valeur]]" },
-  { name: "access-rules", description: "Affiche les règles d'accès par décision et par portée, les règles masquées ; ajoute ou retire une règle.", kind: "action", widening: true, usage: "[allow|ask|deny|remove <règle> [user|project|local]]" },
+  { name: "access-rules", description: "Affiche ou modifie les règles d'accès ; consent gère l'accord automatique, classifier affiche ses consignes et décisions.", kind: "action", widening: true, usage: "[allow|ask|deny|remove <règle> [user|project|local] | consent [revoke] | classifier]" },
   { name: "event-hooks", description: "Affiche les crochets par événement avec leur source ; ajoute ou supprime un crochet.", kind: "action", widening: true, usage: "[add <événement> <commande> | remove <crochet>]" },
   { name: "connectors", description: "Affiche les connecteurs et leur état ; reconnecte un connecteur.", kind: "action", widening: false, usage: "[<nom> | reconnect <nom>]" },
   { name: "turn-changes", description: "Affiche les modifications de fichiers de chaque tour ; « dépôt » : les différences non enregistrées du dépôt.", kind: "display", widening: false, usage: "[dépôt]" },

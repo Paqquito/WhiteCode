@@ -1,4 +1,5 @@
 // Implements: SPEC-OUT-001 (§ 5.1 tool contract, EF-01, EF-06 normalised errors, RG-01, RG-02)
+// Supports: SPEC-PER-018 (private consent state write invariant), gap E-138.
 
 import type { TaskList } from "../engine/task-list";
 import type { BackgroundTasks } from "../engine/background";
@@ -65,6 +66,8 @@ export interface ToolContext extends ToolEnvironment {
   readonly protectedLocations: ProtectedLocations;
   /** True when a `deny` rule forbids reading this path (RG-01 of SPEC-OUT-006 and SPEC-OUT-007). */
   readonly readDenied: (path: string) => boolean;
+  /** Product-owned state cannot be modified by model-facing file tools, even after automatic approval. */
+  readonly writeDenied?: (path: string) => boolean;
   /** The model accepts images (catalogue capability `images`). */
   readonly modelImages: boolean;
   /** Folders readable without request besides the allowed ones: large results of the session (SPEC-PER-010 FA-01). */

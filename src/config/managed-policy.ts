@@ -19,7 +19,8 @@ import type { PolicyCacheSource } from "./policy-cache";
 const RULES: Readonly<Record<string, RuleDecision>> = {
   "permissions.allowRules": "allow", "permissions.askRules": "ask", "permissions.denyRules": "deny",
 };
-const REQUIRED = [...Object.keys(RULES), "permissions.managedRulesOnly", "permissions.disableUnrestrictedMode", "permissions.disableAutoApproveMode"];
+const REQUIRED = [...Object.keys(RULES), "permissions.managedRulesOnly", "permissions.disableUnrestrictedMode", "permissions.disableAutoApproveMode",
+  "permissions.autoApprove.orgConsent", "permissions.autoApprove.allow", "permissions.autoApprove.block", "permissions.autoApprove.environment", "permissions.denials.maxConsecutive", "permissions.denials.maxTotal"];
 export type PolicyCapability = "local" | "remote";
 const object = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 

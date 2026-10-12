@@ -1,8 +1,8 @@
 // Implements: SPEC-BLD-002 (EF-01 compile-time constants, EF-02 unknown name rejected at compile time, EF-04 single registry)
-// Registry of build options (SPEC-CAD-003 § 4). The build replaces reads by constants; all options are off in lot 1.
+// Registry of build options (SPEC-CAD-003 § 4): disabled capabilities stay outside their runtime entry points.
 
 export const BUILD_FLAGS = {
-  permission_auto_approve: false,
+  permission_auto_approve: true,
   permission_auto_approve_powershell: false,
   shell_classifier: false,
   shell_syntax_analysis: false,

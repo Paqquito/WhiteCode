@@ -3,6 +3,7 @@
 //             SPEC-MOD-006 (FA-05, CA-03 parameters replaced by the control host evaluated again)
 // Supports: SPEC-HOK-010 (EF-03 input changed by a hook validated again, ERR-01, ERR-02), SPEC-SES-006 (backup before a write, EF-01), SPEC-PER-001 (decision then resolution of `ask`, CA-05 persisted answer, CA-21 context revalidation), SPEC-PER-003 (CA-08 revalidation), SPEC-OUT-003 (EF-06 difference shown), SPEC-CFG-003 (policy gate before execution), gaps E-022, E-049, E-120, E-131
 
+// Supports: SPEC-PER-018 (private consent state excluded from tool writes), gap E-138.
 import type { PermissionMode } from "../config/settings-schema";
 import type { HookBus } from "../extension-points/hooks";
 import { decide, type Decision, type PermissionContext, type PermissionQuery } from "../permissions/engine";
@@ -261,6 +262,9 @@ export class ResponseExecution {
           call = { ...call, input: changed };
         }
 
+        subject = tool.ruleSubject(call.input as never, ctx);
+        if (subject.kind === "paths" && subject.access === "write" && subject.paths.some((path) => ctx.writeDenied?.(path)))
+          return finish(await this.#refuse(call, "Product-owned user state is changed only through its human consent and preference commands.", 1), false);
         // Difference, or refusal found before asking (SPEC-OUT-003 EF-06).
         preview = tool.preview ? await tool.preview(call.input as never, ctx) : undefined;
         if (preview && "refusal" in preview) return finish(preview.refusal);
@@ -268,7 +272,6 @@ export class ResponseExecution {
         // Permission decision, then resolution of an `ask` (step 3 of § 5.3).
         pctx = this.#deps.permissionContext();
         evaluatedContext = canonical(pctx);
-        subject = tool.ruleSubject(call.input as never, ctx);
         const target = subject;
         query = {
           toolName: tool.permissionName ?? tool.name,
@@ -329,6 +332,8 @@ export class ResponseExecution {
         const afterApproval = policyBlocked();
         if (afterApproval) return afterApproval;
         const writes = subject.kind === "paths" && subject.access === "write" ? subject.paths : [];
+        if (writes.some((path) => ctx.writeDenied?.(path)))
+          return finish(await this.#refuse(call, "Product-owned user state is changed only through its human consent and preference commands.", 1), false);
         if (writes.length > 0 && this.#deps.fileHistory) {
           const refusal = this.#deps.fileHistory.beforeWrite(writes);
           if (refusal !== undefined) return finish(textOutcome(refusal, true, "execution"));
