@@ -81,7 +81,7 @@ import { USER_CONNECTORS_FILE } from "../connectors/session";
 import { nextMode, isModeAvailable, ModeError, ModeState, resolveInitialMode, unavailableReason, type ModeAvailability } from "../permissions/modes";
 import type { Authorities } from "../permissions/resolver";
 import { AUTO_APPROVE_CONSENT, AUTO_APPROVE_CONSENT_VERSION, autoApproveRules, ModelApprovalClassifier, PermissionDenials } from "../permissions/auto-approve";
-import { buildFlag } from "../extension-points/build-flags";
+import { buildFlag, buildProfile, buildInventory } from "../extension-points/build-flags" with { type: "macro" };
 import { ControlSession, type ControlEnd, type ControlOperations } from "../control/session";
 import { ControlError } from "../control/protocol";
 import { bearerMatches, FramedLink, isLoopback, originAllowed, parseListenAddress } from "../control/remote";
@@ -1687,7 +1687,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   if (connectors) {
     assertPolicy();
     connectors.start();
-    holder.cleanups.push(() => void connectors.close());
+    (holder.finalizers ??= []).push(() => connectors.close());
     if (opt("wait-for-mcp") === true) await connectors.waitAll(settings.get<number>("mcp.connectTimeout") + 5_000, controller.signal);
   }
   // Connector tools: deferred beyond `mcp.eagerToolsThreshold` (SPEC-MCP-009 EF-05); appended to the request once
@@ -3536,6 +3536,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           `Mode de permission : ${modeState.mode}`,
           `Confiance du projet : ${trust.trusted ? "accordée" : "non accordée"}`,
           "Connecteurs :",
+          ...(buildProfile() === "internal" ? [`Options de build : ${JSON.stringify(buildInventory())}`] : []),
           ...languages.status().map((s) => `Serveur de langage ${s.name} : ${s.state}`),
           ...((connectors?.status() ?? []).length === 0
             ? ["  aucun"]

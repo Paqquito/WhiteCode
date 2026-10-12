@@ -5,6 +5,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { resolveIdentityText } from "../src/identity/resolver";
 import { specIndex as specs } from "./spec-index";
+import { BUILD_OPTIONS } from "../src/extension-points/build-options";
 
 const root = join(import.meta.dir, "..");
 const problems: string[] = [];
@@ -20,10 +21,20 @@ function walk(dir: string, out: string[] = []): string[] {
 }
 
 const sources = walk(join(root, "src")).filter((p) => p.endsWith(".ts") && !rel(p).startsWith("src/identity/generated/"));
+const buildReads = new Set<string>();
 
 for (const file of sources) {
   const text = readFileSync(file, "utf8");
   const r = rel(file);
+  if (r !== "src/extension-points/build-flags.ts") {
+    if (/\bbuildFlag\s+as\b/.test(text)) problems.push(`${r}: buildFlag must keep its canonical import name`);
+    if (/\bbuildFlag\s*\(/.test(text) && !/import\s*\{[^}]*\bbuildFlag\b[^}]*\}\s*from\s*["'][^"']*\/build-flags["']\s*with\s*\{\s*type\s*:\s*["']macro["']\s*\}/.test(text)) problems.push(`${r}: buildFlag requires a macro import`);
+    for (const call of text.matchAll(/\bbuildFlag\s*\(([^)]*)\)/g)) {
+      const literal = /^\s*["']([a-z][a-z0-9_]*)["']\s*$/.exec(call[1]!);
+      if (!literal || !Object.hasOwn(BUILD_OPTIONS, literal[1]!)) problems.push(`${r}: buildFlag requires a known literal name`);
+      else buildReads.add(literal[1]!);
+    }
+  }
   // Rule 4: every module states the sheets it implements or supports.
   if (!/^\/\/ (Implements|Supports): /.test(text)) problems.push(`${r}: missing "// Implements:" or "// Supports:" header`);
   for (const m of text.matchAll(/SPEC-[A-Z]{3}-\d{3}/g)) {
@@ -74,4 +85,6 @@ if (problems.length > 0) {
   console.error(`${problems.length} problem(s).`);
   process.exit(1);
 }
+const unusedBuildOptions = Object.keys(BUILD_OPTIONS).filter((name) => !buildReads.has(name));
+if (unusedBuildOptions.length) console.error(`Options de build sans lecture dans cette version : ${unusedBuildOptions.join(", ")}.`);
 console.error(`Static checks passed (${sources.length} modules).`);

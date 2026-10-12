@@ -61,6 +61,7 @@ export function scanDirectory(root: string, identity: Identity): ScanIssue[] {
   const terms = identity.resolved.compatibility.forbiddenTerms.map((term) => ({ term, key: normalize(term) })).filter((t) => t.key !== "");
   for (const file of files(root)) {
     const bytes = scanBytes(file);
+    if (terms.length === 0) continue; // Still validate file kinds and compression before skipping text normalization.
     for (const { text, bytePrefix } of scanTexts(bytes)) {
       const normalized = normalize(text);
       const path = relative(root, file).replace(/\\/g, "/");

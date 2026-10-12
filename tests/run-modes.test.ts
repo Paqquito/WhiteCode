@@ -8,6 +8,10 @@ import { cli, loadIdentity, TEST_USER_CONFIG, workspace, type Workspace } from "
 import { BUN, productEnv, PROJECT_DIR } from "./helpers/hooks";
 import { interactive, KEY } from "./helpers/interactive";
 import { ScriptedProvider } from "./helpers/scripted-provider";
+import { StdioConnection } from "../src/connectors/stdio-client";
+import { ConnectorManager } from "../src/connectors/manager";
+import { currentPlatform } from "../src/platform/system";
+import type { ModelEvent, ModelRequest } from "../src/providers/types";
 
 const SERVER = join(import.meta.dir, "helpers", "mcp-server.ts").replace(/\\/g, "/");
 const run = (ws: Workspace, provider: ScriptedProvider, args: string[], userConfig: Record<string, unknown> = {}, signal?: AbortSignal) =>
@@ -171,6 +175,60 @@ describe("SPEC-MOD-009 minimal mode", () => {
 });
 
 describe("SPEC-MOD-010 start-up and deferred maintenance", () => {
+  test("TECH — reconnect during initialization coalesces attempts and shutdown stops every server", async () => {
+    const ws = workspace(), pidFile = join(ws.root, "overlap-pids.txt");
+    const manager = new ConnectorManager({ connectors: [{ name: "waiting", scope: "user", source: "test", ...fakeConnector(ws, "waiting", { initDelayMs: 200, pidFile }), env: {}, headers: {}, fingerprint: "test" }], projectRoot: ws.project, platform: currentPlatform(), environment: () => productEnv(ws), variables: {}, connectTimeoutMs: 5_000, toolTimeoutMs: 1_000, maxParallel: 1, maxReconnects: 0, descriptionMax: 2_000, outputInlineLimit: 4_000, clientInfo: { name: "tests", version: "0.0.0" }, estimateTokens: (text) => text.length, store: () => "", report: () => {}, changed: () => {} });
+    try {
+      manager.start();
+      await Promise.all([manager.reconnect("waiting"), manager.reconnect("waiting")]);
+      await manager.close();
+      const pids = readFileSync(pidFile, "utf8").trim().split(/\s+/).map(Number);
+      expect(pids).toHaveLength(1);
+      for (const pid of pids) expect(alive(pid)).toBe(false);
+    } finally {
+      await manager.close();
+      if (existsSync(pidFile)) for (const pid of readFileSync(pidFile, "utf8").trim().split(/\s+/).map(Number)) if (alive(pid)) process.kill(pid);
+    }
+  }, 15_000);
+
+  test("TECH — session shutdown returns only after an initializing connector and its delayed teardown have ended", async () => {
+    const ws = workspace(), pidFile = join(ws.root, "initializing-pids.txt");
+    writeFileSync(join(ws.configHome, "connectors.json"), JSON.stringify({ servers: { waiting: fakeConnector(ws, "waiting", { initDelayMs: "never", pidFile }) } }));
+    class ReadyProvider extends ScriptedProvider {
+      override async *stream(request: ModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {
+        const deadline = Date.now() + 5_000;
+        while (!existsSync(pidFile) && Date.now() < deadline && !signal.aborted) await Bun.sleep(20);
+        expect(existsSync(pidFile)).toBe(true);
+        yield* super.stream(request, signal);
+      }
+    }
+    const original = StdioConnection.prototype.close;
+    StdioConnection.prototype.close = async function(this: StdioConnection, graceMs?: number) { await Bun.sleep(300); await original.call(this, graceMs); };
+    try {
+      const result = await run(ws, new ReadyProvider([{ text: "done" }]), ["x"], { mcp: { connectTimeout: "60s", maxReconnects: 0 } });
+      expect(result.code).toBe(0);
+      for (const pid of readFileSync(pidFile, "utf8").trim().split(/\s+/).map(Number)) expect(alive(pid)).toBe(false);
+    } finally { StdioConnection.prototype.close = original; await Bun.sleep(1_000); }
+  }, 15_000);
+
+  test("TECH — reconnect supersedes a queued initialization without leaving an older server alive", async () => {
+    const ws = workspace(), pidFile = join(ws.root, "queued-pids.txt");
+    const connectors = ["first", "queued"].map((name) => ({ name, scope: "user" as const, source: "test", ...fakeConnector(ws, name, { initDelayMs: name === "first" ? 800 : 0, pidFile }), env: {}, headers: {}, fingerprint: "test" }));
+    const manager = new ConnectorManager({ connectors, projectRoot: ws.project, platform: currentPlatform(), environment: () => productEnv(ws), variables: {}, connectTimeoutMs: 5_000, toolTimeoutMs: 1_000, maxParallel: 1, maxReconnects: 0, descriptionMax: 2_000, outputInlineLimit: 4_000, clientInfo: { name: "tests", version: "0.0.0" }, estimateTokens: (text) => text.length, store: () => "", report: () => {}, changed: () => {} });
+    try {
+      manager.start();
+      await manager.reconnect("queued");
+      await manager.waitAll(5_000);
+      await manager.close();
+      const pids = readFileSync(pidFile, "utf8").trim().split(/\s+/).map(Number);
+      expect(pids).toHaveLength(2);
+      for (const pid of pids) expect(alive(pid)).toBe(false);
+    } finally {
+      await manager.close();
+      if (existsSync(pidFile)) for (const pid of readFileSync(pidFile, "utf8").trim().split(/\s+/).map(Number)) if (alive(pid)) process.kill(pid);
+    }
+  }, 15_000);
+
   test("SPEC-MOD-010/CA-01 — a connector that does not answer: the session starts without it, with a warning", async () => {
     const ws = workspace();
     writeFileSync(join(ws.configHome, "connectors.json"), JSON.stringify({ servers: { lent: fakeConnector(ws, "lent", { initDelayMs: "never" }) } }));

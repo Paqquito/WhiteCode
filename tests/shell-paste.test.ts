@@ -1,6 +1,6 @@
 // Shell mode (SPEC-IHM-012), pastes and attachments (SPEC-IHM-010), in the interactive session.
 import { describe, expect, test } from "bun:test";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { shellCommand } from "../src/interactive/shell-mode";
 import { currentPlatform } from "../src/platform/system";
@@ -112,8 +112,9 @@ describe("SPEC-IHM-012 shell mode", () => {
   test("SPEC-IHM-012/CA-05 — interrupting a long command stops it and its child processes", async () => {
     const ws = workspace();
     const marker = join(ws.root, "late.txt").replace(/\\/g, "/");
-    const child = ws.write("scripts/child.ts", `await Bun.sleep(2500); await Bun.write(${JSON.stringify(marker)}, "x");`).replace(/\\/g, "/");
-    const line = bunLine(ws, "parent", `const c = Bun.spawn([${JSON.stringify(BUN)}, ${JSON.stringify(child)}]); console.log("lancé"); await c.exited;`);
+    const ready = join(ws.root, "child-pid.txt").replace(/\\/g, "/"), release = join(ws.root, "release.txt").replace(/\\/g, "/");
+    const child = ws.write("scripts/child.ts", `await Bun.write(${JSON.stringify(ready)}, String(process.pid)); while (!await Bun.file(${JSON.stringify(release)}).exists()) await Bun.sleep(20); await Bun.write(${JSON.stringify(marker)}, "x");`).replace(/\\/g, "/");
+    const line = bunLine(ws, "parent", `const c = Bun.spawn([${JSON.stringify(BUN)}, ${JSON.stringify(child)}]); while (!await Bun.file(${JSON.stringify(ready)}).exists()) await Bun.sleep(20); console.log("lancé"); await c.exited;`);
     const run = interactive([], ws, { env: productEnv(ws), provider: new ScriptedProvider([]), userConfig: ALLOW_SHELL });
     await run.idle();
     run.type(`!${line}`);
@@ -121,6 +122,10 @@ describe("SPEC-IHM-012 shell mode", () => {
     await run.waitFor((t) => t.includes("lancé"), "started");
     run.type(KEY.escape);
     await run.waitFor((t) => t.includes("commande interrompue"), "interrupted");
+    const pid = Number(readFileSync(ready, "utf8"));
+    let alive = true; try { process.kill(pid, 0); } catch { alive = false; }
+    expect(alive).toBe(false);
+    writeFileSync(release, "released after interruption");
     await sleep(3500);
     expect(existsSync(marker)).toBe(false);
     await quit(run);

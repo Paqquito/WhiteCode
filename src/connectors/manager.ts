@@ -60,6 +60,9 @@ interface Entry {
   state: ConnectorState;
   error?: string;
   conn?: StdioConnection;
+  connecting?: Promise<void>;
+  reconnecting?: Promise<void>;
+  connectionRevision: number;
   /** Tools of the server, by qualified name; kept after a loss so that the definitions already sent stay valid. */
   tools: Map<string, Tool<never>>;
   /** Names currently published by the server. */
@@ -82,6 +85,7 @@ export class ConnectorManager {
   readonly #entries = new Map<string, Entry>();
   #active = 0;
   readonly #queue: Array<() => void> = [];
+  readonly #connecting = new Set<Promise<void>>();
   #closed = false;
   /** Aborted by `close`: the connections being set up are stopped too (SPEC-MOD-010 CA-05). */
   readonly #shutdown = new AbortController();
@@ -91,7 +95,7 @@ export class ConnectorManager {
     for (const d of o.connectors) {
       let settle!: () => void;
       const settled = new Promise<void>((r) => (settle = r));
-      this.#entries.set(d.name, { d, state: "pending", tools: new Map(), live: new Set(), prompts: [], attempts: 0, stderr: [], overflows: 0, settled, settle });
+      this.#entries.set(d.name, { d, state: "pending", connectionRevision: 0, tools: new Map(), live: new Set(), prompts: [], attempts: 0, stderr: [], overflows: 0, settled, settle });
     }
   }
 
@@ -117,12 +121,20 @@ export class ConnectorManager {
   async reconnect(name: string): Promise<ConnectorStatus | undefined> {
     const e = this.#entries.get(name);
     if (!e || this.#closed) return undefined;
-    clearTimeout(e.timer);
-    await e.conn?.close(0);
-    e.conn = undefined;
-    e.attempts = this.#o.maxReconnects; // a failure of this explicit attempt is final
-    e.settled = new Promise<void>((r) => (e.settle = r));
-    await this.#connect(e);
+    const task = e.reconnecting ?? (async () => {
+      clearTimeout(e.timer);
+      // Join an initialization already in progress instead of starting another server.
+      if (e.connecting) { await e.connecting; return; }
+      await e.conn?.close(0);
+      e.conn = undefined;
+      if (this.#closed) return;
+      e.attempts = this.#o.maxReconnects; // a failure of this explicit attempt is final
+      e.settled = new Promise<void>((r) => (e.settle = r));
+      await this.#trackedConnect(e);
+    })();
+    e.reconnecting = task;
+    try { await task; }
+    finally { if (e.reconnecting === task) e.reconnecting = undefined; }
     return this.status().find((s) => s.name === name);
   }
 
@@ -132,15 +144,32 @@ export class ConnectorManager {
   }
 
   #schedule(e: Entry): void {
+    const revision = e.connectionRevision;
     const run = () => {
+      // A manual attempt may have superseded this queued job, whether it succeeded or failed.
+      if (this.#closed || e.connectionRevision !== revision) { this.#queue.shift()?.(); return; }
       this.#active++;
-      void this.#connect(e).finally(() => {
+      void this.#trackedConnect(e).finally(() => {
         this.#active--;
         this.#queue.shift()?.();
       });
     };
     if (this.#active >= this.#o.maxParallel) this.#queue.push(run);
     else run();
+  }
+
+  #trackedConnect(e: Entry): Promise<void> {
+    if (e.connecting) return e.connecting;
+    e.connectionRevision++;
+    const task = this.#connect(e);
+    e.connecting = task;
+    this.#connecting.add(task);
+    const finished = () => {
+      this.#connecting.delete(task);
+      if (e.connecting === task) e.connecting = undefined;
+    };
+    void task.then(finished, finished);
+    return task;
   }
 
   /** Step 4 of SPEC-MCP-001: variables expanded at connection; an undefined one without default is a configuration error (FA-02). */
@@ -190,7 +219,8 @@ export class ConnectorManager {
       if (err instanceof ConnectionError && err.stderr) e.stderr = err.stderr;
       await e.conn?.close(0);
       e.conn = undefined;
-      this.#fail(e, message, err instanceof ConnectionError && !/programme introuvable|version du protocole/.test(message));
+      if (this.#closed && /interrompu|démarrage annulé/.test(message)) { e.settle(); return; }
+      this.#fail(e, message, !this.#closed && err instanceof ConnectionError && !/programme introuvable|version du protocole/.test(message));
     }
   }
 
@@ -336,5 +366,6 @@ export class ConnectorManager {
         e.conn = undefined;
       }),
     );
+    await Promise.allSettled([...this.#connecting, ...[...this.#entries.values()].flatMap((e) => e.reconnecting ? [e.reconnecting] : [])]);
   }
 }

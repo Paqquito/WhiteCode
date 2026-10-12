@@ -99,6 +99,13 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/** Build-only scan declarations stay outside the runtime identity; its hash covers its actual content. */
+export function runtimeIdentity(identity: ResolvedIdentity): ResolvedIdentity {
+  const { hash: _hash, ...source } = identity;
+  const body = { ...source, compatibility: { forbiddenTerms: [], allowLegacyReads: identity.compatibility.allowLegacyReads } };
+  return { ...body, hash: createHash("sha256").update(canonicalJson(body)).digest("hex") };
+}
+
 function findSecretKeys(value: unknown, path: string, out: string[]): void {
   if (Array.isArray(value)) {
     value.forEach((v, i) => findSecretKeys(v, `${path}[${i}]`, out));

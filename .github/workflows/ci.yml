@@ -42,7 +42,14 @@ jobs:
           esac
       - run: bun test
       - run: bun run trace
-      - run: bun scripts/build.ts
+      - name: Construction et contrôle des livrables
+        shell: bash
+        run: |
+          if [ -s "$RUNNER_TEMP/forbidden-terms.txt" ]; then
+            bun scripts/build.ts --forbidden-terms "$RUNNER_TEMP/forbidden-terms.txt"
+          else
+            bun scripts/build.ts
+          fi
       - name: Smoke test of the standalone executable
         shell: bash
         run: |
@@ -58,7 +65,17 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
-      - run: bun scripts/build.ts --all
+      - name: Compilation croisée et contrôle des livrables
+        shell: bash
+        env:
+          FORBIDDEN_TERMS: ${{ secrets.FORBIDDEN_TERMS }}
+        run: |
+          if [ -n "$FORBIDDEN_TERMS" ]; then
+            printf '%s\n' "$FORBIDDEN_TERMS" > "$RUNNER_TEMP/forbidden-terms.txt"
+            bun scripts/build.ts --all --forbidden-terms "$RUNNER_TEMP/forbidden-terms.txt"
+          else
+            bun scripts/build.ts --all
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: executables

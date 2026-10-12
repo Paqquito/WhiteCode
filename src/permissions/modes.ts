@@ -1,7 +1,7 @@
 // Implements: SPEC-PER-003 (§ 5.1 availability, § 5.2 initial mode, § 5.3 cycle, EF-01, EF-02, EF-04, ERR-01, ERR-02, CA-01, CA-03, CA-05, CA-06), SPEC-MOD-002 (EF-02), SPEC-MOD-011 (EF-07)
 
 import { PERMISSION_MODES, type PermissionMode } from "../config/settings-schema";
-import { buildFlag } from "../extension-points/build-flags";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 export interface ModeAvailability {
   readonly allowUnrestrictedOption: boolean;

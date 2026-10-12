@@ -2,7 +2,7 @@
 // Supports: SPEC-MOD-005 (CA-16: classifier admission), gap E-138.
 import { BudgetLedger, costOf, requestBound } from "../engine/budget";
 import type { Reminder, ReminderProducer } from "../engine/reminders";
-import { buildFlag } from "../extension-points/build-flags";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 import type { PermissionMode } from "../config/settings-schema";
 import type { ModelPricing, ResolvedModel } from "../providers/catalog";
 import type { ModelProvider, ModelRequest } from "../providers/types";
