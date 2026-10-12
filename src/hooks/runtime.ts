@@ -15,8 +15,10 @@ import type { HookDeclaration, HookSnapshot, HttpAction } from "./config";
 import { HOOK_EVENTS, PAYLOAD_SCHEMA_VERSION, type HookEventInfo } from "./events";
 import { createHttpAgents, runHttpHook, type Resolver } from "./http";
 import type { PlatformName } from "../platform/system";
+import type { TranscriptAccess } from "../session/transcript-access";
 
 export interface HookRuntimeOptions {
+  readonly transcriptAccess?: TranscriptAccess;
   readonly policyRefusal?: () => string | undefined;
   readonly snapshot: HookSnapshot;
   readonly sessionId: string;
@@ -107,7 +109,7 @@ export class HookRuntime implements HookBus {
       event,
       sessionId: this.#o.sessionId,
       // CA-05: an opaque reference to the transcript, never a path of the session store.
-      transcriptRef: `session:${this.#o.sessionId}`,
+      transcriptRef: "session:unavailable",
       cwd: this.#o.cwd,
       approvalMode: this.#o.approvalMode(),
       timestamp: (this.#o.clock ?? (() => new Date()))().toISOString(),
@@ -126,6 +128,17 @@ export class HookRuntime implements HookBus {
   }
 
   async #runAction(d: HookDeclaration, index: number, payload: string, event: string, fields: Record<string, unknown>, signal?: AbortSignal): Promise<ActionOutcome> {
+    let grant;
+    try {
+      grant = await this.#o.transcriptAccess?.grant({ event, fields });
+      if (signal?.aborted) return { label: d.label, mandatory: d.mandatory, failure: "arrêté à la fin de la session (hooksConfig.asyncKillOnExit)" };
+      if (grant) payload = JSON.stringify({ ...JSON.parse(payload), transcriptRef: grant.reference });
+      return await this.#runGrantedAction(d, index, payload, event, fields, signal);
+    } catch { return { label: d.label, mandatory: d.mandatory, failure: "lecture locale ou exécution du crochet indisponible" }; }
+    finally { grant?.release(); }
+  }
+
+  async #runGrantedAction(d: HookDeclaration, index: number, payload: string, event: string, fields: Record<string, unknown>, signal?: AbortSignal): Promise<ActionOutcome> {
     const refusal = this.#o.policyRefusal?.();
     if (refusal) return { label: d.label, mandatory: true, failure: refusal };
     const action = d.actions[index]!;
@@ -335,7 +348,7 @@ export class HookRuntime implements HookBus {
   async afterTool(call: ToolCall, isError: boolean, output?: string, scope?: AgentScope) {
     const r = isError
       ? await this.fire("after_tool_failure", { ...scope, toolId: call.name, toolArguments: call.input, error: output ?? "" })
-      : await this.fire("after_tool", { ...scope, toolId: call.name, toolArguments: call.input, toolResult: output ?? "" });
+      : await this.fire("after_tool", { ...scope, callId: call.callId, toolId: call.name, toolArguments: call.input, toolResult: output ?? "" });
     return { stopTurn: r?.stopTurn !== undefined };
   }
 

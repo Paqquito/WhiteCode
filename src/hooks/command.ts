@@ -37,6 +37,7 @@ function shellArgs(shell: ShellChoice, command: string): string[] {
 
 /** Steps 1 to 3: the command in the shell, in the project folder; the payload written then the input closed (EF-01). */
 export async function runCommandHook(action: CommandAction, payload: string, o: CommandHookOptions): Promise<CommandRun> {
+  if (o.signal?.aborted) return { exitCode: null, timedOut: false, stdout: "", stderr: "", durationMs: 0 };
   const started = Date.now();
   const out: Buffer[] = [];
   const err: Buffer[] = [];

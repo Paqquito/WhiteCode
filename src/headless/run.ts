@@ -105,6 +105,7 @@ import { keybindingsTemplate, readKeybindingsFile } from "../interactive/keybind
 import { unifiedDiff } from "../shared/diff";
 import { applyPlan, computePlan, renderPlan, RestoreError } from "../session/restore";
 import { createDebugLog, DISABLED_DEBUG_LOG, type DebugLog } from "../shared/debug-log";
+import { TranscriptAccess } from "../session/transcript-access";
 import { ToolRegistry, UnknownToolsetEntryError } from "../tools/registry";
 import { detectPosixShell, detectPowerShell, ShellRuntime } from "../tools/shell-runtime";
 import type { ToolContext, ToolEnvironment } from "../tools/types";
@@ -1386,7 +1387,31 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   };
   const firstSnapshot = hookSnapshot(settings);
   for (const w of firstSnapshot.warnings) err(`avertissement : ${w}`);
+  const transcriptAccess = new TranscriptAccess((invocation) => {
+    if (policyRefusal()) throw new Error("Lecture interdite par la politique courante.");
+    const records = transcript ? readTranscript(transcript.path).records : conversation.messages;
+    const current = invocation?.event === "after_tool" ? invocation.fields : undefined;
+    const content = [{ type: "text", text: current?.["toolResult"] }];
+    let exposed = false;
+    const lines = records.map((record) => {
+      if (current && "type" in record && record.type === "tool_result" && record.data["callId"] === current["callId"]) {
+        exposed = true; return JSON.stringify({ ...record, data: { ...record.data, content } });
+      }
+      if (current && "role" in record && record.role === "user") {
+        const parts = record.parts.map((part) => { if ("callId" in part && part.callId === current["callId"]) { exposed = true; return { ...part, content }; } return part; });
+        return JSON.stringify({ ...record, parts });
+      }
+      return JSON.stringify(record);
+    });
+    // The current tool result reaches the transcript after its synchronous hook; expose it only to this grant.
+    const lastRecord = records.at(-1);
+    if (current && !exposed) lines.push(JSON.stringify({ v: 1, type: "tool_result", id: randomUUID(), parentId: lastRecord && "id" in lastRecord ? lastRecord.id : null,
+      sessionId, ts: new Date().toISOString(), data: { callId: current["callId"], isError: false, content } }));
+    return Buffer.from(lines.join("\n") + (lines.length ? "\n" : ""));
+  });
+  holder.cleanups.push(() => transcriptAccess.close());
   const hooks = new HookRuntime({
+    transcriptAccess,
     policyRefusal,
     snapshot: firstSnapshot,
     sessionId,

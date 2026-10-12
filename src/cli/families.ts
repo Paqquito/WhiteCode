@@ -102,7 +102,7 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
       op("list", "Liste les sessions enregistrées du dossier courant."),
       op("show", "Affiche le détail d'une session.", { args: "<identifiant>" }),
       op("export", "Exporte une session dans un format d'échange.", { args: "<identifiant>" }),
-      op("read", "Écrit le contenu désigné par une référence de lecture.", { args: "<référence>" }),
+      op("read", "Écrit le contenu désigné par une référence de lecture.", { args: "<référence>", delivered: true }),
       op("remove", "Supprime une session.", { args: "<identifiant>" }),
     ],
   },

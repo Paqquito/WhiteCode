@@ -35,6 +35,7 @@ import { renderDiagnostics, runDiagnostics, type DiagnosticInputs } from "./diag
 import { effectiveCapabilities, isDeliveredProvider } from "../providers/adapters";
 import { capabilitiesOf, isResolveFailure, type ModelCatalog, type ModelEntry } from "../providers/catalog";
 import { suggest } from "../shared/suggest";
+import { readTranscriptReference } from "../session/transcript-access";
 import { renderValidation, validateExtension } from "../extensions/validate";
 import { catalogAdd, catalogList, catalogRemove, catalogUpdate, extensionAdd, extensionEnable, extensionList, extensionRemove, extensionUpdate, scopeOf, type ExtensionAdminContext } from "../extensions/admin";
 
@@ -112,6 +113,14 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
     }
   }
   const json = parsed.options.has("json");
+  if (family.name === "session" && operation.name === "read") {
+    if (parsed.args.length !== 1) { err("Usage : session read <référence>. Aucun chemin de fichier n'est accepté."); return ExitCode.UsageOrConfiguration; }
+    try {
+      deps.assertPolicy?.();
+      await readTranscriptReference(parsed.args[0]!, (text) => deps.streams.writeOut(text), deps.signal);
+      return ExitCode.Success;
+    } catch (error) { err((error as Error).message); return ExitCode.UsageOrConfiguration; }
+  }
   const write = (document: unknown, text: () => string) => out(json ? JSON.stringify(document) : text()); // FA-04, CA-02: only the document
 
   switch (`${family.name} ${operation.name}`) {
