@@ -25,6 +25,7 @@ export interface ExtensionContributions {
   readonly agents: readonly AgentDefinition[];
   readonly hookSources: ReadonlyArray<{ readonly origin: "extension"; readonly value: unknown; readonly file: string; readonly labelScope: string }>;
   readonly connectorSources: readonly ConnectorSource[];
+  readonly languageSources?: ReadonlyArray<{ readonly name: string; readonly servers: Record<string, unknown> }>;
   /** Load report: one line per extension (step 4)… */
   readonly summaries: ReadonlyArray<{ readonly origin: ActiveExtension["origin"]; readonly text: string }>;
   /** …and the problems, by component (EF-03). */
@@ -96,6 +97,7 @@ export function loadExtensions(active: readonly ActiveExtension[], inputs: LoadI
   const agents: AgentDefinition[] = [];
   const hookSources: Array<{ origin: "extension"; value: unknown; file: string; labelScope: string }> = [];
   const connectorSources: ConnectorSource[] = [];
+  const languageSources: Array<{ name: string; servers: Record<string, unknown> }> = [];
   for (const { a, ext } of [...kept].sort((x, y) => (x.ext.name < y.ext.name ? -1 : 1))) {
     const id = a.id ?? `${ext.name}@${a.origin}`;
     const origins = byName.get(ext.name)!;
@@ -174,10 +176,25 @@ export function loadExtensions(active: readonly ActiveExtension[], inputs: LoadI
       }
     }
     if (ext.unsupported.length > 0) report.push(`Extension ${id} : composants non chargés dans cette version : ${ext.unsupported.join(", ")}.`);
+    if (ext.languageServersFile) {
+      try {
+        const read = readJsonFile(ext.languageServersFile), servers = (read.value as { servers?: unknown } | undefined)?.servers;
+        if (read.error || !servers || typeof servers !== "object" || Array.isArray(servers)) report.push(`Extension ${id} : serveurs de langage ignorés (objet servers attendu).`);
+        else {
+          const kept: Record<string, unknown> = {};
+          for (const [name, decl] of Object.entries(servers)) {
+            const missing = new Set<string>(), value = substituteVariables(decl, vars, missing), blocked = blockedBy(missing);
+            if (blocked.length) report.push(`Extension ${id} : serveur de langage ${name} désactivé : option requise ${blocked.join(", ")} non renseignée.`);
+            else kept[`${ext.name}-${name}`] = value;
+          }
+          languageSources.push({ name: ext.name, servers: kept });
+        }
+      } catch { report.push(`Extension ${id} : déclaration de serveurs de langage illisible.`); }
+    }
     const skills = countEntries(ext.skillsDirs, true);
     const commands = countEntries(ext.commandsDirs, false);
     summaries.push({ origin: a.origin, text: `${a.origin === "session" ? "Extension de développement active" : "Extension active"} : ${id} (${ext.version}) — ${skills} compétence(s), ${commands} commande(s), ${hookCount} crochet(s), ${connectorCount} connecteur(s).` });
     loaded.push({ id, extension: ext });
   }
-  return { loaded, skillLocations, agents, hookSources, connectorSources, summaries, report };
+  return { loaded, skillLocations, agents, hookSources, connectorSources, languageSources, summaries, report };
 }

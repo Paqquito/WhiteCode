@@ -112,6 +112,8 @@ import { applyPlan, computePlan, renderPlan, RestoreError } from "../session/res
 import { createDebugLog, DISABLED_DEBUG_LOG, type DebugLog } from "../shared/debug-log";
 import { TranscriptAccess } from "../session/transcript-access";
 import { ToolRegistry, UnknownToolsetEntryError } from "../tools/registry";
+import { LanguageManager } from "../languages/manager";
+import { codeIntelligenceTool } from "../tools/code-intelligence";
 import { detectPosixShell, detectPowerShell, ShellRuntime } from "../tools/shell-runtime";
 import type { ToolContext, ToolEnvironment } from "../tools/types";
 import { ResultStore } from "../session/result-store";
@@ -1006,7 +1008,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const toolsetOption = opt("toolset");
   const toolsetNames = typeof toolsetOption === "string" ? (toolsetOption.trim() === "" ? [] : splitList(toolsetOption)) : undefined;
   // `spawn_agent` is a tool of the session, added after the registry is built: it is listed like the others (SPEC-OUT-001).
-  const toolset = toolsetNames?.filter((n) => n !== "spawn_agent");
+  const toolset = toolsetNames?.filter((n) => n !== "spawn_agent" && n !== "code_intelligence");
   const agentsInToolset = toolsetNames === undefined || toolsetNames.includes("spawn_agent") || (toolsetNames.length === 1 && toolsetNames[0] === "default");
   let registry: ToolRegistry;
   try {
@@ -1061,6 +1063,17 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   for (const s of extensions.summaries) if (s.origin === "session") err(s.text); // SPEC-EXT-014 step 3
   for (const line of extensions.report) err(line);
   phase("extensions et compétences");
+
+  // SPEC-INT-006: declarations are loaded now; no process starts until a permitted file operation.
+  const languages = new LanguageManager({
+    servers: minimal ? {} : Object.assign({}, ...(!managedOnlyCustomisation ? [{ ...settings.get<Record<string, unknown>>("lsp.servers") }] : []), ...(extensions.languageSources ?? []).map((s) => s.servers)), cwd,
+    env: env.childEnvironment(settings.get<Record<string, string>>("environment.variables")),
+    maxRestarts: settings.get<number>("lsp.maxRestarts"), passiveDiagnostics: settings.get<boolean>("lsp.passiveDiagnostics"),
+    diagnosticsWait: settings.get<number>("tools.edit.diagnosticsWait"), maxPerFile: settings.get<number>("tools.edit.diagnosticsMaxPerFile"),
+    maxOtherFiles: settings.get<number>("tools.edit.diagnosticsMaxOtherFiles"), timeout: settings.get<number>("tools.lsp.timeout"), maxLocations: settings.get<number>("tools.lsp.maxLocations"), warn: (message) => err(maskSecrets(message)),
+  });
+  (holder.finalizers ??= []).push(() => languages.close());
+  if (languages.configured && (toolsetNames === undefined || toolsetNames.includes("code_intelligence") || (toolsetNames.length === 1 && toolsetNames[0] === "default"))) registry.addStatic(codeIntelligenceTool as import("../tools/types").Tool<never>);
 
   // SPEC-MCP-001, SPEC-MCP-021, SPEC-PER-019: the effective connectors; their tools reach the registry once connected.
   const projectState = readUserState(locations.userStateFile).projects?.[projectStateKey(locations.projectRoot, system.platform)] as ProjectState | undefined;
@@ -2003,6 +2016,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const reminders = new ReminderCenter(
     [
       dateChangeProducer(now),
+      languages.reminders(() => ({ cwd, allowedDirectories, platform: system.platform, readDenied })),
       permissionDenials,
       { type: "instructions", produce: () => instructionReminders.splice(0) },
       interruptionProducer(reopened?.history),
@@ -2347,6 +2361,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         taskList,
         background,
         web: webAccess,
+        languages,
         extraReadableDirectories: [resultStore.dir],
         shell: shellRuntime,
       }),
@@ -2515,7 +2530,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           conversation: new Conversation(built.blocks, view.list().map((t) => ({ name: t.name, description: t.description(toolEnv), inputSchema: t.inputSchema }))),
           hooks: agentHooks,
           transcript: undefined,
-          reminders: new ReminderCenter([permissionDenials.forAgent()], settings.get<number>("context.reminders.maxTokens"), estimateTokens),
+          reminders: new ReminderCenter([permissionDenials.forAgent(), languages.reminders(() => ({ ...loopDeps.executor.toolContext(controller.signal), agentName: agentId }))], settings.get<number>("context.reminders.maxTokens"), estimateTokens),
           context: undefined,
           pendingNote: undefined,
           takeQueued: undefined,
@@ -2537,6 +2552,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
             authorities: labelled(loopDeps.executor.authorities, def.name, agentScope), // EF-04
             loopGuard: new LoopGuard(settings.get<number>("engine.loopGuard.threshold"), settings.get<boolean>("engine.loopGuard.enabled")),
             permissionContext: childContext,
+            toolContext: (signal) => ({ ...loopDeps.executor.toolContext(signal), agentName: agentId }),
           },
         },
       };
@@ -3340,6 +3356,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         const removed = [...before].filter((id) => !after.has(id));
         const connectorNames = (c: typeof extensions) => c.connectorSources.map((s) => s.source).sort().join("\n");
         const connectorsChanged = connectorNames(next) !== connectorNames(extensions);
+        const languagesChanged = JSON.stringify(next.languageSources) !== JSON.stringify(extensions.languageSources);
         extensions = next;
         skillLocations.splice(0, skillLocations.length, ...skillLocations.filter((l) => l.scope !== "extension"), ...next.skillLocations);
         refreshSkills();
@@ -3348,6 +3365,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           `Extensions rechargées : ${after.size} active${after.size > 1 ? "s" : ""}.`,
           `Ajoutées : ${added.join(", ") || "aucune"} ; retirées : ${removed.join(", ") || "aucune"}.`,
           ...(connectorsChanged ? ["Les connecteurs des extensions changés seront démarrés à la prochaine session."] : []),
+          ...(languagesChanged ? ["Les déclarations de serveurs de langage changées seront chargées à la prochaine session."] : []),
           ...[...installedExtensions.imposedProblems, ...installedExtensions.report, ...next.report].map((p) => `Erreur : ${p}`),
         ];
         return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
@@ -3398,6 +3416,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
             s.state === "connected" ? { status: "ok", area: "Connecteurs", message: `${s.name} connecté`, location: s.source } : { status: s.state === "error" || s.state === "unavailable" ? "error" : "warning", area: "Connecteurs", message: `${s.name} ${states[s.state] ?? s.state}${s.error ? ` : ${s.error}` : ""}`, location: s.source, fix: { description: `/connectors reconnect ${s.name}` } },
           ),
           ...hooks.snapshot.warnings.map((w): Finding => ({ status: "warning", area: "Crochets", message: w })),
+          ...languages.status().map((s): Finding => ({ status: s.state === "indisponible" ? "warning" : "ok", area: "Serveurs de langage", message: `${s.name} : ${s.state}` })),
           ...hooks.snapshot.ignored.map((x): Finding => ({ status: "warning", area: "Crochets", message: `${x.label} ignoré : ${x.reason}` })),
           ...[...installedExtensions.imposedProblems, ...installedExtensions.report, ...extensions.report].map((p): Finding => ({ status: "warning", area: "Extensions", message: p })),
           ...maskedRules(rules).map((m): Finding => ({ status: "warning", area: "Règles d'accès", message: describeMasking(m, ruleSource) })), // SPEC-PER-012 § 5.2
@@ -3517,6 +3536,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           `Mode de permission : ${modeState.mode}`,
           `Confiance du projet : ${trust.trusted ? "accordée" : "non accordée"}`,
           "Connecteurs :",
+          ...languages.status().map((s) => `Serveur de langage ${s.name} : ${s.state}`),
           ...((connectors?.status() ?? []).length === 0
             ? ["  aucun"]
             : connectors!.status().map((s) => `  ${s.name} (${s.scope}) : ${states[s.state] ?? s.state}${s.error ? ` — ${maskSecrets(s.error)}` : ""}${s.state === "connected" ? `, ${s.tools} outil${s.tools > 1 ? "s" : ""}` : ""}`)),
@@ -4369,7 +4389,7 @@ function shellToolLine(registry: ToolRegistry, env: ToolEnvironment): string | u
 }
 
 /** Tools whose `deny` rules refuse reading a path (RG-01 of SPEC-OUT-006 and SPEC-OUT-007). */
-const READ_TOOLS: ReadonlySet<string> = new Set(["read_file", "find_files", "search_content"]);
+const READ_TOOLS: ReadonlySet<string> = new Set(["read_file", "find_files", "search_content", "code_intelligence"]);
 
 type InputItem = { readonly kind: "message"; readonly content: ContentPart[] } | { readonly kind: "invalid"; readonly line: number; readonly reason: string };
 

@@ -104,7 +104,8 @@ export const editFileTool: Tool<EditFileInput> = {
       throw error;
     }
     recordWrite(input.path, ctx);
-    if (p.created) return textOutcome(`Created ${input.path}.`);
+    const diagnostics = await ctx.languages?.changed(input.path, p.plan.content, ctx) ?? [];
+    if (p.created) return textOutcome([`Created ${input.path}.`, ...diagnostics].join("\n"));
     const { plan: edit } = p;
     const head = edit.count > 1 ? `Replaced ${edit.count} occurrences in ${input.path}.` : `Edited ${input.path}.`;
     const parts = [head];
@@ -112,6 +113,7 @@ export const editFileTool: Tool<EditFileInput> = {
     if (edit.step >= 3) parts.push(`Matched by step ${edit.step} (${STEP_NAMES[edit.step]}). Replaced text:\n${edit.replaced}`);
     else if (edit.step === 2) parts.push(`Matched by step 2 (${STEP_NAMES[2]}).`);
     parts.push(`Excerpt after the change:\n${numberedExcerpt(edit.content, edit.firstLine, edit.lastLine)}`); // EF-05
+    parts.push(...diagnostics);
     return textOutcome(parts.join("\n\n"));
   },
 };

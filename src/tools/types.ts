@@ -8,6 +8,7 @@ import type { ContentPart } from "../providers/types";
 import type { ProtectedLocations } from "../permissions/paths";
 import type { PlatformName } from "../platform/system";
 import type { PosixShell, PowerShellInfo, ShellRuntime } from "./shell-runtime";
+import type { LanguageService } from "../languages/contracts";
 
 export interface ToolFlags {
   readonly readOnly: boolean;
@@ -83,6 +84,8 @@ export interface ToolContext extends ToolEnvironment {
   readonly background?: BackgroundTasks;
   /** Reading web pages (SPEC-OUT-012). */
   readonly web?: WebAccess;
+  /** Optional language analysis, shared by the session with each caller's read boundaries. */
+  readonly languages?: LanguageService;
 }
 
 /** Difference shown with an approval request (SPEC-OUT-003 EF-06), or an early refusal found before asking. */

@@ -3,7 +3,7 @@
 // An extension folder: its manifest validated against the published schema, its components found by convention or
 // by the `components` field, never outside the folder.
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { parse, type ParseError } from "jsonc-parser";
@@ -58,7 +58,8 @@ export interface Extension {
   readonly agentsDirs: readonly string[];
   readonly hooksFile?: string;
   readonly connectorsFile?: string;
-  /** Components present but not loaded by this version (language servers, response styles). */
+  readonly languageServersFile?: string;
+  /** Components present but not loaded by this version (response styles). */
   readonly unsupported: readonly string[];
   /** JSON Schema of the options (SPEC-EXT-015). */
   readonly optionsSchema?: Record<string, unknown>;
@@ -137,8 +138,9 @@ export function describeExtension(root: string, development: boolean): Extension
   const commandsDirs = existing([join(root, "commands"), ...declared("commands")]);
   const hooksFile = declared("hooks")[0] ?? join(root, "event-hooks.json");
   const connectorsFile = declared("connectors")[0] ?? join(root, "connectors.json");
+  const languageServersFile = declared("languageServers")[0] ?? join(root, "language-servers.json");
   const unsupported: string[] = [];
-  for (const [kind, conventional] of [["languageServers", "language-servers.json"], ["responseStyles", "response-styles"]] as const) {
+  for (const [kind, conventional] of [["responseStyles", "response-styles"]] as const) {
     if (existsSync(join(root, conventional)) || declared(kind).length > 0) unsupported.push(kind);
   }
   return {
@@ -152,6 +154,7 @@ export function describeExtension(root: string, development: boolean): Extension
     agentsDirs: existing([join(root, "agent-profiles"), ...declared("agents")]),
     hooksFile: existsSync(hooksFile) ? hooksFile : undefined,
     connectorsFile: existsSync(connectorsFile) ? connectorsFile : undefined,
+    languageServersFile: existsSync(languageServersFile) && inside(realpathSync(root), relative(realpathSync(root), realpathSync(languageServersFile))) ? languageServersFile : undefined,
     unsupported,
     optionsSchema: (manifest?.["options"] as Record<string, unknown> | undefined) ?? undefined,
     problems,

@@ -81,6 +81,7 @@ export const writeFileTool: Tool<WriteFileInput> = {
     }
     recordWrite(input.path, ctx);
     const lines = lineCount(toLf(input.content));
-    return textOutcome(`${existing ? "Updated" : "Created"} ${input.path} (${lines} line${lines === 1 ? "" : "s"}).`);
+    const diagnostics = await ctx.languages?.changed(input.path, toLf(input.content), ctx) ?? [];
+    return textOutcome([`${existing ? "Updated" : "Created"} ${input.path} (${lines} line${lines === 1 ? "" : "s"}).`, ...diagnostics].join("\n"));
   },
 };

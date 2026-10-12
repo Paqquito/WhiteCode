@@ -25,7 +25,7 @@ export const KNOWN_TOOL_NAMES: ReadonlySet<string> = new Set([
   "overflow_test", "permission_test",
 ]);
 
-const PATH_TOOLS = new Set(["read_file", "write_file", "edit_file", "update_notebook_cell", "find_files", "search_content"]);
+const PATH_TOOLS = new Set(["read_file", "write_file", "edit_file", "update_notebook_cell", "find_files", "search_content", "code_intelligence"]);
 const COMMAND_TOOLS = new Set(["run_shell", "run_powershell"]);
 const URL_TOOLS = new Set(["fetch_url"]);
 /** Tools whose rules designate an element by name, `*` standing for any run of characters (`use_skill(review-*)`). */

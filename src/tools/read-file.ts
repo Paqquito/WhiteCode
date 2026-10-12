@@ -130,6 +130,7 @@ export const readFileTool: Tool<ReadFileInput> = {
     const text = decodeText(readAll(input.path, stats.size))?.text;
     if (text === undefined) return textOutcome("This file type cannot be read as text.", true);
 
+    ctx.languages?.opened(input.path, text, ctx);
     if (text.length === 0) {
       ctx.readState.set(key, { mtimeMs: stats.mtimeMs, size: stats.size, complete: true });
       return textOutcome("The file is empty.");
