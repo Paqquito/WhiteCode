@@ -11,13 +11,19 @@ import type { ApprovalHook, ApprovalRequest } from "../permissions/resolver";
 import type { ToolCall } from "../providers/types";
 import { aggregate, parseResponse, type ActionOutcome, type Aggregated, type HookResponse } from "./aggregate";
 import { runCommandHook, type ShellChoice } from "./command";
-import type { HookDeclaration, HookSnapshot, HttpAction } from "./config";
+import type { HookDeclaration, HookSnapshot, HttpAction, ModelAction } from "./config";
 import { HOOK_EVENTS, PAYLOAD_SCHEMA_VERSION, type HookEventInfo } from "./events";
 import { createHttpAgents, runHttpHook, type Resolver } from "./http";
 import type { PlatformName } from "../platform/system";
 import type { TranscriptAccess } from "../session/transcript-access";
 
 export interface HookRuntimeOptions {
+  readonly questionRounds?: () => number;
+  readonly question?: (label: string, question: NonNullable<HookResponse["question"]>) => Promise<string | null>;
+  readonly group?: (event: string, payload: string, outcomes: readonly ActionOutcome[], durationMs: number) => void;
+  /** Implements: SPEC-HOK-005/006; the composition root supplies the ordinary budgeted, read-only engine. */
+  readonly modelHook?: (action: ModelAction, payload: string, label: string, signal: AbortSignal) => Promise<string>;
+  readonly signal?: () => AbortSignal | undefined;
   readonly transcriptAccess?: TranscriptAccess;
   readonly policyRefusal?: () => string | undefined;
   readonly snapshot: HookSnapshot;
@@ -58,6 +64,7 @@ interface AgentScope {
 }
 
 export class HookRuntime implements HookBus {
+  readonly #contexts = new Map<symbol, { target: string; snapshot: () => HookSnapshot }>();
   readonly #o: HookRuntimeOptions;
   #snapshot: HookSnapshot;
   readonly #pending = new Set<Promise<unknown>>();
@@ -79,7 +86,12 @@ export class HookRuntime implements HookBus {
 
   /** The declarations in force (SPEC-CMD-031: the view of the hooks). */
   get snapshot(): HookSnapshot {
-    return this.#snapshot;
+    return { ...this.#snapshot, declarations: [...this.#snapshot.declarations, ...[...this.#contexts.values()].flatMap(c => c.snapshot().declarations)] };
+  }
+  /** Implements: SPEC-HOK-008; a context targets one agent, never its parent. Registration is leased until finally. */
+  registerContext(target: string, snapshot: () => HookSnapshot): () => void {
+    const key = Symbol(); this.#contexts.set(key, { target, snapshot });
+    return () => { this.#contexts.delete(key); };
   }
 
   /** A new snapshot after a change of the settings (SPEC-HOK-002 FA-01, SPEC-CFG-005). */
@@ -91,8 +103,10 @@ export class HookRuntime implements HookBus {
   #select(event: string, fields: Record<string, unknown>): HookDeclaration[] {
     const field = HOOK_EVENTS[event]?.discriminant;
     const value = field ? fields[field] : undefined;
-    const declared = this.#snapshot.declarations.filter((d) => d.event === event);
-    const selected = declared.filter((d) => d.matches(value === undefined ? undefined : String(value)));
+    const target = (fields["agent"] as AgentScope["agent"] | undefined)?.id ?? "main";
+    const contextual = [...this.#contexts.values()].filter(c => c.target === target).flatMap(c => c.snapshot().declarations);
+    const declared = [...this.#snapshot.declarations, ...contextual].filter(d => d.event === event);
+    const selected = declared.filter(d => event === "watched_file_modified" && fields["summary"] === true || d.matches(value === undefined ? undefined : String(value)));
     if (declared.length > 0)
       this.#o.log?.(`event ${event}: ${selected.length} of ${declared.length} hook(s) selected`, {
         ...(field ? { [field]: value } : {}),
@@ -133,7 +147,15 @@ export class HookRuntime implements HookBus {
       grant = await this.#o.transcriptAccess?.grant({ event, fields });
       if (signal?.aborted) return { label: d.label, mandatory: d.mandatory, failure: "arrêté à la fin de la session (hooksConfig.asyncKillOnExit)" };
       if (grant) payload = JSON.stringify({ ...JSON.parse(payload), transcriptRef: grant.reference });
-      return await this.#runGrantedAction(d, index, payload, event, fields, signal);
+      let result = await this.#runGrantedAction(d, index, payload, event, fields, signal);
+      for (let round = 0; result.response?.question; round++) {
+        if (!this.#o.question || d.async || !HOOK_EVENTS[event]?.synchronous || round >= (this.#o.questionRounds?.() ?? 3)) return { label: result.label, mandatory: d.mandatory, ...(d.mandatory ? { failure: "question du contrôle obligatoire indisponible" } : {}) };
+        const answer = await this.#o.question(result.label, result.response.question);
+        if (signal?.aborted || this.#o.signal?.()?.aborted) return { label: result.label, mandatory: d.mandatory };
+        const next = JSON.stringify({ ...JSON.parse(payload), answer });
+        result = await this.#runGrantedAction(d, index, next, event, fields, signal);
+      }
+      return result;
     } catch { return { label: d.label, mandatory: d.mandatory, failure: "lecture locale ou exécution du crochet indisponible" }; }
     finally { grant?.release(); }
   }
@@ -144,6 +166,21 @@ export class HookRuntime implements HookBus {
     const action = d.actions[index]!;
     const label = d.actions.length > 1 ? `${d.label}[${index + 1}]` : d.label;
     if (action.type === "http") return this.#runHttp(d, label, action, payload, signal);
+    if (action.type === "prompt" || action.type === "agent") {
+      const controller = new AbortController(), cancel = () => controller.abort(), parent = signal ?? this.#o.signal?.();
+      parent?.addEventListener("abort", cancel, { once: true }); if (parent?.aborted) cancel();
+      const timer = setTimeout(cancel, action.timeoutMs);
+      const activity = setTimeout(() => this.#o.report(`Vérification en cours : crochet ${label}.`), 1000);
+      try {
+        if (!this.#o.modelHook || controller.signal.aborted) throw new Error();
+        const text = await this.#o.modelHook(action, payload, label, controller.signal);
+        const parsed = parseResponse(text);
+        if (controller.signal.aborted || parsed.nonConforming || !parsed.response?.decision || typeof parsed.response.reason !== "string") throw new Error();
+        return { label, mandatory: d.mandatory, response: parsed.response };
+      } catch { return { label, mandatory: d.mandatory, failure: "réponse du modèle inexploitable ou délai dépassé" }; }
+      finally { clearTimeout(timer); clearTimeout(activity); parent?.removeEventListener("abort", cancel); }
+    }
+    if (action.type !== "command") return { label, mandatory: d.mandatory, failure: "type de crochet non pris en charge" };
     const wanted = action.shell?.toLowerCase();
     const shell = wanted === "powershell" || wanted === "pwsh" ? (this.#o.shells.powershell ?? this.#o.shells.posix) : wanted !== undefined ? (this.#o.shells.posix ?? this.#o.shells.powershell) : (this.#o.shells.posix ?? this.#o.shells.powershell);
     if (!shell) return { label, mandatory: d.mandatory, failure: "aucun shell disponible pour exécuter la commande" };
@@ -160,13 +197,14 @@ export class HookRuntime implements HookBus {
     });
     const timeoutMs = action.timeoutMs ?? this.#o.commandTimeoutMs;
     const run = await runCommandHook(action, payload, { cwd: this.#o.cwd, env, shell, timeoutMs, outputMaxSize: this.#o.outputMaxSize, platform: this.#o.platform, signal });
+    const captured = { stdout: run.stdout, stderr: run.stderr, elapsedMs: run.durationMs };
     if (signal?.aborted) return { label, mandatory: d.mandatory, failure: "arrêté à la fin de la session (hooksConfig.asyncKillOnExit)" };
-    if (run.timedOut) return { label, mandatory: d.mandatory, failure: `arrêté après ${Math.round(timeoutMs / 1000)} s` }; // ERR-02
+    if (run.timedOut) return { label, mandatory: d.mandatory, ...captured, failure: `arrêté après ${Math.round(timeoutMs / 1000)} s` }; // ERR-02
     if (run.exitCode === 127) return { label, mandatory: d.mandatory, failure: "commande introuvable" }; // ERR-01
-    if (run.exitCode !== 0) return { label, mandatory: d.mandatory, failure: `code de sortie ${run.exitCode}${run.stderr.trim() ? ` : ${run.stderr.trim().slice(0, 300)}` : ""}` }; // EF-02: never blocking
+    if (run.exitCode !== 0) return { label, mandatory: d.mandatory, ...captured, failure: `code de sortie ${run.exitCode}${run.stderr.trim() ? ` : ${run.stderr.trim().slice(0, 300)}` : ""}` }; // EF-02: never blocking
     const parsed = parseResponse(run.stdout);
-    if (parsed.nonConforming) return { label, mandatory: d.mandatory, failure: `réponse non conforme (${parsed.nonConforming})` }; // FA-01
-    return { label, mandatory: d.mandatory, response: parsed.response, text: parsed.response ? undefined : run.stdout.trim() || undefined };
+    if (parsed.nonConforming) return { label, mandatory: d.mandatory, ...captured, failure: `réponse non conforme (${parsed.nonConforming})` }; // FA-01
+    return { label, mandatory: d.mandatory, ...captured, response: parsed.response, text: parsed.response ? undefined : run.stdout.trim() || undefined };
   }
 
   /** SPEC-HOK-004 step 4: a JSON response on 2xx, success without a body, otherwise a non-blocking failure (EF-05). */
@@ -197,28 +235,35 @@ export class HookRuntime implements HookBus {
   }
 
   /** Steps 2 to 4 of SPEC-HOK-001 § 5.4 and the user-facing effects; undefined when no hook matched (FA-01). */
-  async fire(event: string, fields: Record<string, unknown>): Promise<Aggregated | undefined> {
-    const started = this.#start(event, fields, this.#select(event, fields));
+  async fire(event: string, fields: Record<string, unknown>, signal?: AbortSignal): Promise<Aggregated | undefined> {
+    if (this.#closed) return undefined;
+    const started = this.#start(event, fields, this.#select(event, fields), signal);
     if (started.length === 0) return undefined;
-    return this.#apply(event, HOOK_EVENTS[event]!, await Promise.all(started.map((s) => s.outcome)));
+    const pending = Promise.all(started.map(s => s.outcome)); this.#pending.add(pending);
+    try {
+      const outcomes = await pending;
+      return this.#apply(event, HOOK_EVENTS[event]!, outcomes);
+    } finally { this.#pending.delete(pending); }
   }
 
   /** Launches the selected hooks; those not awaited run in the background (SPEC-HOK-007). Returns the awaited ones, which run in parallel (RG-02). */
-  #start(event: string, fields: Record<string, unknown>, selected: readonly HookDeclaration[]): Started[] {
+  #start(event: string, fields: Record<string, unknown>, selected: readonly HookDeclaration[], signal?: AbortSignal): Started[] {
     if (selected.length === 0) return [];
     const info = HOOK_EVENTS[event]!;
     const payload = this.#payload(event, fields);
+    const start = Date.now(), total = selected.reduce((n, d) => n + d.actions.length, 0), outcomes: ActionOutcome[] = [];
+    const grouped = (outcome: ActionOutcome) => { outcomes.push(outcome); if (outcomes.length === total) this.#o.group?.(event, payload, outcomes, Date.now() - start); };
     const waited: Started[] = [];
     for (const d of selected)
       d.actions.forEach((_, i) => {
-        if (!info.synchronous || d.async) this.#background(d, i, payload, event, fields, info);
-        else waited.push({ d, outcome: this.#runAction(d, i, payload, event, fields) });
+        if (!info.synchronous || d.async) this.#background(d, i, payload, event, fields, info, grouped);
+        else waited.push({ d, outcome: this.#runAction(d, i, payload, event, fields, signal).then(o => { grouped(o); return o; }) });
       });
     return waited;
   }
 
   /** A hook that is not awaited (EF-01); an asynchronous one waits for a slot (EF-03, ERR-01) and can be stopped at the end (FA-01). */
-  #background(d: HookDeclaration, index: number, payload: string, event: string, fields: Record<string, unknown>, info: HookEventInfo): void {
+  #background(d: HookDeclaration, index: number, payload: string, event: string, fields: Record<string, unknown>, info: HookEventInfo, grouped: (outcome: ActionOutcome) => void): void {
     const late = d.async === true;
     const launch = () => {
       const controller = new AbortController();
@@ -227,7 +272,7 @@ export class HookRuntime implements HookBus {
         this.#controllers.add(controller);
       }
       const p: Promise<void> = this.#runAction(d, index, payload, event, fields, late ? controller.signal : undefined)
-        .then((o) => this.#deliver(o, event, info, late))
+        .then(o => { grouped(o); this.#deliver(o, event, info, late); })
         .finally(() => {
           this.#pending.delete(p);
           if (!late) return;
@@ -287,6 +332,7 @@ export class HookRuntime implements HookBus {
    */
   async close(): Promise<void> {
     this.#closed = true;
+    this.#contexts.clear();
     if (this.#o.asyncKillOnExit) {
       this.#queue.length = 0;
       for (const c of this.#controllers) c.abort();

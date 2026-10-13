@@ -203,6 +203,9 @@ export const SETTINGS: readonly SettingDef[] = [
   // SPEC-HOK-002, SPEC-HOK-012: hook declarations by scope and their controls (applied during the session, SPEC-HOK-002 FA-01).
   { key: "hooks", schema: Type.Record(Type.String(), Type.Unknown()), default: {}, scopes: [U, P, L, G, C], owner: "SPEC-HOK-002", hot: true },
   { key: "hooksConfig.disabled", schema: bool(), default: false, scopes: [U, L, G], owner: "SPEC-HOK-012", hot: true },
+  { key: "hooksConfig.questionMaxRounds", schema: int(1, 10), default: 3, scopes: [U, G], owner: "SPEC-HOK-011", hot: true },
+  { key: "hooksConfig.fileWatch.debounce", schema: int(10, 10000), default: 300, scopes: [U, G], owner: "SPEC-HOK-013", hot: true },
+  { key: "hooksConfig.fileWatch.burstLimit", schema: int(1, 10000), default: 200, scopes: [U, G], owner: "SPEC-HOK-013", hot: true },
   { key: "hooksConfig.managedOnly", schema: bool(), default: false, scopes: [G], owner: "SPEC-HOK-012", hot: true },
   { key: "hooksConfig.commandTimeout", schema: durationSchema(), kind: "duration", default: 60_000, scopes: [U, G], owner: "SPEC-HOK-003" },
   { key: "hooksConfig.outputMaxSize", schema: durationSchema(), kind: "size", default: 65_536, scopes: [U, G], owner: "SPEC-HOK-003" },

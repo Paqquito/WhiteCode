@@ -41,7 +41,7 @@ export const HOOK_EVENTS: Readonly<Record<string, HookEventInfo>> = {
   elicitation_result: { discriminant: "server", decisions: [], synchronous: false },
   settings_modified: { discriminant: "scope", decisions: [], synchronous: false },
   workdir_moved: { decisions: [], synchronous: false },
-  watched_file_modified: { discriminant: "change", decisions: [], synchronous: true, context: true },
+  watched_file_modified: { discriminant: "relativePath", decisions: [], synchronous: true, context: true },
   work_item_added: { discriminant: "kind", decisions: [], synchronous: false },
   work_item_done: { discriminant: "kind", decisions: [], synchronous: false },
   teammate_waiting: { decisions: ["continue"], synchronous: true },

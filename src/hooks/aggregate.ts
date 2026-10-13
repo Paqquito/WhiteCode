@@ -4,6 +4,7 @@
 import type { HookDecision, HookEventInfo } from "./events";
 
 export interface HookResponse {
+  readonly question?: { readonly text: string; readonly options: readonly string[]; readonly allowFreeText?: boolean };
   readonly decision?: HookDecision;
   readonly reason?: string;
   readonly modifiedInput?: Record<string, unknown>;
@@ -17,6 +18,9 @@ export interface HookResponse {
 
 /** Outcome of one action of one hook. */
 export interface ActionOutcome {
+  readonly stdout?: string;
+  readonly stderr?: string;
+  readonly elapsedMs?: number;
   readonly label: string;
   readonly mandatory: boolean;
   /** Technical failure (exit code, time limit, non-conforming response): never blocking for an optional hook (SPEC-HOK-003 EF-02). */
@@ -55,12 +59,17 @@ export function parseResponse(stdout: string): { response?: HookResponse; nonCon
     return {}; // SPEC-HOK-003 FA-02: free text
   }
   const r = raw as Record<string, unknown>;
+  if (!r || Array.isArray(r)) return { nonConforming: "objet attendu" };
   const problems: string[] = [];
   if (r["decision"] !== undefined && !DECISIONS.has(String(r["decision"]))) problems.push(`décision inconnue « ${String(r["decision"])} »`);
   for (const key of ["reason", "context", "userMessage", "haltReason"]) if (r[key] !== undefined && typeof r[key] !== "string") problems.push(`${key} doit être un texte`);
   for (const key of ["stopTurn", "hideOutput"]) if (r[key] !== undefined && typeof r[key] !== "boolean") problems.push(`${key} doit être un booléen`);
   for (const key of ["modifiedInput", "sessionEnv"]) if (r[key] !== undefined && (typeof r[key] !== "object" || r[key] === null || Array.isArray(r[key]))) problems.push(`${key} doit être un objet`);
   if (r["sessionEnv"] && Object.values(r["sessionEnv"] as object).some((v) => typeof v !== "string")) problems.push("sessionEnv : valeurs texte attendues");
+  if (r["question"] !== undefined) {
+    const q = r["question"] as HookResponse["question"];
+    if (!q || typeof q.text !== "string" || !q.text.trim() || q.text.length > 8000 || !Array.isArray(q.options) || q.options.length > 20 || q.options.some(v => typeof v !== "string" || !v.trim() || v.length > 1000) || q.allowFreeText !== undefined && typeof q.allowFreeText !== "boolean") problems.push("question invalide");
+  }
   if (problems.length > 0) return { nonConforming: problems.join(" ; ") };
   return { response: r as HookResponse };
 }

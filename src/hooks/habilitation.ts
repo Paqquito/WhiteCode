@@ -94,7 +94,7 @@ export function habilitate(snapshot: HookSnapshot, entries: readonly unknown[], 
       warnings.push(`permissions.decisionHooks : le crochet ${match.label} a été modifié depuis son habilitation ; il ne décide plus (empreinte actuelle : ${match.fingerprint}).`);
       continue;
     }
-    const why = match.actions.map((a) => (a.type === "command" ? projectFileOf(a.command, projectDirs) : undefined)).find((w) => w !== undefined);
+    const why = match.actions.map(a => a.type === "command" ? projectFileOf(a.command, projectDirs) : a.type === "agent" ? "un vérificateur peut lire des fichiers du projet" : undefined).find(w => w !== undefined);
     if (why) {
       warnings.push(`permissions.decisionHooks : le crochet ${match.label} ne peut pas être habilité : ${why}.`);
       continue;

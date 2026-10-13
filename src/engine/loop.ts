@@ -27,6 +27,8 @@ export interface RetryPolicy {
 }
 
 export interface LoopDeps {
+  /** SPEC-HOK-009: non-blocking internal processors, after persistence of a complete assistant response. */
+  readonly postSampling?: (assistant: Extract<import("../providers/types").HistoryMessage, { role: "assistant" }>, agent?: string) => void;
   readonly provider: ModelProvider;
   readonly model: ResolvedModel;
   readonly conversation: Conversation;
@@ -379,6 +381,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
       usage: response.usage,
       providerRequestId: response.providerRequestId,
     });
+    deps.postSampling?.(assistant, deps.agentId);
     deps.emit({ type: "assistant_message", text: assistant.text, toolCalls: assistant.toolCalls.map((c) => ({ callId: c.callId, name: c.name, input: c.input })) });
 
     execution.responseComplete(stopReason);

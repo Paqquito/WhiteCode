@@ -3,7 +3,7 @@
 // Walks a folder tree, honouring exclusion files and always skipping the internal folder of the version control system.
 
 import { readdirSync, readFileSync, realpathSync, statSync, type Dirent, type Stats } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import picomatch from "picomatch";
 
 const EXCLUSION_FILES = [".gitignore", ".ignore"];
@@ -60,6 +60,7 @@ function ignoredBy(layers: readonly IgnoreLayer[], relPath: string, isDirectory:
 }
 
 export interface WalkOptions {
+  readonly stayWithinRoot?: boolean;
   readonly respectIgnoreFiles: boolean;
   readonly caseInsensitive: boolean;
   /** Absolute time after which the walk stops (FA-02). */
@@ -94,6 +95,8 @@ export function walkFiles(root: string, options: WalkOptions, accept: (relativeP
   const seen = new Set<string>();
   let timedOut = false;
   let truncated = false;
+  let boundary: string | undefined;
+  if (options.stayWithinRoot) { try { boundary = realpathSync.native(root); } catch { return { files, timedOut, directories, truncated }; } }
   const full = () => options.maxEntries !== undefined && files.length + directories.length >= options.maxEntries;
   const visit = (dir: string, layers: readonly IgnoreLayer[]): void => {
     if (Date.now() > options.deadline || options.signal.aborted) {
@@ -110,6 +113,7 @@ export function walkFiles(root: string, options: WalkOptions, accept: (relativeP
     } catch {
       return;
     }
+    if (boundary) { const r = relative(boundary, real); if (r === ".." || r.startsWith(".." + sep) || isAbsolute(r)) return; }
     if (seen.has(real)) return;
     seen.add(real);
     let entries: Dirent[];
@@ -141,6 +145,7 @@ export function walkFiles(root: string, options: WalkOptions, accept: (relativeP
       const relPath = rel === "" ? entry.name : `${rel}/${entry.name}`;
       let stats: Stats;
       try {
+        if (options.stayWithinRoot && entry.isSymbolicLink()) continue;
         stats = statSync(path);
       } catch {
         continue; // broken link

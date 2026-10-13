@@ -109,7 +109,7 @@ describe("SPEC-HOK-002 configuration of the hooks", () => {
   test("TECH — SPEC-HOK-002/ERR-01, ERR-02, EF-05 — unknown event with a suggestion, action types not delivered, invalid filter", () => {
     const s = buildSnapshot([{ origin: "user", value: { befor_tool: one("x"), after_tool: [{ match: "a b", actions: [{ type: "command", command: "x" }] }, { actions: [{ type: "prompt", prompt: "x" }] }] } }], controls());
     expect(s.warnings.join("\n")).toContain("Événement de crochet inconnu : befor_tool (portée user). Vouliez-vous dire : before_tool ?");
-    expect(s.warnings.join("\n")).toContain("le type « prompt » n'est pas disponible dans cette version");
+    expect(s.warnings.join("\n")).toContain("événement non décisionnel");
     expect(s.ignored.map((i) => i.reason)).toEqual(["filtre invalide : a b", "aucune action utilisable"]);
   });
 });

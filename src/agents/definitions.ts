@@ -16,10 +16,13 @@ import explorerInstructions from "../../prompts/agents/explorer.md" with { type:
 import plannerInstructions from "../../prompts/agents/planner.md" with { type: "text" };
 import verifierInstructions from "../../prompts/agents/verifier.md" with { type: "text" };
 import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
+import { buildSnapshot } from "../hooks/config";
+// Supports: SPEC-HOK-008 (header validation and contextual hook data).
 
 export type AgentSource = "built-in" | "user" | "project" | "managed" | "extension";
 
 export interface AgentDefinition {
+  readonly hooks?: unknown;
   readonly name: string;
   readonly description: string;
   readonly source: AgentSource;
@@ -114,6 +117,10 @@ export function parseAgent(text: string, file: string, source: AgentLocation["so
   const iterations = header["maxIterations"];
   if (iterations !== undefined && (!Number.isInteger(iterations) || (iterations as number) < 1)) return "maxIterations : entier positif attendu";
   const model = header["model"];
+  if (header["hooks"] !== undefined) {
+    const snapshot = buildSnapshot([{ origin: source, value: header["hooks"], file, labelScope: `agent:${name}` }], { noHooks: false, managedOnly: false, maxTimeoutMs: 600000 });
+    for (const warning of [...snapshot.warnings, ...snapshot.ignored.map(i => `${i.label} : ${i.reason}.`)]) warn(warning);
+  }
   return {
     name,
     description: description.trim(),
@@ -128,6 +135,7 @@ export function parseAgent(text: string, file: string, source: AgentLocation["so
     ...(typeof header["startupInstruction"] === "string" ? { startupInstruction: header["startupInstruction"] } : {}),
     ...(typeof header["color"] === "string" ? { color: header["color"] } : {}),
     detached: header["detached"] === true,
+    hooks: header["hooks"],
   };
 }
 

@@ -7,6 +7,7 @@ import { parseDuration } from "../config/units";
 import { fingerprint } from "../shared/fingerprint";
 import { suggest } from "../shared/suggest";
 import { HOOK_EVENTS } from "./events";
+import picomatch from "picomatch";
 
 export type HookScope = "managed" | "cli" | "local" | "project" | "user" | "extension";
 
@@ -24,7 +25,17 @@ export interface HttpAction {
   readonly timeoutMs?: number;
 }
 
-export type HookAction = CommandAction | HttpAction;
+// Implements: SPEC-HOK-005 (EF-02), SPEC-HOK-006 (CA-03).
+export interface ModelAction {
+  readonly type: "prompt" | "agent";
+  readonly prompt: string;
+  readonly model?: string;
+  readonly tools?: readonly string[];
+  readonly maxIterations: number;
+  readonly maxTokens: number;
+  readonly timeoutMs: number;
+}
+export type HookAction = CommandAction | HttpAction | ModelAction;
 
 export interface HookDeclaration {
   readonly event: string;
@@ -65,7 +76,7 @@ export interface SnapshotControls {
   readonly maxTimeoutMs: number;
 }
 
-const TYPES_LATER = new Set(["prompt", "agent"]);
+const VERIFIER_TOOLS = new Set(["read_file", "find_files", "search_content", "run_shell", "run_powershell"]);
 const SCOPE_ORDER: readonly HookScope[] = ["managed", "cli", "local", "project", "user", "extension"];
 
 /** `match`: exact names, alternatives `a|b`, joker `*` (SPEC-HOK-002 § 5.1); undefined when invalid (EF-05). */
@@ -75,6 +86,13 @@ export function compileMatch(match: string | undefined): ((value: string | undef
   if (alternatives.some((a) => !/^[A-Za-z0-9_.*-]+$/.test(a))) return undefined;
   const res = alternatives.map((a) => new RegExp(`^${a.replace(/[.\-]/g, (c) => `\\${c}`).replace(/\*/g, ".*")}$`));
   return (value) => value !== undefined && res.some((r) => r.test(value));
+}
+/** Watch filters are file globs rather than tool alternatives; compile once for every scan. */
+export function compileWatchMatch(match?: string): ((value: string | undefined) => boolean) | undefined {
+  if (!match) return () => true;
+  if (match.length > 1000 || match.includes("\0")) return undefined;
+  try { const matcher = picomatch(match, { dot: true, matchBase: true }); return value => value !== undefined && matcher(value); }
+  catch { return undefined; }
 }
 
 export function fingerprintOf(event: string, declaration: unknown): string {
@@ -138,7 +156,7 @@ export function buildSnapshot(
           return;
         }
         const match = typeof d["match"] === "string" ? d["match"] : undefined;
-        const matches = compileMatch(match);
+        const matches = event === "watched_file_modified" ? compileWatchMatch(match) : compileMatch(match);
         if (!matches) {
           ignored.push({ label, reason: `filtre invalide : ${match}` }); // EF-05
           return;
@@ -146,13 +164,27 @@ export function buildSnapshot(
         const actions: HookAction[] = [];
         for (const a of Array.isArray(d["actions"]) ? (d["actions"] as Array<Record<string, unknown>>) : []) {
           const type = String(a?.["type"]);
+          if (type === "prompt" || type === "agent") {
+            if (!HOOK_EVENTS[event]!.decisions.length || typeof a["prompt"] !== "string" || !a["prompt"].trim() || a["prompt"].length > 8000 || d["async"] === true) {
+              warnings.push(`Crochet ${label} : consigne invalide ou événement non décisionnel ; action ${type} ignorée.`);
+              continue;
+            }
+            const requested = Array.isArray(a["tools"]) ? a["tools"].filter((t): t is string => typeof t === "string") : [...VERIFIER_TOOLS];
+            const tools = requested.filter(t => VERIFIER_TOOLS.has(t));
+            for (const tool of requested.filter(t => !VERIFIER_TOOLS.has(t))) warnings.push(`Outil non autorisé pour un crochet agent : ${tool} (${label}).`);
+            const bounded = (value: unknown, fallback: number, max: number) => typeof value === "number" && Number.isInteger(value) && value > 0 ? Math.min(value, max) : fallback;
+            actions.push({ type, prompt: a["prompt"], model: typeof a["model"] === "string" ? a["model"] : undefined, tools: type === "prompt" ? [] : tools,
+              maxIterations: type === "prompt" ? 1 : bounded(a["maxIterations"], 10, 100), maxTokens: bounded(a["maxTokens"], 4096, 32768),
+              timeoutMs: Math.min(parseDuration(a["timeout"] ?? d["timeout"]) ?? (type === "prompt" ? 30000 : 300000), controls.maxTimeoutMs) });
+            continue;
+          }
           if (type === "http") {
             const h = httpAction(a, label, warnings, controls.maxTimeoutMs);
             if (h) actions.push(h);
             continue;
           }
           if (type !== "command") {
-            warnings.push(TYPES_LATER.has(type) ? `Crochet ${label} : le type « ${type} » n'est pas disponible dans cette version ; action ignorée.` : `Type de crochet inconnu : ${type} (${label}).`); // ERR-02
+            warnings.push(`Type de crochet inconnu : ${type} (${label}).`); // ERR-02
             continue;
           }
           if (typeof a["command"] !== "string" || a["command"].trim() === "") {

@@ -7,12 +7,15 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { parseYaml } from "../platform/yaml";
+import { buildSnapshot } from "../hooks/config";
+// Supports: SPEC-HOK-008 (header validation and contextual hook data).
 
 /** `product`: the skills built into the product, of the lowest priority (SPEC-EXT-021 to SPEC-EXT-032). */
 export type SkillScope = "managed" | "project" | "user" | "extension" | "product";
 export type Invocation = "user" | "model" | "both";
 
 export interface Skill {
+  readonly hooks?: unknown;
   readonly name: string;
   readonly description: string;
   readonly invocation: Invocation;
@@ -108,6 +111,10 @@ function readSkill(file: string, folderName: string, scope: SkillScope, command:
     warnings.push(`${what} ignorée : en-tête invalide : ${problems.join(" ; ")}.`); // ERR-01
     return undefined;
   }
+  if (h["hooks"] !== undefined) {
+    const snapshot = buildSnapshot([{ origin: scope, value: h["hooks"], file, labelScope: `skill:${name}` }], { noHooks: false, managedOnly: false, maxTimeoutMs: 600000 });
+    warnings.push(...snapshot.warnings, ...snapshot.ignored.map(i => `${i.label} : ${i.reason}.`));
+  }
   return {
     name: name as string,
     description: (description as string).trim(),
@@ -120,6 +127,7 @@ function readSkill(file: string, folderName: string, scope: SkillScope, command:
     root: dirname(file),
     file,
     command,
+    hooks: h["hooks"],
   };
 }
 
