@@ -172,6 +172,7 @@ import { welcome, releaseNotes } from "../ui/welcome";
 import { PerformanceRecorder, type PerformanceSample } from "../shared/performance";
 import { loadSessionStatistics, renderSessionStatistics } from "../session/statistics";
 import { purgeExpiredSessions } from "../session/maintenance";
+import { configuredInstallation, InstallationMaintenance, installationMethod, packageAdvice, preflight } from "../installation/runtime";
 import { correctionMessage, extractStructured, loadOutputSchema, schemaInstruction } from "./structured";
 import { InteractiveApp } from "../interactive/app";
 import { InputStateWriter, inputStatePath, readInputState, sessionDirOf } from "../interactive/input-state";
@@ -253,6 +254,12 @@ export interface RunDependencies {
   readonly samplingProcessors?: readonly SamplingProcessor[];
   readonly validateCredential?: CredentialValidator;
   readonly credentialVault?: CredentialVault;
+  /** Installation ports for isolated tests; never launch options or configuration overrides. */
+  readonly installationFetch?: typeof fetch;
+  readonly installationExecutable?: string;
+  readonly installationMaintenanceDelayMs?: number;
+  readonly installationMaintenanceIdleMs?: number;
+  readonly preflightFetch?: typeof fetch;
   readonly streams: StandardStreams;
   readonly environment: Readonly<Record<string, string>>;
   readonly cwd: string;
@@ -487,7 +494,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         throw new RunError("Opération indisponible en mode minimal hors ligne.", ExitCode.UsageOrConfiguration);
       }
     }
-    return runSubcommand(argv, { streams, identity, catalog: deps.catalog, env, cwd: deps.cwd, system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, profilePolicyReader: deps.profilePolicyReader, policyFileProtection: deps.policyFileProtection, cachePolicy, credentialVault: deps.credentialVault, validateCredential: deps.validateCredential, signal: deps.signal, assertPolicy });
+    return runSubcommand(argv, { streams, identity, catalog: deps.catalog, env, cwd: deps.cwd, system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, profilePolicyReader: deps.profilePolicyReader, policyFileProtection: deps.policyFileProtection, cachePolicy, credentialVault: deps.credentialVault, validateCredential: deps.validateCredential, installationFetch: deps.installationFetch, installationExecutable: deps.installationExecutable, signal: deps.signal, assertPolicy });
   }
   const parsed = parseCommandLine(argv);
   for (const warning of parsed.warnings) err(`avertissement : ${warning}`);
@@ -982,6 +989,24 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // SPEC-PER-022: the proxy (public variables, never from the project, RG-01), the extra authorities and the client
   // certificate (own variables); an unreadable file stops the launch.
   const network = (() => { try { return configuredNetwork(env); } catch (error) { throw new RunError((error as Error).message, ExitCode.UsageOrConfiguration); } })();
+  if (willBeInteractive && (!deps.providerFactory || deps.preflightFetch) && readUserState(locations.userStateFile).preflightCompleted !== true) {
+    err("Vérification préalable…");
+    const results = await preflight({ urls: offlineMinimal ? [] : [baseURL, identity.has("SERVICE_OAUTH_AUTHORIZE") ? identity.get("SERVICE_OAUTH_AUTHORIZE") : undefined].filter((u): u is string => !!u), configDir: locations.configDir, fetch: deps.preflightFetch ?? network, prefix: identity.get("ENV_PREFIX"), signal: deps.signal });
+    for (const result of results) err(`${result.status === "ok" ? "Vérification réussie" : "Vérification en échec"} : ${result.message}`);
+    if (results.every(r => r.status === "ok")) { try { await updateUserState(locations.userStateFile, current => ({ ...current, preflightCompleted: true }), system.platform, err); } catch { err("Vérification réussie, mais son état n’a pas pu être enregistré ; elle sera répétée au prochain lancement."); } }
+  }
+  const installation = configuredInstallation({ identity, env, system, configDir: locations.configDir, settings, fetch: deps.installationFetch ?? network, signal: deps.signal, report: err });
+  const installMethod = installationMethod(deps.installationExecutable ?? process.execPath, installation);
+  try {
+    installation.assertCurrent();
+    if (installMethod === "native") {
+      holder.cleanups.push(installation.pin(identity.version));
+      if (!offlineMinimal) {
+        let release; try { release = await installation.release(settings.get<string>("updates.channel")); } catch { err("avertissement : minimum publié indisponible ; vérifiez le réseau ou le mandataire."); }
+        if (release) { await installation.rememberMinimum(release); installation.assertCurrent(release); }
+      }
+    }
+  } catch (cause) { throw new RunError((cause as Error).message, ExitCode.UsageOrConfiguration); }
   const featureFlags = new FeatureFlags({ url: identity.has("SERVICE_FEATURE_FLAGS") ? identity.get("SERVICE_FEATURE_FLAGS") : undefined, cache: join(locations.configDir, "feature-flags.json"), compiled: buildFlag("scheduled_triggers"), version: identity.version, platform: system.platform, disabled: offlineMinimal || !settings.get<boolean>("config.featureFlagsEnabled"), intervalMs: settings.get<number>("config.featureFlagsRefreshInterval"), fetch: deps.featureFlagsFetch ?? network, overrides: env.own("FEATURE_OVERRIDES"), internal: buildProfile() === "internal" || buildProfile() === "development", canRefresh: () => policyGuard.check(policyCapability).length === 0 && liveSettings.get<boolean>("config.featureFlagsEnabled") });
   holder.cleanups.push(() => featureFlags.close());
   let turnFeatures = featureFlags.snapshot();
@@ -3239,6 +3264,17 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         try { const path = join(system.home, `heap-${randomUUID()}.heapsnapshot`), bytes = heapSnapshot(); writeAtomic(path, bytes, system.platform, true); const note = `Instantané enregistré : ${path} (${bytes.length} octets).`; return { shown: text(note), note }; }
         catch (error) { return { refused: `Instantané impossible : ${(error as Error).message}` }; }
       }
+      case "native-install": {
+        const tokens = args.trim().split(/\s+/).filter(Boolean), force = tokens.includes("--force"), targets = tokens.filter(t => t !== "--force");
+        if (targets.length > 1 || targets.some(t => t.startsWith("--"))) return { refused: "Usage : /native-install [stable|latest|version] [--force]" };
+        if (offlineMinimal) return { refused: "Installation indisponible en mode minimal hors ligne." };
+        const target = targets[0] ?? liveSettings.get<string>("updates.channel");
+        if (liveSettings.origin("updates.automatic.enabled") === "managed" && !liveSettings.get<boolean>("updates.automatic.enabled")) return { refused: "Mises à jour désactivées par votre organisation." };
+        if (liveSettings.origin("updates.channel") === "managed" && ["stable", "latest"].includes(target) && target !== liveSettings.get("updates.channel")) return { refused: "Canal imposé par votre organisation." };
+        try { assertPolicy(); const store = configuredInstallation({ identity, env, system, configDir: locations.configDir, settings: liveSettings, signal, fetch: deps.installationFetch ?? network, report: message => app ? app.notice("info", message) : err(message) });
+          const result = await store.install(await store.release(target), force), note = `Version native ${result.version} installée. Ajoutez ${store.bin} au chemin PATH. Lancez ${result.launcher} --version pour la vérifier. L’ancienne installation reste conservée ; utilisez son gestionnaire pour la retirer si vous le souhaitez.`; return { shown: text(note), note };
+        } catch (cause) { return { refused: (cause as Error).message }; }
+      }
       case "login":
       case "logout": {
         if (args.trim()) return { refused: "Cette commande d'authentification n'accepte aucun argument." };
@@ -4156,6 +4192,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     reportPhases();
     // SPEC-MOD-010 § 5.4, EF-04, CA-04: the deferred maintenance starts after the display.
     setTimeout(deferredMaintenance, 0);
+    if (!offlineMinimal && installMethod === "native") {
+      const maintenance = new InstallationMaintenance({ store: installation, enabled: env.ownBoolean("NO_AUTO_UPDATES") !== true && settings.get<boolean>("updates.automatic.enabled"), channel: settings.get<string>("updates.channel"), keep: settings.get<number>("maintenance.keepVersions"), lastInteraction: () => interactiveApp.lastInteractionAt, delayMs: deps.installationMaintenanceDelayMs, idleMs: deps.installationMaintenanceIdleMs, report: message => interactiveApp.notice("info", message), log: (event, count) => debug.log("installation", event, { count }) });
+      maintenance.start(); (holder.finalizers ??= []).push(() => maintenance.close());
+    } else if (!offlineMinimal && packageAdvice(installMethod, identity.get("PRODUCT_CLI"))) interactiveApp.notice("info", `Mise à jour par gestionnaire : ${packageAdvice(installMethod, identity.get("PRODUCT_CLI"))}`);
     holder.errSink = (text) => interactiveApp.writeLine(text);
     if (reopened && replay !== "none") replayHistory(interactiveApp, reopened.chain, replay === "full", (name, input) => registry.get(name)?.summary(input as never) ?? "");
     const onSignal = () => interactiveApp.forceExit();

@@ -41,9 +41,13 @@ import { readTranscriptReference } from "../session/transcript-access";
 import { renderValidation, validateExtension } from "../extensions/validate";
 import { catalogAdd, catalogList, catalogRemove, catalogUpdate, extensionAdd, extensionEnable, extensionList, extensionRemove, extensionUpdate, scopeOf, type ExtensionAdminContext } from "../extensions/admin";
 import { runConnectorAdmin } from "../connectors/admin";
+import { runInstallationAdmin } from "../installation/admin";
+import { multipleInstallations } from "../installation/runtime";
 
 // Supports: SPEC-MOD-011 (CA-10, CA-11: explicit refusal before any session or service), gap E-140.
 export interface AdminDependencies {
+  readonly installationFetch?: typeof fetch;
+  readonly installationExecutable?: string;
   readonly validateCredential?: CredentialValidator;
   readonly credentialVault?: CredentialVault;
   readonly signal?: AbortSignal;
@@ -131,6 +135,7 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
   }
   const write = (document: unknown, text: () => string) => out(json ? JSON.stringify(document) : text()); // FA-04, CA-02: only the document
   if (family.name === "connector") return runConnectorAdmin(deps, parsed, write, out, err);
+  if (family.name === "installation") return runInstallationAdmin(deps, parsed, write, out, err);
 
   switch (`${family.name} ${operation.name}`) {
     case "auth login":
@@ -312,7 +317,7 @@ export function diagnosticInputs(o: {
 async function diagnostic(deps: AdminDependencies, repair: boolean, write: Writer, out: (t: string) => void): Promise<number> {
   const { locations, sources, settings, systemPolicy, cachePolicy } = loadConfiguration({ identity: deps.identity, env: deps.env, cwd: deps.cwd, system: deps.system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, profilePolicyReader: deps.profilePolicyReader, policyFileProtection: deps.policyFileProtection, cachePolicy: deps.cachePolicy });
   const findings = await runDiagnostics(diagnosticInputs({ sources, settings, configDir: locations.configDir, sessionsDir: locations.sessionsDir, platform: deps.system.platform }),
-    [...identityFindings(deps.identity), ...readManagedPolicy(locations.managedSettingsFile, deps.identity.resolved.policyAnchor, undefined, deps.policyFileProtection).issues.map((issue) => ({ status: issue.severity, area: "Fichier de politique", message: issue.message, location: locations.managedSettingsFile })),
+    [...(multipleInstallations(deps.env.public("PATH") ?? deps.env.public("Path") ?? "", deps.identity.get("PRODUCT_CLI"), deps.system.platform).length > 1 ? [{ status: "error" as const, area: "Installation", message: "Installations multiples : gardez une seule méthode et retirez les anciennes avec leur gestionnaire ; vérifiez ensuite PATH." }] : []), ...identityFindings(deps.identity), ...readManagedPolicy(locations.managedSettingsFile, deps.identity.resolved.policyAnchor, undefined, deps.policyFileProtection).issues.map((issue) => ({ status: issue.severity, area: "Fichier de politique", message: issue.message, location: locations.managedSettingsFile })),
       ...(systemPolicy?.read().issues.map((issue) => ({ status: issue.severity, area: systemPolicy.kind === "registry" ? "Politique de registre" : "Politique de profil macOS", message: issue.message, location: systemPolicy.name })) ?? []),
       ...cachePolicy.read().issues.map((issue) => ({ status: issue.severity, area: "Cache de politique", message: issue.message, location: cachePolicy.name }))]);
   const title = `Diagnostic — ${deps.identity.get("PRODUCT")} ${deps.identity.version}`;

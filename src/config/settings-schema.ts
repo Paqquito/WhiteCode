@@ -253,6 +253,10 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "environment.variables", schema: Type.Record(Type.String(), Type.String()), default: {}, scopes: [U, G], owner: "SPEC-CFG-007", widening: true },
 
   // SPEC-MOD-010: phases of the start-up and deferred maintenance (lot 5).
+  { key: "updates.automatic.enabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-INS-002" },
+  { key: "updates.channel", schema: enumOf(["stable", "latest"]), default: "stable", scopes: [U, G], owner: "SPEC-INS-002" },
+  { key: "updates.minimumAllowedVersion", schema: Type.String({ pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.-]+)?$" }), scopes: [G], owner: "SPEC-INS-002" },
+  { key: "maintenance.keepVersions", schema: int(2, 100), default: 2, scopes: [U], owner: "SPEC-INS-007" },
   { key: "engine.startup.deferredMaintenance", schema: bool(), default: true, scopes: [U], owner: "SPEC-MOD-010" },
   { key: "engine.startup.verboseLog", schema: bool(), default: false, scopes: [U], owner: "SPEC-MOD-010" },
   // SPEC-MOD-004: structured output (lot 5).

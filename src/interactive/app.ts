@@ -368,6 +368,8 @@ export class InteractiveApp {
 
   get exiting(): boolean { return this.#exiting; }
   get humanDialogActive(): boolean { return !!(this.#confirm || this.#choice || this.#secret || this.#approvals.length); }
+  #lastInteractionAt = Date.now();
+  get lastInteractionAt(): number { return this.#lastInteractionAt; }
 
   get queue(): readonly string[] {
     return this.#queue;
@@ -953,6 +955,7 @@ export class InteractiveApp {
   // ---- Keys ---------------------------------------------------------------------------------------------------------
 
   #input(data: string): void {
+    this.#lastInteractionAt = Date.now();
     if (this.#transcriptView) {
       // RG-01 of SPEC-IHM-006: the view is read-only; Ctrl+C closes it without interrupting the session.
       const events = this.#keys.feed(data);

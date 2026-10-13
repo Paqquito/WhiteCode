@@ -12,6 +12,7 @@ import { VARIABLE_BY_NAME } from "../src/identity/catalog";
 import { suggest } from "../src/shared/suggest";
 import { BUILD_OPTIONS, resolveBuildOptions } from "../src/extension-points/build-options";
 import { publishSettingsSchema } from "./settings-schema";
+import { bootstrapScript } from "../src/installation/bootstrap";
 
 const root = resolve(import.meta.dir, "..");
 const outDir = resolve(root, "dist");
@@ -99,6 +100,9 @@ for (const target of targets) {
   record(target ?? "current", file); control();
 }
 publishSettingsSchema(root, outDir, { cli, version: RESOLVED_IDENTITY.version }); record("settings-schema", "config.schema.json");
+for (const [name, shell] of [["install.ps1", "powershell"], ["install.sh", "sh"]] as const) {
+  writeFileSync(join(outDir, name), bootstrapScript(new Identity(RESOLVED_IDENTITY), shell)); record("installer", name);
+}
 const inventory = Object.fromEntries(Object.entries(BUILD_OPTIONS).map(([name, definition]) => [name, { enabled: values[name as keyof typeof values], description: definition.description, specs: definition.specs }]));
 // Supports: SPEC-CAD-002 (CA-11, FA-04); the official catalogue remains unavailable in this version.
 const disabledFeatures = [{ service: "SERVICE_MARKETPLACE", feature: "Catalogue officiel d'extensions", reason: RESOLVED_IDENTITY.values["SERVICE_MARKETPLACE"] ? "fonction non livrée" : "service non configuré" }];

@@ -197,6 +197,7 @@ test("TECH — transferring a command preserves its original timeout and support
   try {
     await run.idle(); run.type("lance"); run.type(KEY.enter);
     const pid = await ready(fixture.starts);
+    await run.waitFor(text => text.includes("Alt+K"), "registered command redraw shows remapped transfer shortcut");
     expect(run.screen().join("\n")).toContain("Alt+K");
     run.type("\u001bk");
     await run.waitFor((text) => text.includes("transfert effectué"));

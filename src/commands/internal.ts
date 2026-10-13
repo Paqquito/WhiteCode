@@ -8,6 +8,7 @@
 import type { InternalCommand } from "./catalog";
 
 export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
+  { name: "native-install", description: "Installe une version native vérifiée dans le profil utilisateur.", kind: "action", widening: false, usage: "[stable|latest|version] [--force]" },
   { name: "context-files", description: "Liste les fichiers présents dans le contexte, leurs plages et les jetons estimés.", kind: "display", widening: false },
   { name: "heap-dump", description: "Enregistre localement un instantané de mémoire après avertissement et confirmation.", kind: "action", widening: false, interactiveOnly: true, hidden: true },
   { name: "response-style", description: "Commande dépréciée : ouvre les préférences.", kind: "display", widening: false, hidden: true },

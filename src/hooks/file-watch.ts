@@ -3,6 +3,8 @@ import { watch, statSync, type FSWatcher } from "node:fs";
 import { resolve } from "node:path";
 import { walkFiles } from "../tools/file-walk";
 export interface FileWatchOptions {
+  /** Native watcher port for regression fixtures, not a setting. */
+  readonly watch?: (root: string, changed: () => void) => Pick<FSWatcher, "on" | "close">;
   readonly roots: readonly string[];
   readonly matches: (path: string) => boolean;
   readonly debounce: () => number;
@@ -12,7 +14,8 @@ export interface FileWatchOptions {
 }
 interface Stamp { readonly stamp: string; readonly relative: string }
 export class HookFileWatch {
-  readonly #watchers: FSWatcher[] = [];
+  readonly #watchers: Array<Pick<FSWatcher, "on" | "close">> = [];
+  #startup?: ReturnType<typeof setTimeout>;
   readonly #agentPaths = new Set<string>();
   #files = new Map<string, Stamp>();
   #timer?: ReturnType<typeof setTimeout>;
@@ -24,11 +27,13 @@ export class HookFileWatch {
     let fallback = false;
     for (const root of options.roots) {
       try {
-        const watcher = watch(root, { recursive: true, persistent: false }, () => this.#changed());
+        const watcher = options.watch ? options.watch(root, () => this.#changed()) : watch(root, { recursive: true, persistent: false }, () => this.#changed());
         watcher.on("error", () => { watcher.close(); this.#fallback(); }); this.#watchers.push(watcher);
       } catch { fallback = true; }
     }
     if (fallback) this.#fallback();
+    // A native backend may arm asynchronously and miss the first change after construction.
+    this.#startup = setTimeout(() => { this.#startup = undefined; this.#changed(); }, 100); this.#startup.unref();
   }
   #fallback(): void {
     if (this.#poll || this.#closed) return;
@@ -80,6 +85,7 @@ export class HookFileWatch {
     catch { this.#files.delete(path); }
   }
   close(): void {
+    if (this.#startup) clearTimeout(this.#startup);
     this.#closed = true; this.#abort.abort(); if (this.#timer) clearTimeout(this.#timer); if (this.#poll) clearInterval(this.#poll);
     for (const watcher of this.#watchers) watcher.close();
   }

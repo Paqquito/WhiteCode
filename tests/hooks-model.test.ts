@@ -10,6 +10,7 @@ import { answer, hook, record } from "./helpers/hooks";
 import { HookFileWatch } from "../src/hooks/file-watch";
 import { PostSampling } from "../src/hooks/post-sampling";
 import { writeFileSync, mkdirSync, readdirSync } from "node:fs";
+import { watch } from "node:fs";
 import { join } from "node:path";
 const hooks = (event: string, action: Record<string, unknown>) => ({ [event]: [{ id: "guard", actions: [action] }] });
 
@@ -128,6 +129,13 @@ test("SPEC-HOK-013/CA-02 — a formatting hook's own write is absorbed and does 
   const ws = workspace(), file = ws.write("project/a.proto", "old"), events: Record<string, unknown>[] = [];
   const watcher = new HookFileWatch({ roots: [ws.project], matches: path => path.endsWith(".proto"), debounce: () => 30, burstLimit: () => 200, warn: () => {}, emit: async fields => { events.push(fields); writeFileSync(String(fields["path"]), "formatted"); } });
   try { writeFileSync(file, "external"); const end = Date.now() + 5000; while (!events.length && Date.now() < end) await Bun.sleep(10); await Bun.sleep(300); expect(events).toHaveLength(1); expect(readFileSync(file, "utf8")).toBe("formatted"); }
+  finally { watcher.close(); }
+});
+
+test("TECH — the startup rescan catches a change missed while a native watcher is arming", async () => {
+  const ws = workspace(), file = ws.write("project/a.proto", "old"), events: Record<string, unknown>[] = [];
+  const watcher = new HookFileWatch({ roots: [ws.project], watch: root => watch(root, { recursive: true, persistent: false }, () => {}), matches: path => path.endsWith(".proto"), debounce: () => 10, burstLimit: () => 200, warn: () => {}, emit: async fields => { events.push(fields); writeFileSync(file, "formatted"); } });
+  try { writeFileSync(file, "early change"); const deadline = Date.now() + 2000; while (!events.length && Date.now() < deadline) await Bun.sleep(10); expect(events).toHaveLength(1); expect(readFileSync(file, "utf8")).toBe("formatted"); await Bun.sleep(150); expect(events).toHaveLength(1); }
   finally { watcher.close(); }
 });
 
