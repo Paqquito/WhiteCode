@@ -31,6 +31,7 @@ const MODES = ["ask", "planning", "auto_edit", "no_prompt", "auto_approve", "unr
 
 export const OPTIONS: readonly OptionDef[] = [
   // Session and execution
+  { name: "name", value: "required", type: "string", group: "Session et exécution", description: "Donne un titre utilisateur à la session dès le démarrage.", delivered: true, owner: "SPEC-SES-008" },
   { name: "non-interactive", value: "none", group: "Session et exécution", description: "Exécution automatisée, sans interface.", delivered: true, owner: "SPEC-MOD-002" },
   { name: "automated", value: "none", group: "Session et exécution", description: "Ancienne forme de --non-interactive.", delivered: true, hidden: true, replacement: "non-interactive", owner: "SPEC-MOD-011" },
   { name: "reopen-last", value: "none", group: "Session et exécution", description: "Reprend la dernière session du dossier courant.", delivered: true, owner: "SPEC-SES-002" },

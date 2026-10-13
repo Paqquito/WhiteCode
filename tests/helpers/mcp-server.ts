@@ -10,6 +10,8 @@ interface FakeTool {
 }
 
 interface FakeConfig {
+  resources?: Array<{ uri: string; name: string; mimeType?: string; text?: string; blob?: string }>;
+  resourcesPageSize?: number;
   tools: FakeTool[];
   /** Answers of `tools/call` by tool name; default: the arguments echoed as text. */
   responses?: Record<string, { text?: string; json?: unknown; repeat?: number; isError?: boolean; delayMs?: number }>;
@@ -50,7 +52,7 @@ async function handle(msg: { id?: number; method?: string; params?: any }): Prom
       process.stdout.write("this is not json\n");
       return;
     }
-    send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: msg.params.protocolVersion, capabilities: { tools: { listChanged: true }, ...(config.prompts ? { prompts: { listChanged: true } } : {}) }, serverInfo: { name: "fake", version: "1.0.0" } } });
+    send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: msg.params.protocolVersion, capabilities: { tools: { listChanged: true }, ...(config.prompts ? { prompts: { listChanged: true } } : {}), ...(config.resources ? { resources: {} } : {}) }, serverInfo: { name: "fake", version: "1.0.0" } } });
     if (config.addToolAfterMs) {
       const { ms, tool } = config.addToolAfterMs;
       setTimeout(() => {
@@ -63,6 +65,14 @@ async function handle(msg: { id?: number; method?: string; params?: any }): Prom
   if (msg.method === "tools/list") {
     send({ jsonrpc: "2.0", id: msg.id, result: { tools: tools.map((t) => ({ name: t.name, description: t.description ?? `The ${t.name} tool.`, inputSchema: schema(t), ...(t.annotations ? { annotations: t.annotations } : {}) })) } });
     return;
+  }
+  if (msg.method === "resources/list") {
+    const resources = config.resources ?? [], start = Number(msg.params?.cursor ?? 0), pageSize = config.resourcesPageSize ?? resources.length;
+    send({ jsonrpc: "2.0", id: msg.id, result: { resources: resources.slice(start, start + pageSize).map(({ text: _text, blob: _blob, ...resource }) => resource), ...(start + pageSize < resources.length ? { nextCursor: String(start + pageSize) } : {}) } }); return;
+  }
+  if (msg.method === "resources/read") {
+    const resource = config.resources?.find(resource => resource.uri === msg.params.uri);
+    send(resource ? { jsonrpc: "2.0", id: msg.id, result: { contents: [{ uri: resource.uri, mimeType: resource.mimeType, text: resource.text, blob: resource.blob }] } } : { jsonrpc: "2.0", id: msg.id, error: { code: -32002, message: "Unknown resource" } }); return;
   }
   if (msg.method === "tools/call") {
     calls++;

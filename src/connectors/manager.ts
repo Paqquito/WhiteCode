@@ -63,7 +63,7 @@ interface Entry {
   readonly d: ConnectorDeclaration;
   state: ConnectorState;
   error?: string;
-  conn?: Pick<StdioConnection, "listTools" | "listPrompts" | "getPrompt" | "callTool" | "close" | "capabilities" | "stderrTail" | "lost">;
+  conn?: Pick<StdioConnection, "listTools" | "listPrompts" | "getPrompt" | "callTool" | "request" | "close" | "capabilities" | "stderrTail" | "lost">;
   connecting?: Promise<void>;
   reconnecting?: Promise<void>;
   connectionRevision: number;
@@ -336,6 +336,56 @@ export class ConnectorManager {
       }
     }
     return parts.join("\n\n");
+  }
+
+  // Supports: SPEC-OUT-028 (CA-01/02, bounded untrusted resources), gap E-151.
+  async resources(server?: string, signal?: AbortSignal): Promise<Array<{ server: string; uri: string; name: string; mimeType?: string; description?: string }>> {
+    if (server !== undefined && !this.#entries.has(server)) throw new Error(`Connecteur ${server} inconnu.`);
+    const controller = new AbortController(), abort = () => controller.abort();
+    if (signal?.aborted) controller.abort(); else signal?.addEventListener("abort", abort, { once: true });
+    const entries = [...this.#entries.values()].filter(entry => (server === undefined || entry.d.name === server) && entry.state === "connected" && entry.conn?.capabilities["resources"] !== undefined);
+    try {
+    const groups = await Promise.all(entries.map(async entry => {
+      const connection = entry.conn!; let cursor: string | undefined; const seen = new Set<string>();
+      const rows: Array<{ server: string; uri: string; name: string; mimeType?: string; description?: string }> = [];
+      for (let page = 0; page < 100; page++) {
+        const response = await connection.request("resources/list", cursor ? { cursor } : {}, { timeoutMs: this.#o.toolTimeoutMs, signal: controller.signal }) as { resources?: unknown[]; nextCursor?: unknown };
+        if (!response || !Array.isArray(response.resources)) throw new Error("Liste des ressources invalide.");
+        for (const value of response.resources) {
+          if (!value || typeof value !== "object") continue;
+          const row = value as Record<string, unknown>;
+          if (typeof row["uri"] !== "string" || row["uri"].length > 4096 || /[\u0000-\u001f\u007f]/.test(row["uri"]) || !/^[a-z][a-z0-9+.-]*:/i.test(row["uri"]) || typeof row["name"] !== "string") continue;
+          rows.push({ server: entry.d.name, uri: row["uri"], name: row["name"].slice(0, 200), ...(typeof row["mimeType"] === "string" ? { mimeType: row["mimeType"].slice(0, 100) } : {}), ...(typeof row["description"] === "string" ? { description: row["description"].slice(0, 2000) } : {}) });
+          if (rows.length > 10_000) throw new Error("Trop de ressources publiées.");
+        }
+        if (typeof response.nextCursor !== "string" || !response.nextCursor) return rows;
+        if (seen.has(response.nextCursor)) throw new Error("Pagination des ressources répétée.");
+        seen.add(response.nextCursor); cursor = response.nextCursor;
+      }
+      throw new Error("Pagination des ressources trop longue.");
+    }));
+    return groups.flat();
+    } finally { controller.abort(); signal?.removeEventListener("abort", abort); }
+  }
+
+  async readResource(server: string, uri: string, signal?: AbortSignal): Promise<Array<{ uri: string; text?: string; blob?: string; mimeType?: string }>> {
+    const entry = this.#entries.get(server), connection = entry?.conn;
+    if (!entry || entry.state !== "connected" || !connection) throw new Error(`Connecteur ${server} indisponible.`);
+    if (!(await this.resources(server, signal)).some(resource => resource.uri === uri)) throw new Error("Ressource non publiée par ce connecteur.");
+    if (entry.conn !== connection || entry.state !== "connected") throw new Error("Connexion modifiée pendant la lecture.");
+    const response = await connection.request("resources/read", { uri }, { timeoutMs: this.#o.toolTimeoutMs, signal }) as { contents?: unknown[] };
+    if (!response || !Array.isArray(response.contents) || response.contents.length > 100) throw new Error("Contenu de ressource invalide.");
+    const contents: Array<{ uri: string; text?: string; blob?: string; mimeType?: string }> = []; let size = 0;
+    for (const value of response.contents) {
+      if (!value || typeof value !== "object") throw new Error("Contenu de ressource invalide.");
+      const item = value as Record<string, unknown>;
+      if (item["uri"] !== uri || (typeof item["text"] !== "string" && typeof item["blob"] !== "string")) throw new Error("Contenu de ressource invalide.");
+      const text = typeof item["text"] === "string" ? item["text"] : undefined, blob = typeof item["blob"] === "string" ? item["blob"] : undefined;
+      size += Buffer.byteLength(text ?? blob ?? ""); if (size > 5 * 1024 * 1024) throw new Error("Ressource trop volumineuse.");
+      if (blob !== undefined && (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(blob))) throw new Error("Binaire de ressource mal encodé.");
+      contents.push({ uri, ...(text !== undefined ? { text } : { blob }), ...(typeof item["mimeType"] === "string" ? { mimeType: item["mimeType"] } : {}) });
+    }
+    return contents;
   }
 
   /** FA-01 of SPEC-MCP-002, step 3: lost connection, reconnection with an exponential delay, bounded (EF-03). */

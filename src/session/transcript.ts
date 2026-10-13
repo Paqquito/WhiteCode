@@ -4,6 +4,7 @@
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { tryFileLock } from "../platform/file-lock";
 
 export const TRANSCRIPT_FORMAT_VERSION = 1;
 
@@ -41,6 +42,8 @@ export function decodeProjectKey(key: string): string {
 }
 
 export interface TranscriptWriterOptions {
+  /** Supports: SPEC-CFG-013 CA-02; live product sessions hold a kernel lease until close or death. */
+  readonly active?: boolean;
   readonly sessionsDir: string;
   readonly projectRealPath: string;
   readonly sessionId?: string;
@@ -54,6 +57,7 @@ export class TranscriptWriter {
   readonly path: string;
   readonly sessionDir: string;
   #fd: number | undefined;
+  #releaseActive: (() => void) | undefined;
   #lastId: string | null;
   #failed = false;
   readonly #clock: () => Date;
@@ -68,7 +72,12 @@ export class TranscriptWriter {
     this.#clock = options.clock ?? (() => new Date());
     this.#lastId = options.parentId ?? null;
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    this.#fd = openSync(this.path, "a", 0o600);
+    if (options.active) {
+      this.#releaseActive = tryFileLock(this.path + ".active");
+      if (!this.#releaseActive) throw new Error("Cette session est déjà active dans un autre processus.");
+    }
+    try { this.#fd = openSync(this.path, "a", 0o600); }
+    catch (error) { this.#releaseActive?.(); this.#releaseActive = undefined; throw error; }
   }
 
   /** Appends one record; returns its identifier. Never rewrites an existing line (RG-01). */
@@ -110,6 +119,7 @@ export class TranscriptWriter {
     this.flush();
     if (this.#fd !== undefined) closeSync(this.#fd);
     this.#fd = undefined;
+    this.#releaseActive?.(); this.#releaseActive = undefined;
   }
 }
 

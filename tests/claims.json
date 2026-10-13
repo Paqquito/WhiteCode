@@ -1,5 +1,5 @@
 {
-  "increment": "lot 9, incrément 33",
+  "increment": "lot 9, incrément 34",
   "claims": {
     "SPEC-AGT-001": [
       "CA-01"
@@ -173,6 +173,11 @@
       "CA-02",
       "CA-03"
     ],
+    "SPEC-CFG-013": [
+      "CA-01",
+      "CA-02",
+      "CA-03"
+    ],
     "SPEC-CMD-001": [
       "CA-01",
       "CA-02",
@@ -201,6 +206,9 @@
       "CA-01"
     ],
     "SPEC-CMD-014": [
+      "CA-01"
+    ],
+    "SPEC-CMD-015": [
       "CA-01"
     ],
     "SPEC-CMD-016": [
@@ -295,7 +303,16 @@
     "SPEC-CMD-087": [
       "CA-01"
     ],
+    "SPEC-CMD-088": [
+      "CA-01"
+    ],
     "SPEC-CMD-089": [
+      "CA-01"
+    ],
+    "SPEC-CMD-097": [
+      "CA-01"
+    ],
+    "SPEC-CMD-106": [
       "CA-01"
     ],
     "SPEC-EXT-001": [
@@ -1048,6 +1065,10 @@
       "CA-02",
       "CA-03"
     ],
+    "SPEC-OUT-028": [
+      "CA-01",
+      "CA-02"
+    ],
     "SPEC-OUT-030": [
       "CA-01",
       "CA-02",
@@ -1239,6 +1260,10 @@
       "CA-08",
       "CA-09",
       "CA-10"
+    ],
+    "SPEC-SES-008": [
+      "CA-02",
+      "CA-03"
     ],
     "SPEC-SES-009": [
       "CA-01",
