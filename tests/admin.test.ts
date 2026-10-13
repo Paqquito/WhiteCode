@@ -184,8 +184,8 @@ describe("SPEC-MOD-012 sub-command families", () => {
     expect(r.stdout).toContain("Opérations :");
     expect(r.stdout).toContain("list");
     expect(snapshot(ws)).toEqual(before);
-    const undelivered = await cli(["connector", "list"], ws);
+    const undelivered = await cli(["connector", "search", "fixture"], ws);
     expect(undelivered.code).toBe(2);
-    expect(undelivered.stderr).toContain("Opération non disponible dans cette version : connector list.");
+    expect(undelivered.stderr).toContain("Opération non disponible dans cette version : connector search.");
   });
 });

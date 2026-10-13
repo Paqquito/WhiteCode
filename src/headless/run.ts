@@ -86,6 +86,12 @@ import { HookRuntime } from "../hooks/runtime";
 // Supports: SPEC-HOK-005, SPEC-HOK-006, SPEC-HOK-008, SPEC-HOK-009, SPEC-HOK-011, SPEC-HOK-013, SPEC-HOK-014; gap E-154.
 import { PostSampling, type SamplingProcessor } from "../hooks/post-sampling";
 import { HookFileWatch } from "../hooks/file-watch";
+import { ConnectorOAuth } from "../connectors/oauth";
+import { connectorSignInTool } from "../tools/connector-sign-in";
+import { openAuthorizationUrl } from "../platform/browser";
+import { Elicitation } from "../connectors/elicitation";
+import { expand as expandConnectorValue } from "../connectors/declarations";
+// Supports: SPEC-MCP-006, SPEC-MCP-008, SPEC-MCP-022, SPEC-OUT-029; gap E-155.
 import type { Identity } from "../identity/identity";
 import { isRule, parseRule, ruleMatches, type Rule, type RuleDecision, type RuleScope } from "../permissions/rules";
 import { insideAllowed, isProtectedPath, protectedLocations, realTargetPath } from "../permissions/paths";
@@ -1073,7 +1079,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const toolsetOption = opt("toolset");
   const toolsetNames = typeof toolsetOption === "string" ? (toolsetOption.trim() === "" ? [] : splitList(toolsetOption)) : undefined;
   // `spawn_agent` is a tool of the session, added after the registry is built: it is listed like the others (SPEC-OUT-001).
-  const toolset = toolsetNames?.filter((n) => !["spawn_agent", "code_intelligence", "list_connector_resources", "read_connector_resource", "schedule_create", "schedule_list", "schedule_delete"].includes(n));
+  const toolset = toolsetNames?.filter((n) => !["spawn_agent", "code_intelligence", "list_connector_resources", "read_connector_resource", "connector_sign_in", "schedule_create", "schedule_list", "schedule_delete"].includes(n));
   const agentsInToolset = toolsetNames === undefined || toolsetNames.includes("spawn_agent") || (toolsetNames.length === 1 && toolsetNames[0] === "default");
   let registry: ToolRegistry;
   try {
@@ -1828,11 +1834,44 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     else if (e.kind === "lost") connectorNotes.push({ type: "connectors", text: `The connector ${e.name} was disconnected: its tools fail until it reconnects.`, priority: 2 });
     else connectorNotes.push({ type: "connectors", text: `The connector ${e.name} is unavailable: reconnect or authenticate it before using its tools.`, priority: 2 });
   };
+  const connectorElicitation = new Elicitation({
+    before: async (server, request, signal) => { const answer = await hooks.fire("elicitation", { server, request }, signal); return answer?.stopTurn ? { action: "cancel" } : answer?.elicitationResponse; },
+    after: async (server, result) => { await hooks.fire("elicitation_result", { server, action: result.action }); },
+    containsSecret: content => redactOutput(content) !== content,
+    ui: willBeInteractive && !offlineMinimal ? {
+      field: async (server, message, key, field, error, signal) => {
+        if (!app) return undefined;
+        const title = `${error ? `Valeur invalide pour ${key}. ` : ""}Connecteur ${server} : ${message}\nChamp ${key}${field.format ? ` (${field.format})` : ""} — saisie privée, Échap : annuler.`;
+        if (field.enum || field.type === "boolean") { const values = field.enum ?? [true, false]; const reply = await app.choose(title, values.map(value => ({ label: String(value) })), { other: false, signal }); return reply.kind === "options" ? reply.labels[0] : undefined; }
+        return app.requestSecret(title, signal);
+      },
+      review: async (server, values, signal) => { if (!app) return undefined; const reply = await app.choose(`Connecteur ${server} : Vérifiez les réponses avant envoi.\n${JSON.stringify(values, null, 2)}`, [{ label: "Envoyer" }, { label: "Recommencer" }, { label: "Refuser" }], { other: false, signal }); return reply.kind === "options" ? reply.labels[0] === "Envoyer" ? "send" : reply.labels[0] === "Recommencer" ? "edit" : "decline" : undefined; },
+      url: async (server, message, url, signal) => { if (!app) return undefined; if (!await app.confirm(`Connecteur ${server} : ${message}\nAdresse : ${url}\nVérifiez le domaine avant de poursuivre. Ouvrir ce parcours humain ?`, "ouvrir", "refuser", false, signal)) return false; if (env.ownBoolean("NO_BROWSER") !== true) openAuthorizationUrl(url, system.platform, cwd, env.childEnvironment(), powerShell?.path); return app.confirm("Confirmez l'achèvement du parcours dans votre navigateur.", "terminé", "annuler", false, signal); },
+    } : undefined,
+  });
   const connectors =
     connectorSet.connectors.length > 0
       ? new ConnectorManager({
           fetch: network,
           connectors: connectorSet.connectors,
+          disabledConnectors: projectState?.disabledConnectors,
+          elicitation: (server, request, signal) => app?.humanDialogActive ? Promise.resolve({ action: "cancel" }) : connectorElicitation.request(server, request, AbortSignal.any([signal, ...(hookParentSignal ? [hookParentSignal] : []), AbortSignal.timeout(settings.get<number>("mcp.toolTimeout"))])),
+          headerShell: system.platform === "windows" && powerShell ? { path: powerShell.path, kind: "powershell" } : posixShell ? { path: posixShell.path, kind: "posix" } : undefined,
+          headersTtlMs: settings.get<number>("mcp.headersCommandTtl"), headersTimeoutMs: settings.get<number>("mcp.headersCommandTimeout"),
+          oauth: (declaration, url) => {
+            const missing = new Set<string>();
+            const clientSecret = declaration.oauth?.clientSecret ? expandConnectorValue(declaration.oauth.clientSecret, { ...deps.environment, ...imposed }, missing) : undefined;
+            if (missing.size) throw new Error("Variable du secret OAuth non définie.");
+            return new ConnectorOAuth({ name: declaration.name, url, configuration: { ...declaration.oauth, ...(clientSecret ? { clientSecret } : {}) }, configDir: locations.configDir, service: identity.get("KEYCHAIN_SERVICE"), vault: sessionVault, fetch: network, timeoutMs: settings.get<number>("mcp.authTimeout") });
+          },
+          authUi: willBeInteractive && !offlineMinimal ? {
+            confirm: async (server, signal) => { assertPolicy(); return app ? await app.confirm(`Autoriser le connecteur ${server} ? Vous réaliserez vous-même l'authentification dans le navigateur.`, "autoriser", "refuser", false, signal) : false; },
+            authorize: async (url, signal) => {
+              if (!app) return undefined;
+              if (env.ownBoolean("NO_BROWSER") !== true) openAuthorizationUrl(url, system.platform, cwd, env.childEnvironment(), powerShell?.path);
+              return app.requestSecret(`Authentification humaine : ${url}\nTerminez le parcours dans votre navigateur. Attendez le retour local, ou collez l'URL complète de retour ici (saisie masquée).`, signal);
+            },
+          } : undefined,
           projectRoot: locations.projectRoot,
           platform: system.platform,
           environment: (declared) => env.childEnvironment({ ...settings.get<Record<string, string>>("environment.variables"), ...declared }),
@@ -1862,9 +1901,12 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const refreshConnectorTools = () => {
     if (connectors) {
       const tools = connectors.tools();
+      if (inToolset("connector_sign_in") && connectors.canSignIn().length > 0) tools.push(connectorSignInTool(connectors, settings.get<number>("mcp.authTimeout")) as never);
       const deferred = new Set(tools.length >= settings.get<number>("mcp.eagerToolsThreshold") ? tools.map((t) => t.name) : []);
       registry.setDynamic(tools, deferred);
       registry.load(conversation.tools.map((t) => t.name).filter((n) => deferred.has(n)));
+      const unavailable = connectors.status().filter(s => s.state === "disabled" || s.state === "auth_required").map(s => `cnx_${s.name}_`);
+      conversation.retireTools(name => name === "connector_sign_in" && !tools.some(t => t.name === name) || unavailable.some(prefix => name.startsWith(prefix)));
     }
     conversation.extendTools(registry.list().map((t) => ({ name: t.name, description: t.description(toolEnv), inputSchema: t.inputSchema })));
   };
@@ -3483,7 +3525,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       }
       case "connectors": {
         // SPEC-CMD-041: the state of each connector, up to date at opening (EF-01), its detail, a reconnection (CA-01).
-        const states: Record<string, string> = { connected: "connecté", connecting: "connexion en cours", pending: "en attente", auth_required: "authentification requise", error: "en échec", unavailable: "indisponible" };
+        const states: Record<string, string> = { connected: "connecté", connecting: "connexion en cours", pending: "en attente", auth_required: "authentification requise", error: "en échec", unavailable: "indisponible", disabled: "désactivé" };
         const list = connectors?.status() ?? [];
         const line = (s: (typeof list)[number]) => `${s.name} (${s.scope}) : ${states[s.state] ?? s.state}${s.error ? ` — ${maskSecrets(s.error)}` : ""}${s.state === "connected" ? `, ${s.tools} outil${s.tools > 1 ? "s" : ""}` : ""}`;
         const [verb, name] = args.trim().split(/\s+/);
@@ -3496,6 +3538,25 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           const after = await connectors!.reconnect(name);
           const note = after ? line(after) : `Connecteur ${name} : reconnexion impossible.`;
           return { shown: text(note), note };
+        }
+        if (["disable", "enable", "sign-in", "sign-out"].includes(verb)) {
+          if (!name || !list.some(s => s.name === name)) return { refused: "Connecteur inconnu." };
+          try {
+            assertPolicy();
+            if (verb === "sign-in") await connectors!.signIn(name, signal);
+            else if (verb === "sign-out") await connectors!.signOut(name, signal);
+            else {
+              const enabled = verb === "enable";
+              await connectors!.enable(name, enabled);
+              await updateUserState(locations.userStateFile, state => {
+                const key = projectStateKey(locations.projectRoot, system.platform), entry = state.projects?.[key] as ProjectState | undefined;
+                const disabledConnectors = (entry?.disabledConnectors ?? []).filter(n => n !== name); if (!enabled) disabledConnectors.push(name);
+                return { ...state, projects: { ...state.projects, [key]: { ...entry, disabledConnectors } } };
+              }, system.platform, err);
+            }
+            refreshConnectorTools(); const note = `Connecteur ${name} : ${verb === "disable" ? "désactivé" : verb === "enable" ? "activé" : verb === "sign-in" ? "authentifié" : "déconnecté"}.`;
+            return { shown: text(note), note };
+          } catch (cause) { return { refused: maskSecrets((cause as Error).message) }; }
         }
         const s = list.find((x) => x.name === verb);
         if (!s) return { refused: `Connecteur inconnu : ${verb}.` };

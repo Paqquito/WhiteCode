@@ -31,6 +31,7 @@ export const OWN_VARIABLES: readonly OwnVariableDef[] = [
   { name: "NO_TELEMETRY", type: "boolean", owner: "SPEC-OBS-001" },
   { name: "NO_ERROR_REPORTS", type: "boolean", owner: "SPEC-OBS-011" },
   { name: "NO_AUTO_UPDATES", type: "boolean", owner: "SPEC-INS-002" },
+  { name: "NO_BROWSER", type: "boolean", owner: "SPEC-MCP-006" },
   { name: "OFFLINE_MINIMAL", type: "boolean", owner: "SPEC-OBS-001" },
   { name: "MINIMAL", type: "boolean", owner: "SPEC-MOD-009" },
   { name: "SHELL_INIT_FILE", type: "path", owner: "SPEC-OUT-008" },

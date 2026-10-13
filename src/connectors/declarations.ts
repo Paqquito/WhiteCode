@@ -7,6 +7,8 @@
 import { parse, type ParseError } from "jsonc-parser";
 import { fingerprint } from "../shared/fingerprint";
 import { secureConnectorUrl } from "./url";
+import type { OAuthConfiguration } from "./oauth";
+// Supports: SPEC-MCP-006, SPEC-MCP-008 (validated declarations and approval fingerprints), gap E-155.
 
 export type ConnectorScope = "managed" | "cli" | "local" | "project" | "user" | "extension";
 
@@ -22,6 +24,8 @@ export interface ConnectorDeclaration {
   readonly cwd?: string;
   readonly url?: string;
   readonly headers: Readonly<Record<string, string>>;
+  readonly headersCommand?: string;
+  readonly oauth?: OAuthConfiguration;
   /** Supports: SPEC-MCP-003: declaration timeout in milliseconds, after scope resolution. */
   readonly timeoutMs?: number;
   /** Threshold of large outputs for this connector (SPEC-MCP-020 EF-03), in estimated tokens. */
@@ -121,7 +125,16 @@ function readSource(src: ConnectorSource, warnings: string[]): ConnectorDeclarat
       try { secureConnectorUrl(d["url"].replace(/\$\{[^}]+\}/g, "localhost")); } catch { problems.push("URL non sécurisée refusée"); }
     }
     if (d["timeout"] !== undefined && !(Number.isInteger(d["timeout"]) && (d["timeout"] as number) > 0 && (d["timeout"] as number) <= 86_400_000)) problems.push("timeout doit être un entier de 1 à 86400000 millisecondes");
-    if (d["headersCommand"] !== undefined) problems.push("headersCommand non disponible dans cette version");
+    if (d["headersCommand"] !== undefined && (transport === "stdio" || typeof d["headersCommand"] !== "string" || d["headersCommand"].trim() === "" || d["headersCommand"].length > 8192)) problems.push("headersCommand doit être une commande de transport distant");
+    if (d["oauth"] !== undefined) {
+      const a = d["oauth"] as Record<string, unknown> | null;
+      if (transport === "stdio" || !a || typeof a !== "object" || Array.isArray(a) ||
+          a["clientId"] !== undefined && (typeof a["clientId"] !== "string" || !a["clientId"] || a["clientId"].length > 2048) ||
+          a["clientSecret"] !== undefined && (typeof a["clientSecret"] !== "string" || !/^\$\{[A-Z_][A-Z0-9_]*\}$/.test(a["clientSecret"])) ||
+          a["callbackPort"] !== undefined && (!Number.isInteger(a["callbackPort"]) || Number(a["callbackPort"]) < 0 || Number(a["callbackPort"]) > 65535) ||
+          a["scopes"] !== undefined && (!strings(a["scopes"]) || a["scopes"].length > 100 || a["scopes"].some(s => !/^[\x21\x23-\x5b\x5d-\x7e]{1,256}$/.test(s))) ||
+          Object.keys(a).some(k => !["clientId", "clientSecret", "callbackPort", "scopes"].includes(k))) problems.push("configuration oauth invalide (secret par variable uniquement)");
+    }
     if (d["args"] !== undefined && !strings(d["args"])) problems.push("args doit être une liste de textes");
     if (d["env"] !== undefined && !stringMap(d["env"])) problems.push("env doit associer des noms à des textes");
     if (d["headers"] !== undefined && !stringMap(d["headers"])) problems.push("headers doit associer des noms à des textes");
@@ -142,6 +155,8 @@ function readSource(src: ConnectorSource, warnings: string[]): ConnectorDeclarat
       cwd: typeof d["cwd"] === "string" ? d["cwd"] : undefined,
       url: typeof d["url"] === "string" ? d["url"] : undefined,
       headers: (d["headers"] as Record<string, string> | undefined) ?? {},
+      headersCommand: typeof d["headersCommand"] === "string" ? d["headersCommand"] : undefined,
+      oauth: d["oauth"] as OAuthConfiguration | undefined,
       timeoutMs: typeof d["timeout"] === "number" ? d["timeout"] : undefined,
       maxOutputTokens: typeof d["maxOutputTokens"] === "number" ? d["maxOutputTokens"] : undefined,
       fingerprint: fingerprint({ name, declaration: raw }),

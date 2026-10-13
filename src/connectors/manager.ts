@@ -12,8 +12,13 @@ import { expand, type ConnectorDeclaration } from "./declarations";
 import { ConnectionError, StdioConnection, type McpPromptInfo, type McpToolInfo } from "./stdio-client";
 import { AuthenticationRequired, HttpConnection } from "./http-client";
 import { connectorTool, qualifiedToolName, schemaProblem } from "./tools";
+import { ConnectorHeaders } from "./headers";
+import type { ShellChoice } from "../hooks/command";
+import type { ConnectorOAuth, OAuthUi } from "./oauth";
+import { VaultUnavailable } from "../platform/credential-vault";
+// Supports: SPEC-MCP-006, SPEC-MCP-008, SPEC-MCP-022 (CA-03), SPEC-OUT-029; gap E-155.
 
-export type ConnectorState = "pending" | "connecting" | "connected" | "error" | "unavailable" | "auth_required";
+export type ConnectorState = "pending" | "connecting" | "connected" | "error" | "unavailable" | "auth_required" | "disabled";
 
 export interface ConnectorStatus {
   readonly name: string;
@@ -29,6 +34,13 @@ export interface ConnectorStatus {
 export interface ConnectorManagerOptions {
   /** Shared proxy, authorities and client certificate configuration. */
   readonly fetch?: typeof fetch;
+  readonly headerShell?: ShellChoice;
+  readonly headersTtlMs?: number;
+  readonly headersTimeoutMs?: number;
+  readonly oauth?: (declaration: ConnectorDeclaration, url: string) => ConnectorOAuth;
+  readonly authUi?: OAuthUi;
+  readonly disabledConnectors?: readonly string[];
+  readonly elicitation?: (server: string, params: unknown, signal: AbortSignal) => Promise<unknown>;
   readonly connectors: readonly ConnectorDeclaration[];
   readonly projectRoot: string;
   readonly platform: PlatformName;
@@ -81,6 +93,8 @@ interface Entry {
   overflows: number;
   settled: Promise<void>;
   settle: () => void;
+  oauth?: ConnectorOAuth;
+  headers?: ConnectorHeaders;
 }
 
 const defaultBackoff = (attempt: number) => Math.min(1_000 * 2 ** (attempt - 1), 300_000);
@@ -102,7 +116,7 @@ export class ConnectorManager {
     for (const d of o.connectors) {
       let settle!: () => void;
       const settled = new Promise<void>((r) => (settle = r));
-      this.#entries.set(d.name, { d, state: "pending", connectionRevision: 0, tools: new Map(), live: new Set(), prompts: [], attempts: 0, stderr: [], overflows: 0, settled, settle });
+      this.#entries.set(d.name, { d, state: o.disabledConnectors?.includes(d.name) && !d.required ? "disabled" : "pending", connectionRevision: 0, tools: new Map(), live: new Set(), prompts: [], attempts: 0, stderr: [], overflows: 0, settled, settle });
     }
   }
 
@@ -127,7 +141,7 @@ export class ConnectorManager {
   /** SPEC-CMD-041 § 5.3 step 3: a new connection, the attempts counted afresh; the state once it is settled. */
   async reconnect(name: string): Promise<ConnectorStatus | undefined> {
     const e = this.#entries.get(name);
-    if (!e || this.#closed) return undefined;
+    if (!e || this.#closed || e.state === "disabled") return undefined;
     const task = e.reconnecting ?? (async () => {
       clearTimeout(e.timer);
       // Join an initialization already in progress instead of starting another server.
@@ -147,10 +161,30 @@ export class ConnectorManager {
 
   /** Every tool published so far, connected or not (a call to a disconnected one fails explicitly, FA-01). */
   tools(): Tool<never>[] {
-    return [...this.#entries.values()].flatMap((e) => [...e.tools.values()]);
+    return [...this.#entries.values()].filter(e => e.state !== "disabled" && e.state !== "auth_required").flatMap((e) => [...e.tools.values()]);
+  }
+
+  canSignIn(): readonly string[] { return this.#o.authUi ? [...this.#entries.values()].filter(e => e.state === "auth_required" && e.oauth).map(e => e.d.name) : []; }
+  async signIn(name: string, signal: AbortSignal): Promise<ConnectorStatus> {
+    const e = this.#entries.get(name);
+    if (!e?.oauth || !this.#o.authUi || e.state !== "auth_required") throw new Error("Authentification indisponible pour ce connecteur.");
+    await e.oauth.signIn(this.#o.authUi, AbortSignal.any([signal, this.#shutdown.signal]));
+    const status = await this.reconnect(name); if (!status || status.state !== "connected") throw new Error("Autorisation reçue, mais connexion au connecteur impossible."); return status;
+  }
+  async signOut(name: string, signal: AbortSignal): Promise<void> {
+    const e = this.#entries.get(name); if (!e?.oauth) throw new Error("Connecteur sans parcours OAuth.");
+    await e.oauth.signOut(signal); await e.conn?.close(0); e.conn = undefined; e.live.clear(); this.#authentication(e);
+  }
+  async enable(name: string, enabled: boolean): Promise<void> {
+    const e = this.#entries.get(name); if (!e) throw new Error("Connecteur inconnu."); if (!enabled && e.d.required) throw new Error("Connecteur indispensable imposé par votre organisation.");
+    clearTimeout(e.timer);
+    if (!enabled) { e.state = "disabled"; e.live.clear(); e.prompts = []; e.settle(); await e.conn?.close(0); e.conn = undefined; }
+    else { e.state = "pending"; await this.reconnect(name); }
+    this.#o.changed({ kind: "tools_changed", name, added: enabled ? [...e.live] : [], removed: enabled ? [] : [...e.tools.keys()] });
   }
 
   #schedule(e: Entry): void {
+    if (e.state === "disabled") { e.settle(); return; }
     const revision = e.connectionRevision;
     const run = () => {
       // A manual attempt may have superseded this queued job, whether it succeeded or failed.
@@ -192,7 +226,7 @@ export class ConnectorManager {
   }
 
   async #connect(e: Entry): Promise<void> {
-    if (this.#closed) return;
+    if (this.#closed || e.state === "disabled") return;
     if (!["stdio", "http", "sse"].includes(e.d.transport)) return this.#fail(e, `transport ${e.d.transport} non disponible dans cette version`, false);
     const launch = this.#launch(e);
     if (typeof launch === "string") return this.#fail(e, launch, false);
@@ -202,6 +236,7 @@ export class ConnectorManager {
         name: e.d.name,
         connectTimeoutMs: e.d.timeoutMs ?? this.#o.connectTimeoutMs,
         clientInfo: this.#o.clientInfo,
+        onRequest: (_method: string, params: unknown, signal: AbortSignal) => this.#o.elicitation?.(e.d.name, params, AbortSignal.any([signal, this.#shutdown.signal])) ?? Promise.resolve({ action: "cancel" }),
         onNotification: (method: string) => {
           if (method === "notifications/tools/list_changed") void this.#refresh(e);
           if (method === "notifications/prompts/list_changed") void this.#refreshPrompts(e);
@@ -213,22 +248,39 @@ export class ConnectorManager {
       const missing = new Set<string>(), url = expand(e.d.url ?? "", this.#o.variables, missing);
       const headers = Object.fromEntries(Object.entries(e.d.headers).map(([k, v]) => [k, expand(v, this.#o.variables, missing)]));
       if (missing.size > 0) return this.#fail(e, `erreur de configuration : variable ${[...missing].join(", ")} non définie`, false);
+      if (e.d.transport !== "stdio") {
+        e.oauth ??= this.#o.oauth?.(e.d, url);
+        if (e.d.headersCommand && !e.headers) {
+          if (!this.#o.headerShell) throw new ConnectionError("Programme d'en-têtes : aucun shell disponible.");
+          e.headers = new ConnectorHeaders({ name: e.d.name, url, command: e.d.headersCommand, cwd: launch.cwd, env: { ...this.#o.environment(launch.env), MCP_CONNECTOR_NAME: e.d.name, MCP_CONNECTOR_URL: url }, shell: this.#o.headerShell, platform: this.#o.platform, ttlMs: this.#o.headersTtlMs ?? 900000, timeoutMs: this.#o.headersTimeoutMs ?? 10000 });
+        }
+      }
+      const getHeaders = e.oauth || e.headers ? async (signal: AbortSignal, force: boolean) => {
+        const dynamic = e.headers ? await e.headers.get(signal, force) : undefined;
+        let authorization: string | undefined;
+        try { authorization = await e.oauth?.authorization(signal, force); } catch (cause) { if (!(cause instanceof VaultUnavailable)) throw new AuthenticationRequired("Authentification requise (/connectors)."); }
+        return dynamic || authorization ? { ...dynamic, ...(authorization ? { Authorization: authorization } : {}) } : undefined;
+      } : undefined;
       const conn = e.d.transport === "stdio" ? await StdioConnection.open({
         ...launch,
         env: this.#o.environment(launch.env),
         platform: this.#o.platform,
         ...common,
-      }) : await HttpConnection.open({ ...common, url, headers, transport: e.d.transport as "http" | "sse", fetch: this.#o.fetch });
-      if (this.#closed) return void (await conn.close(0));
+      }) : await HttpConnection.open({ ...common, url, headers, getHeaders, transport: e.d.transport as "http" | "sse", fetch: this.#o.fetch });
+      if (this.#closed || (e.state as ConnectorState) === "disabled") return void (await conn.close(0));
       e.conn = conn;
-      const published = await this.#publish(e, await conn.listTools(common.connectTimeoutMs));
+      const list = await conn.listTools(common.connectTimeoutMs);
+      if (this.#closed || (e.state as ConnectorState) === "disabled" || e.conn !== conn) return void (await conn.close(0));
+      const published = await this.#publish(e, list);
       if (conn.capabilities["prompts"]) e.prompts = await conn.listPrompts(common.connectTimeoutMs).catch(() => []);
+      if (this.#closed || (e.state as ConnectorState) === "disabled" || e.conn !== conn) { e.prompts = []; return void (await conn.close(0)); }
       if (conn.lost === "authentification requise") throw new AuthenticationRequired("Authentification requise (/connectors).");
       if (conn.lost) throw new ConnectionError("Connexion perdue pendant l'initialisation.");
       e.state = "connected";
       e.error = undefined;
       e.attempts = 0;
       if (conn.capabilities["resources"]) await this.resources(e.d.name, this.#shutdown.signal).catch(() => this.#o.report("avertissement : liste de ressources indisponible."));
+      if (this.#closed || (e.state as ConnectorState) === "disabled" || e.conn !== conn) return void (await conn.close(0));
       e.settle();
       this.#o.changed({ kind: "connected", name: e.d.name, tools: published });
     } catch (err) {
@@ -237,7 +289,8 @@ export class ConnectorManager {
       await e.conn?.close(0);
       e.conn = undefined;
       if (this.#closed && /interrompu|démarrage annulé/.test(message)) { e.settle(); return; }
-      if (err instanceof AuthenticationRequired) return this.#authentication(e);
+      if ((e.state as ConnectorState) === "disabled") { e.settle(); return; }
+      if (err instanceof AuthenticationRequired) { try { e.oauth?.challenge(err.metadataUrl); } catch {} return this.#authentication(e); }
       this.#fail(e, message, !this.#closed && err instanceof ConnectionError && !/programme introuvable|version du protocole|URL non sécurisée|autre origine|En-têtes.*invalides/.test(message));
     }
   }

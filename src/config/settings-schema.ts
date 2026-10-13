@@ -247,6 +247,9 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "mcp.outputInlineLimit", schema: int(100, 10_000_000), default: 20_000, scopes: [U, G], owner: "SPEC-MCP-020" },
   { key: "mcp.maxParallelConnects", schema: int(1, 100), default: 10, scopes: [U, G], owner: "SPEC-MCP-022" },
   { key: "mcp.maxReconnects", schema: int(0, 100), default: 6, scopes: [U, G], owner: "SPEC-MCP-022" },
+  { key: "mcp.headersCommandTtl", schema: durationSchema(), kind: "duration", default: 900000, scopes: [U, G], owner: "SPEC-MCP-008" },
+  { key: "mcp.headersCommandTimeout", schema: durationSchema(), kind: "duration", default: 10000, scopes: [U, G], owner: "SPEC-MCP-008" },
+  { key: "mcp.authTimeout", schema: durationSchema(), kind: "duration", default: 300000, scopes: [U, G], owner: "SPEC-OUT-029" },
   { key: "environment.variables", schema: Type.Record(Type.String(), Type.String()), default: {}, scopes: [U, G], owner: "SPEC-CFG-007", widening: true },
 
   // SPEC-MOD-010: phases of the start-up and deferred maintenance (lot 5).

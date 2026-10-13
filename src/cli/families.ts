@@ -56,14 +56,14 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
     name: "connector",
     role: "Connecteurs",
     operations: [
-      op("list", "Liste les connecteurs déclarés et leur état."),
-      op("add", "Déclare un connecteur dans la portée choisie.", { args: "<nom> <déclaration>" }),
-      op("show", "Affiche la déclaration et les capacités découvertes.", { args: "<nom>" }),
-      op("remove", "Retire un connecteur.", { args: "<nom>" }),
-      op("validate", "Vérifie le démarrage et la découverte des capacités.", { args: "<nom>" }),
+      op("list", "Liste les connecteurs déclarés et leur état.", { delivered: true, options: ["json"] }),
+      op("add", "Déclare un connecteur dans la portée choisie.", { args: "<nom> [options] -- <commande ou URL> [arguments]", delivered: true, options: ["scope", "force", "transport", "env", "header", "declaration"] }),
+      op("show", "Affiche la déclaration et les capacités découvertes.", { args: "<nom>", delivered: true, options: ["json"] }),
+      op("remove", "Retire un connecteur.", { args: "<nom>", delivered: true, options: ["scope"] }),
+      op("validate", "Vérifie le démarrage et la découverte des capacités.", { args: "<nom>", delivered: true, options: ["json"] }),
       op("search", "Recherche un connecteur dans les annuaires configurés.", { args: "<terme>" }),
       op("import", "Importe des déclarations depuis une source reconnue.", { args: "<source>" }),
-      op("reset-choices", "Réinitialise les décisions d'approbation de connecteurs du projet."),
+      op("reset-choices", "Réinitialise les décisions d'approbation de connecteurs du projet.", { delivered: true }),
     ],
   },
   {
@@ -156,13 +156,14 @@ export const FAMILY_BY_NAME: ReadonlyMap<string, FamilyDef> = new Map(FAMILY_CAT
 
 /** Common options of the sub-commands (§ 5.4): `true` when the option takes a value. */
 /** § 5.4 of SPEC-MOD-012, plus the options proper to an operation: `--lean-context` (SPEC-EXT-004), `--installable` (SPEC-EXT-002). */
-export const COMMON_OPTIONS: Readonly<Record<string, boolean>> = { json: false, scope: true, force: false, "preserve-data": false, name: true, verbose: false, help: false, "lean-context": true, installable: false, capabilities: true, root: true, transport: true, "approval-mode": true, listen: true, orchestrator: false };
+export const COMMON_OPTIONS: Readonly<Record<string, boolean>> = { json: false, scope: true, force: false, "preserve-data": false, name: true, verbose: false, help: false, "lean-context": true, installable: false, capabilities: true, root: true, transport: true, "approval-mode": true, listen: true, orchestrator: false, env: true, header: true, declaration: true };
 
 export interface ParsedSubcommand {
   readonly family: string;
   readonly operation?: string;
   readonly args: readonly string[];
   readonly options: ReadonlyMap<string, string | true>;
+  readonly repeatedOptions?: ReadonlyMap<string, readonly string[]>;
 }
 
 export class SubcommandUsageError extends Error {}
@@ -181,6 +182,7 @@ export function orchestratorRefusal(family?: string, operation?: string): string
 export function parseSubcommand(argv: readonly string[]): ParsedSubcommand {
   const positionals: string[] = [];
   const options = new Map<string, string | true>();
+  const repeatedOptions = new Map<string, string[]>();
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i]!;
     if (token === "--") {
@@ -199,10 +201,11 @@ export function parseSubcommand(argv: readonly string[]): ParsedSubcommand {
       const value = eq !== -1 ? token.slice(eq + 1) : argv[++i];
       if (value === undefined || value === "" || (eq === -1 && value.startsWith("--"))) throw new SubcommandUsageError(`Valeur manquante pour --${name}.`);
       options.set(name, value);
+      if (name === "env" || name === "header") repeatedOptions.set(name, [...(repeatedOptions.get(name) ?? []), value]);
     } else options.set(name, true);
   }
   const [family, operation, ...args] = positionals;
-  return { family: family ?? "", operation, args, options };
+  return { family: family ?? "", operation, args, options, ...(repeatedOptions.size ? { repeatedOptions } : {}) };
 }
 
 /** Help of a family (EF-01, RN-G): its operations, without any action. */

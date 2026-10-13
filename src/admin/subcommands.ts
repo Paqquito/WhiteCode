@@ -40,6 +40,7 @@ import { maskSecrets } from "../shared/secrets";
 import { readTranscriptReference } from "../session/transcript-access";
 import { renderValidation, validateExtension } from "../extensions/validate";
 import { catalogAdd, catalogList, catalogRemove, catalogUpdate, extensionAdd, extensionEnable, extensionList, extensionRemove, extensionUpdate, scopeOf, type ExtensionAdminContext } from "../extensions/admin";
+import { runConnectorAdmin } from "../connectors/admin";
 
 // Supports: SPEC-MOD-011 (CA-10, CA-11: explicit refusal before any session or service), gap E-140.
 export interface AdminDependencies {
@@ -129,6 +130,7 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
     } catch (error) { err((error as Error).message); return ExitCode.UsageOrConfiguration; }
   }
   const write = (document: unknown, text: () => string) => out(json ? JSON.stringify(document) : text()); // FA-04, CA-02: only the document
+  if (family.name === "connector") return runConnectorAdmin(deps, parsed, write, out, err);
 
   switch (`${family.name} ${operation.name}`) {
     case "auth login":

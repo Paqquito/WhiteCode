@@ -2,8 +2,10 @@
 // Responses of the hooks of one event, combined in a deterministic way.
 
 import type { HookDecision, HookEventInfo } from "./events";
+import type { ElicitationResponse } from "../connectors/elicitation";
 
 export interface HookResponse {
+  readonly elicitationResponse?: ElicitationResponse;
   readonly question?: { readonly text: string; readonly options: readonly string[]; readonly allowFreeText?: boolean };
   readonly decision?: HookDecision;
   readonly reason?: string;
@@ -31,6 +33,7 @@ export interface ActionOutcome {
 }
 
 export interface Aggregated {
+  readonly elicitationResponse?: ElicitationResponse;
   readonly decision?: HookDecision;
   /** Reasons, each with the hook that gave it (step 3). */
   readonly reasons: readonly string[];
@@ -70,6 +73,10 @@ export function parseResponse(stdout: string): { response?: HookResponse; nonCon
     const q = r["question"] as HookResponse["question"];
     if (!q || typeof q.text !== "string" || !q.text.trim() || q.text.length > 8000 || !Array.isArray(q.options) || q.options.length > 20 || q.options.some(v => typeof v !== "string" || !v.trim() || v.length > 1000) || q.allowFreeText !== undefined && typeof q.allowFreeText !== "boolean") problems.push("question invalide");
   }
+  if (r["elicitationResponse"] !== undefined) {
+    const response = r["elicitationResponse"] as ElicitationResponse;
+    if (!response || !["accept", "decline", "cancel"].includes(response.action) || response.content !== undefined && (!response.content || typeof response.content !== "object" || Array.isArray(response.content) || JSON.stringify(response.content).length > 65536 || Object.values(response.content).some(v => !["string", "number", "boolean"].includes(typeof v)))) problems.push("elicitationResponse invalide");
+  }
   if (problems.length > 0) return { nonConforming: problems.join(" ; ") };
   return { response: r as HookResponse };
 }
@@ -89,6 +96,7 @@ export function aggregate(info: HookEventInfo, outcomes: readonly ActionOutcome[
   let modifiedInput: Record<string, unknown> | undefined;
   let modifiers = 0;
   let stopTurn: string | undefined;
+  let elicitationResponse: ElicitationResponse | undefined, elicitationResponders = 0;
   const raise = (d: HookDecision) => {
     if (decision === undefined || RANK[d] > RANK[decision]) decision = d;
   };
@@ -107,6 +115,10 @@ export function aggregate(info: HookEventInfo, outcomes: readonly ActionOutcome[
     if (!r) {
       if (o.text && info.context) context.push(o.text); // free text joins the context where context is admitted
       continue;
+    }
+    if (r.elicitationResponse) {
+      if (info.elicitationResponse) { elicitationResponse = r.elicitationResponse; elicitationResponders++; }
+      else notices.push(`crochet ${o.label} : elicitationResponse non admise pour cet événement ; ignorée`);
     }
     if (r.decision !== undefined) {
       if (info.decisions.includes(r.decision)) {
@@ -130,6 +142,7 @@ export function aggregate(info: HookEventInfo, outcomes: readonly ActionOutcome[
   }
   const conflict = modifiers > 1;
   return {
+    ...(elicitationResponders ? { elicitationResponse: elicitationResponders > 1 || stopTurn ? { action: "cancel" as const } : elicitationResponse } : {}),
     decision: conflict ? "deny" : decision,
     reasons: conflict ? [...reasons, "Plusieurs crochets modifient cet appel de manière incompatible."] : reasons,
     modifiedInput: conflict ? undefined : modifiedInput,

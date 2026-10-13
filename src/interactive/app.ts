@@ -367,6 +367,7 @@ export class InteractiveApp {
   get modalEnabled(): boolean { return this.#modal !== undefined; }
 
   get exiting(): boolean { return this.#exiting; }
+  get humanDialogActive(): boolean { return !!(this.#confirm || this.#choice || this.#secret || this.#approvals.length); }
 
   get queue(): readonly string[] {
     return this.#queue;
@@ -736,12 +737,13 @@ export class InteractiveApp {
    * A question with options, entirely usable from the keyboard (EF-04 of SPEC-OUT-033): arrows, numbers, space to mark
    * with several answers, Enter to validate, Échap to give no answer; the last option is a free answer.
    */
-  choose(title: string, options: ReadonlyArray<{ readonly label: string; readonly description?: string; readonly disabledReason?: string }>, o: { readonly multiple?: boolean; readonly header?: string; readonly other?: boolean; readonly selected?: number; readonly preview?: (index: number) => void; readonly interruptible?: boolean; readonly filter?: (query: string) => ChoiceDialog["options"] } = {}): Promise<ChoiceAnswer> {
+  choose(title: string, options: ReadonlyArray<{ readonly label: string; readonly description?: string; readonly disabledReason?: string }>, o: { readonly multiple?: boolean; readonly header?: string; readonly other?: boolean; readonly selected?: number; readonly preview?: (index: number) => void; readonly interruptible?: boolean; readonly signal?: AbortSignal; readonly filter?: (query: string) => ChoiceDialog["options"] } = {}): Promise<ChoiceAnswer> {
     if (o.interruptible && this.#approvals.length > 0) return Promise.resolve({ kind: "cancelled" });
-    if (this.#exiting) return Promise.resolve({ kind: "cancelled" });
+    if (this.#exiting || o.signal?.aborted) return Promise.resolve({ kind: "cancelled" });
     if (options.length === 0 && o.other === false) return Promise.resolve({ kind: "cancelled" });
     return new Promise((resolve) => {
-      this.#choice = {
+      const abort = () => dialog.resolve({ kind: "cancelled" });
+      const dialog: ChoiceDialog = {
         title,
         interruptible: o.interruptible,
         ...(o.header ? { header: o.header } : {}),
@@ -756,7 +758,8 @@ export class InteractiveApp {
         marked: new Set(),
         shownAt: this.#now,
         resolve: (answer) => {
-          this.#choice = undefined;
+          o.signal?.removeEventListener("abort", abort);
+          if (this.#choice === dialog) this.#choice = undefined;
           if (answer.kind !== "other" || answer.text !== "\u0000") {
             resolve(answer);
             this.#redraw();
@@ -766,6 +769,8 @@ export class InteractiveApp {
           void this.editText(`${title} — votre réponse :`, "").then((text) => resolve(text === undefined ? { kind: "cancelled" } : { kind: "other", text }));
         },
       };
+      this.#choice = dialog;
+      o.signal?.addEventListener("abort", abort, { once: true });
       this.#redraw();
     });
   }
@@ -852,30 +857,37 @@ export class InteractiveApp {
     } };
   }
 
-  confirm(message: string, yes = "Oui", no = "Non", interruptible = false): Promise<boolean> {
-    if (this.#exiting || (interruptible && this.#approvals.length > 0)) return Promise.resolve(false);
+  confirm(message: string, yes = "Oui", no = "Non", interruptible = false, signal?: AbortSignal): Promise<boolean> {
+    if (this.#exiting || signal?.aborted || (interruptible && this.#approvals.length > 0)) return Promise.resolve(false);
     return new Promise((resolve) => {
-      this.#confirm = {
+      const abort = () => dialog.resolve(false);
+      const dialog: Confirm = {
         interruptible,
         message,
         yes,
         no,
         shownAt: this.#now,
         resolve: (v) => {
-          this.#confirm = undefined;
+          signal?.removeEventListener("abort", abort);
+          if (this.#confirm === dialog) this.#confirm = undefined;
           resolve(v);
           this.#redraw();
         },
       };
+      this.#confirm = dialog;
+      signal?.addEventListener("abort", abort, { once: true });
       this.#session?.screen.flush();
     });
   }
 
   /** Separate masked buffer: a credential never enters the editor, history, queue or persisted input state. */
-  requestSecret(title: string): Promise<string | undefined> {
-    if (this.#exiting) return Promise.resolve(undefined);
+  requestSecret(title: string, signal?: AbortSignal): Promise<string | undefined> {
+    if (this.#exiting || signal?.aborted) return Promise.resolve(undefined);
     return new Promise((resolve) => {
-      this.#secret = { title, value: "", resolve: (value) => { if (this.#secret) this.#secret.value = ""; this.#secret = undefined; resolve(value); this.#redraw(); } };
+      const abort = () => dialog.resolve(undefined);
+      const dialog = { title, value: "", resolve: (value: string | undefined) => { signal?.removeEventListener("abort", abort); dialog.value = ""; if (this.#secret === dialog) this.#secret = undefined; resolve(value); this.#redraw(); } };
+      this.#secret = dialog;
+      signal?.addEventListener("abort", abort, { once: true });
       this.#session?.screen.flush();
     });
   }

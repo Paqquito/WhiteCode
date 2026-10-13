@@ -75,6 +75,12 @@ export class Conversation {
     return added.map((t) => t.name);
   }
 
+  /** Supports: SPEC-OUT-029, SPEC-MCP-022 (explicit authorization/disable revokes a definition and its cached prefix). */
+  retireTools(remove: (name: string) => boolean): void {
+    const next = this.#tools.filter(tool => !remove(tool.name));
+    if (next.length !== this.#tools.length) { this.#tools = next; this.#segment++; }
+  }
+
   /** Opens a new segment after a full compaction: nothing of the previous segment is replayed (architecture § 7.2). */
   startSegment(system: readonly SystemBlock[], tools: readonly ToolDefinition[], opening: ReadonlyArray<ContentPart>): void {
     this.#system = system;

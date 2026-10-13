@@ -6,7 +6,7 @@ import { launchLine, startChild, type Child } from "../platform/process";
 import type { PlatformName } from "../platform/system";
 
 /** Protocol versions this client speaks; the first is proposed at initialisation. */
-export const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
+export const PROTOCOL_VERSIONS = ["2025-06-18", "2025-11-25", "2025-03-26", "2024-11-05"] as const;
 const STDERR_LINES = 40;
 
 export interface McpToolInfo {
@@ -67,6 +67,7 @@ export interface StdioOptions {
   readonly connectTimeoutMs: number;
   readonly clientInfo: { readonly name: string; readonly version: string };
   readonly onNotification?: (method: string, params: unknown) => void;
+  readonly onRequest?: (method: string, params: unknown, signal: AbortSignal) => Promise<unknown>;
   /** The connection ended without being closed by the product (FA-01). */
   readonly onLost?: (reason: string) => void;
   /** The session stops while the connection is being set up: the process is stopped (SPEC-MOD-010 EF-06, CA-05). */
@@ -83,6 +84,7 @@ export class StdioConnection {
   readonly #child: Child;
   readonly #pending = new Map<number, Pending>();
   readonly #stderr: string[] = [];
+  readonly #serverLife = new AbortController();
   #stderrPartial = "";
   #buffer = "";
   #nextId = 1;
@@ -112,7 +114,7 @@ export class StdioConnection {
       if (o.signal?.aborted) throw new ConnectionError(`Connecteur ${o.name} : démarrage annulé.`);
       const init = (await c.request(
         "initialize",
-        { protocolVersion: PROTOCOL_VERSIONS[0], capabilities: {}, clientInfo: o.clientInfo },
+        { protocolVersion: PROTOCOL_VERSIONS[0], capabilities: o.onRequest ? { elicitation: { form: {}, url: {} } } : {}, clientInfo: o.clientInfo },
         { timeoutMs: o.connectTimeoutMs, signal: o.signal },
       )) as { protocolVersion?: string; serverInfo?: { name?: string; version?: string }; capabilities?: Record<string, unknown> };
       if (!init || typeof init.protocolVersion !== "string" || !(PROTOCOL_VERSIONS as readonly string[]).includes(init.protocolVersion)) {
@@ -180,8 +182,11 @@ export class StdioConnection {
         this.#o.onNotification?.(msg["method"], msg["params"]);
         return;
       }
-      // Requests from the server: only `ping` is answered; this client declares no other capability.
       if (msg["method"] === "ping") this.#send({ jsonrpc: "2.0", id, result: {} });
+      else if (msg["method"] === "elicitation/create" && this.#o.onRequest) {
+        if ((msg["params"] as { mode?: unknown } | undefined)?.mode === "url" && this.protocolVersion !== "2025-11-25") { this.#send({ jsonrpc: "2.0", id, result: { action: "decline" } }); return; }
+        void this.#o.onRequest(msg["method"], msg["params"], this.#serverLife.signal).then(result => { if (!this.#closing && !this.#lost) this.#send({ jsonrpc: "2.0", id, result }); }, () => { if (!this.#closing && !this.#lost) this.#send({ jsonrpc: "2.0", id, result: { action: "cancel" } }); });
+      }
       else this.#send({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
       return;
     }
@@ -274,6 +279,7 @@ export class StdioConnection {
   #end(reason: string): void {
     if (this.#lost !== undefined) return;
     this.#lost = reason;
+    this.#serverLife.abort();
     for (const p of this.#pending.values()) p.reject(new ConnectionError(`Connecteur ${this.#o.name} déconnecté : ${reason}.`));
     this.#pending.clear();
     if (!this.#closing) this.#o.onLost?.(reason); // FA-01
@@ -282,6 +288,7 @@ export class StdioConnection {
   /** Step 4: input closed, a grace period, then the whole process tree stopped (EF-03). */
   async close(graceMs = 2_000): Promise<void> {
     this.#closing = true;
+    this.#serverLife.abort();
     this.#child.input?.end();
     const ended = await Promise.race([this.#child.exited.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), graceMs))]);
     if (!ended) await this.#child.killTree(1_000);

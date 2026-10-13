@@ -9,6 +9,7 @@ import type { ConnectorDeclaration, ConnectorSource, ProjectChoice } from "./dec
 
 /** Choices of the user for one project (SPEC-CFG-010): personal connectors (`local` scope) and project connector approvals. */
 export interface ProjectState {
+  readonly disabledConnectors?: readonly string[];
   readonly connectors?: Record<string, unknown>;
   readonly connectorChoices?: Readonly<Record<string, { readonly decision: "approved" | "refused"; readonly fingerprint: string }>>;
 }

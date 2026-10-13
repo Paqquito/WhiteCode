@@ -15,6 +15,7 @@ export interface HookEventInfo {
   readonly synchronous: boolean;
   /** `context` is admitted (SPEC-HOK-010 § 5.1). */
   readonly context?: boolean;
+  readonly elicitationResponse?: boolean;
 }
 
 const tool = { discriminant: "toolId" } as const;
@@ -37,7 +38,7 @@ export const HOOK_EVENTS: Readonly<Record<string, HookEventInfo>> = {
   subagent_finished: { discriminant: "agentType", decisions: ["continue"], synchronous: true },
   before_compaction: { discriminant: "trigger", decisions: [], synchronous: true, context: true },
   after_compaction: { discriminant: "trigger", decisions: [], synchronous: false },
-  elicitation: { discriminant: "server", decisions: [], synchronous: true },
+  elicitation: { discriminant: "server", decisions: [], synchronous: true, elicitationResponse: true },
   elicitation_result: { discriminant: "server", decisions: [], synchronous: false },
   settings_modified: { discriminant: "scope", decisions: [], synchronous: false },
   workdir_moved: { decisions: [], synchronous: false },

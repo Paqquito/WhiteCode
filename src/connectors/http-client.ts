@@ -8,13 +8,17 @@ const MAX_BYTES = 8 * 1024 * 1024;
 interface Options {
   readonly name: string; readonly url: string; readonly transport: "http" | "sse";
   readonly headers: Readonly<Record<string, string>>; readonly fetch?: typeof fetch;
+  readonly getHeaders?: (signal: AbortSignal, force: boolean) => Promise<Readonly<Record<string, string>> | undefined>;
   readonly connectTimeoutMs: number; readonly clientInfo: { readonly name: string; readonly version: string };
   readonly signal?: AbortSignal; readonly onNotification?: (method: string, params: unknown) => void;
+  readonly onRequest?: (method: string, params: unknown, signal: AbortSignal) => Promise<unknown>;
   readonly onLost?: (reason: string) => void;
 }
 interface Pending { method: string; resolve: (value: unknown) => void; reject: (error: Error) => void }
 interface Event { event: string; data: string; id?: string }
-export class AuthenticationRequired extends ConnectionError {}
+export class AuthenticationRequired extends ConnectionError {
+  constructor(message: string, readonly metadataUrl?: string) { super(message); }
+}
 
 /** Incremental UTF-8 and SSE decoding; bounds apply to an event, not to the lifetime of a connection. */
 async function events(response: Response, receive: (event: Event) => boolean | void): Promise<void> {
@@ -79,7 +83,7 @@ export class HttpConnection {
     if (o.signal?.aborted) abort();
     try {
       if (o.transport === "sse") await c.#legacy();
-      const init = await c.request("initialize", { protocolVersion: PROTOCOL_VERSIONS[0], capabilities: {}, clientInfo: o.clientInfo }, { timeoutMs: o.connectTimeoutMs }) as { protocolVersion?: string; capabilities?: Record<string, unknown> };
+      const init = await c.request("initialize", { protocolVersion: PROTOCOL_VERSIONS[0], capabilities: o.onRequest ? { elicitation: { form: {}, url: {} } } : {}, clientInfo: o.clientInfo }, { timeoutMs: o.connectTimeoutMs }) as { protocolVersion?: string; capabilities?: Record<string, unknown> };
       if (!init || !(PROTOCOL_VERSIONS as readonly unknown[]).includes(init.protocolVersion)) throw new ConnectionError("Version du protocole MCP non prise en charge.");
       if (init.capabilities !== undefined && (!init.capabilities || typeof init.capabilities !== "object" || Array.isArray(init.capabilities))) throw new ConnectionError("Capacités MCP invalides.");
       c.protocolVersion = init.protocolVersion!; c.capabilities = init.capabilities ?? {};
@@ -97,9 +101,14 @@ export class HttpConnection {
     if (error instanceof ConnectionError || error instanceof McpError || error instanceof RequestTimeout) return error;
     return new ConnectionError(this.#life.signal.aborted ? "Connexion MCP interrompue." : "Connecteur injoignable ou réponse MCP invalide.");
   }
-  #headers(accept: string): Headers {
+  async #headers(accept: string, signal: AbortSignal, supplied?: Readonly<Record<string, string>>): Promise<Headers> {
     let h: Headers;
     try { h = new Headers(this.#o.headers); } catch { throw new ConnectionError("En-têtes du connecteur invalides."); }
+    if (this.#o.getHeaders) {
+      const dynamic = supplied ?? await this.#o.getHeaders(signal, false);
+      try { for (const [name, value] of Object.entries(dynamic ?? {})) { h.set(name, value); if (value) { this.#secrets.add(value); this.#secrets.add(value.replace(/^(?:Bearer|Basic)\s+/i, "")); } } }
+      catch { throw new ConnectionError("En-têtes du connecteur invalides."); }
+    }
     h.set("Accept", accept); h.set("Content-Type", "application/json");
     h.delete("MCP-Session-Id"); h.delete("MCP-Protocol-Version"); h.delete("Last-Event-ID");
     if (this.#session) h.set("MCP-Session-Id", this.#session);
@@ -107,9 +116,9 @@ export class HttpConnection {
     return h;
   }
   async #fetch(url: URL, method: string, signal: AbortSignal, body?: string, cursor?: string): Promise<Response> {
-    const headers = this.#headers(method === "GET" ? "text/event-stream" : "application/json, text/event-stream");
+    let headers = await this.#headers(method === "GET" ? "text/event-stream" : "application/json, text/event-stream", signal);
     if (cursor !== undefined) headers.set("Last-Event-ID", cursor);
-    let target = url;
+    let target = url, refreshed = false;
     for (let attempt = 0; attempt <= 5; attempt++) {
       signal.throwIfAborted();
       this.#remember(target);
@@ -121,7 +130,12 @@ export class HttpConnection {
         if (next.origin !== this.#url.origin) throw new ConnectionError("Redirection MCP vers une autre origine refusée.");
         target = next; continue;
       }
-      if (response.status === 401) { await response.body?.cancel(); if (this.#ready) this.#end("authentification requise"); throw new AuthenticationRequired("Authentification requise (/connectors)."); }
+      if (response.status === 401) {
+        const metadataUrl = /(?:^|[\s,])resource_metadata="([^"]+)"/i.exec(response.headers.get("WWW-Authenticate") ?? "")?.[1];
+        await response.body?.cancel();
+        if (!refreshed && this.#o.getHeaders) { refreshed = true; const dynamic = await this.#o.getHeaders(signal, true); if (dynamic) { headers = await this.#headers(method === "GET" ? "text/event-stream" : "application/json, text/event-stream", signal, dynamic); if (cursor !== undefined) headers.set("Last-Event-ID", cursor); attempt--; continue; } }
+        if (this.#ready) this.#end("authentification requise"); throw new AuthenticationRequired("Authentification requise (/connectors).", metadataUrl);
+      }
       if (response.status === 404 && this.#session) { await response.body?.cancel(); this.#end("session MCP expirée"); throw new ConnectionError("Session MCP expirée."); }
       return response;
     }
@@ -227,7 +241,11 @@ export class HttpConnection {
   }
   async #notification(method: string, params: unknown): Promise<void> { await this.#post({ jsonrpc: "2.0", method, params }, AbortSignal.any([this.#life.signal, AbortSignal.timeout(this.#o.connectTimeoutMs)])); }
   async #notificationResponse(m: Record<string, unknown>): Promise<void> {
-    try { await this.#post({ jsonrpc: "2.0", id: m.id, ...(m.method === "ping" ? { result: {} } : { error: { code: -32601, message: "Method not found" } }) }, this.#life.signal); }
+    try {
+      const unsupportedUrl = m.method === "elicitation/create" && (m.params as { mode?: unknown } | undefined)?.mode === "url" && this.protocolVersion !== "2025-11-25";
+      const answer = unsupportedUrl ? { result: { action: "decline" } } : m.method === "ping" ? { result: {} } : m.method === "elicitation/create" && this.#o.onRequest ? { result: await this.#o.onRequest(m.method, m.params, this.#life.signal).catch(() => ({ action: "cancel" })) } : { error: { code: -32601, message: "Method not found" } };
+      await this.#post({ jsonrpc: "2.0", id: m.id, ...answer }, this.#life.signal);
+    }
     catch { this.#end("réponse au serveur impossible"); }
   }
   async #legacy(): Promise<void> {

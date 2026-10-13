@@ -26,6 +26,8 @@ export interface Activations {
 }
 
 export interface ActivationInputs {
+  /** Read-only administration lists installed contributions without installing missing imposed extensions. */
+  readonly installMissing?: boolean;
   readonly settings: Settings;
   readonly configDir: string;
   readonly product: { readonly name: string; readonly version: string; readonly cli: string };
@@ -76,7 +78,7 @@ export async function activeInstalled(i: ActivationInputs): Promise<Activations>
       continue;
     }
     let version = installedVersions(i.configDir, catalog, name)[0];
-    if (!version && imposed.has(key)) {
+    if (!version && imposed.has(key) && i.installMissing !== false) {
       const problem = await installImposed(i, key);
       if (problem) imposedProblems.push(`Extension imposée ${key} indisponible : ${problem}.`); // FA-01
       version = installedVersions(i.configDir, catalog, name)[0];
