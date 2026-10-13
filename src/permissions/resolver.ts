@@ -24,6 +24,8 @@ export interface ApprovalRequest {
   readonly action?: string;
   readonly reason: string;
   readonly origin: AskOrigin;
+  /** Supports: SPEC-OUT-004 step 5: only a human or designated host can accept an anchored edit. */
+  readonly humanOnly?: boolean;
   readonly suggestions: readonly string[];
   /** Difference of the change, shown before confirmation (SPEC-OUT-003 EF-06). */
   readonly preview?: string;
@@ -109,6 +111,12 @@ export async function resolveAsk(
   signal: AbortSignal,
 ): Promise<Resolution> {
   if (signal.aborted) return cancelled();
+  if (request.humanOnly) {
+    if (mode !== "ask" && mode !== "auto_approve") return { decision: "deny", by: "none", reason: "Passage not found: this approximate edit requires human confirmation." };
+    const host = await askHost(request, authorities.controlHost, signal); if (host) return host;
+    if (authorities.human) return askHuman(request, authorities.human, signal);
+    return { decision: "deny", by: "none", reason: "Passage not found: no human interface can confirm this edit." };
+  }
   // Point a: no_prompt, any origin: only a designated delegate, the control host first (SPEC-PER-028 § 5.2); never a dialog nor a hook.
   if (mode === "no_prompt") {
     const host = await askHost(request, authorities.controlHost, signal);

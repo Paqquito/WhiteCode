@@ -52,6 +52,9 @@ const enumOf = (values: readonly string[]) => Type.Union(values.map((v) => Type.
 const mode = () => enumOf(PERMISSION_MODES);
 
 export const SETTINGS: readonly SettingDef[] = [
+  { key: "config.migrationBackupRetention", schema: int(1, 3650), default: 30, scopes: [U], owner: "SPEC-CFG-009" },
+  { key: "config.featureFlagsRefreshInterval", schema: int(1000, 86400_000), default: 3600_000, scopes: [U, G], owner: "SPEC-CFG-014" },
+  { key: "config.featureFlagsEnabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-CFG-014", restrictiveValues: [false] },
   { key: "schedule.enabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-PLA-001" },
   { key: "schedule.maxAgeDays", schema: int(1, 3650), default: 7, scopes: [U], owner: "SPEC-PLA-001" },
   { key: "schedule.maxActive", schema: int(1, 500), default: 50, scopes: [U, G], owner: "SPEC-OUT-031" },
@@ -155,6 +158,7 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "tools.read.pdfMaxPages", schema: int(1), default: 15, scopes: [G], owner: "SPEC-OUT-002" },
   { key: "tools.write.maxSize", schema: durationSchema(), kind: "size", default: 10 * 1024 * 1024, scopes: [G], owner: "SPEC-OUT-003" },
   { key: "tools.edit.lenientMatching", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-OUT-004" },
+  { key: "tools.edit.minSimilarity", schema: num(0, 1), default: 0.8, scopes: [G], owner: "SPEC-OUT-004" },
   { key: "tools.edit.diagnosticsWait", schema: durationSchema(), kind: "duration", default: 3000, scopes: [U, G], owner: "SPEC-INT-006" },
   { key: "tools.edit.diagnosticsMaxPerFile", schema: int(1, 200), default: 20, scopes: [U, G], owner: "SPEC-INT-006" },
   { key: "tools.edit.diagnosticsMaxOtherFiles", schema: int(0, 100), default: 5, scopes: [U, G], owner: "SPEC-INT-006" },
@@ -344,6 +348,7 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "ui.input.modalCountLimit", schema: int(1, 100_000), default: 999, scopes: [U], owner: "SPEC-IHM-013" },
   // SPEC-IHM-014: key bindings; SPEC-CMD-001: commands (lot 5).
   { key: "ui.keybindings.bindings", schema: Type.Record(Type.String(), Type.Union([Type.String(), Type.Array(Type.String())])), default: {}, scopes: [U], owner: "SPEC-IHM-014" },
+  { key: "ui.keybindings.enabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-EXT-023", restrictiveValues: [false] },
   { key: "ui.keybindings.showFooterHints", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-014" },
   { key: "ui.keybindings.strictConflicts", schema: bool(), default: false, scopes: [U], owner: "SPEC-IHM-014" },
   { key: "commands.disabled", schema: strList(), default: [], scopes: [U, P, G], owner: "SPEC-CMD-001", merge: "concat" },

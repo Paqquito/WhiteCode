@@ -54,6 +54,7 @@ export interface ConnectorManagerOptions {
 }
 
 export type ConnectorEvent =
+  | { readonly kind: "resources_changed"; readonly name: string }
   | { readonly kind: "connected"; readonly name: string; readonly tools: readonly string[] }
   | { readonly kind: "tools_changed"; readonly name: string; readonly added: readonly string[]; readonly removed: readonly string[] }
   | { readonly kind: "lost"; readonly name: string; readonly reason: string }
@@ -85,6 +86,7 @@ interface Entry {
 const defaultBackoff = (attempt: number) => Math.min(1_000 * 2 ** (attempt - 1), 300_000);
 
 export class ConnectorManager {
+  readonly #resourceCache = new Map<string, Array<{ server: string; uri: string; name: string; mimeType?: string; description?: string }>>();
   readonly #o: ConnectorManagerOptions;
   readonly #entries = new Map<string, Entry>();
   #active = 0;
@@ -203,6 +205,7 @@ export class ConnectorManager {
         onNotification: (method: string) => {
           if (method === "notifications/tools/list_changed") void this.#refresh(e);
           if (method === "notifications/prompts/list_changed") void this.#refreshPrompts(e);
+          if (method === "notifications/resources/list_changed") void this.resources(e.d.name, this.#shutdown.signal).then(() => this.#o.changed({ kind: "resources_changed", name: e.d.name })).catch(() => this.#o.report("avertissement : liste de ressources indisponible."));
         },
         onLost: (reason: string) => { if (e.state === "connected") this.#lost(e, reason); },
         signal: this.#shutdown.signal,
@@ -225,6 +228,7 @@ export class ConnectorManager {
       e.state = "connected";
       e.error = undefined;
       e.attempts = 0;
+      if (conn.capabilities["resources"]) await this.resources(e.d.name, this.#shutdown.signal).catch(() => this.#o.report("avertissement : liste de ressources indisponible."));
       e.settle();
       this.#o.changed({ kind: "connected", name: e.d.name, tools: published });
     } catch (err) {
@@ -339,6 +343,9 @@ export class ConnectorManager {
   }
 
   // Supports: SPEC-OUT-028 (CA-01/02, bounded untrusted resources), gap E-151.
+  cachedResources(): Array<{ server: string; uri: string; name: string; mimeType?: string; description?: string }> {
+    return [...this.#resourceCache].flatMap(([name, rows]) => this.#entries.get(name)?.state === "connected" ? rows.map(row => ({ ...row })) : []);
+  }
   async resources(server?: string, signal?: AbortSignal): Promise<Array<{ server: string; uri: string; name: string; mimeType?: string; description?: string }>> {
     if (server !== undefined && !this.#entries.has(server)) throw new Error(`Connecteur ${server} inconnu.`);
     const controller = new AbortController(), abort = () => controller.abort();
@@ -364,6 +371,7 @@ export class ConnectorManager {
       }
       throw new Error("Pagination des ressources trop longue.");
     }));
+    for (let index = 0; index < entries.length; index++) if (entries[index]!.state === "connected") this.#resourceCache.set(entries[index]!.d.name, groups[index]!);
     return groups.flat();
     } finally { controller.abort(); signal?.removeEventListener("abort", abort); }
   }

@@ -8,6 +8,9 @@
 import type { InternalCommand } from "./catalog";
 
 export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
+  { name: "context-files", description: "Liste les fichiers présents dans le contexte, leurs plages et les jetons estimés.", kind: "display", widening: false },
+  { name: "heap-dump", description: "Enregistre localement un instantané de mémoire après avertissement et confirmation.", kind: "action", widening: false, interactiveOnly: true, hidden: true },
+  { name: "response-style", description: "Commande dépréciée : ouvre les préférences.", kind: "display", widening: false, hidden: true },
   { name: "release-notes", description: "Affiche les notes de la version installée, disponibles hors ligne.", kind: "display", widening: false },
   { name: "copy-reply", description: "Copie une réponse textuelle du modèle, en comptant depuis la plus récente.", kind: "action", widening: false, usage: "[N]" },
   { name: "peers", description: "Affiche les autres sessions actives du même utilisateur.", kind: "display", widening: false },

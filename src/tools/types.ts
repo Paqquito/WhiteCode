@@ -35,6 +35,7 @@ export interface ToolSettings {
   readonly resultInlineLimit: number;
   readonly writeMaxSize: number;
   readonly editLenientMatching: boolean;
+  readonly editMinSimilarity?: number;
   readonly findMaxResults: number;
   readonly findTimeoutMs: number;
   readonly respectIgnoreFiles: boolean;
@@ -58,6 +59,7 @@ export interface ToolEnvironment {
 }
 
 export interface ToolContext extends ToolEnvironment {
+  readonly editAnchorAllowed?: boolean;
   readonly cwd: string;
   readonly allowedDirectories: readonly string[];
   readonly signal: AbortSignal;
@@ -90,7 +92,7 @@ export interface ToolContext extends ToolEnvironment {
 
 /** Difference shown with an approval request (SPEC-OUT-003 EF-06), or an early refusal found before asking. */
 /** The difference shown before a decision (SPEC-OUT-003 EF-06), with the change it describes (SPEC-IHM-005). */
-export type ToolPreview = { readonly diff: string; readonly change?: FileChange } | { readonly refusal: ToolOutcome };
+export type ToolPreview = { readonly diff: string; readonly change?: FileChange; readonly humanOnly?: boolean } | { readonly refusal: ToolOutcome };
 
 export type ToolErrorKind = "invalid_input" | "permission_denied" | "unavailable" | "timeout" | "execution" | "interrupted" | "not_executed";
 

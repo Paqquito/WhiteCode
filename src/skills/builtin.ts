@@ -9,9 +9,12 @@ import promoteMemory from "../../prompts/skills/promote-memory.md" with { type: 
 import simplify from "../../prompts/skills/simplify.md" with { type: "text" };
 import skillFromSession from "../../prompts/skills/skill-from-session.md" with { type: "text" };
 import verify from "../../prompts/skills/verify.md" with { type: "text" };
+import loop from "../../prompts/skills/loop.md" with { type: "text" };
+import shortcutHelp from "../../prompts/skills/shortcut-help.md" with { type: "text" };
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 import { splitHeader, type Invocation, type Skill } from "./registry";
 
-const SOURCES = [batch, configGuide, debug, promoteMemory, simplify, skillFromSession, verify];
+const SOURCES = [batch, configGuide, debug, promoteMemory, simplify, skillFromSession, verify, shortcutHelp, ...(buildFlag("scheduled_triggers") ? [loop] : [])];
 
 /** The skills of the product, scope `product`: a skill of the same name of any other scope replaces it. */
 export function builtinSkills(): Skill[] {

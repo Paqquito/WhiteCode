@@ -249,8 +249,9 @@ export class ControlSession {
   }
 
   /** Supports: SPEC-PLA-001 FA-04: scheduled local input goes through the ordinary serialized driver. */
-  enqueueScheduled(text: string): boolean {
+  enqueueScheduled(text: string, skipBusy = false): boolean {
     if (!this.#ops || this.#inputEnded || this.#shutdown || this.#fatal || this.#queue.length >= 200) return false;
+    if (skipBusy && (this.#current || this.#queue.length)) return false;
     this.#enqueue({ content: [{ type: "text", text }] }); return true;
   }
 

@@ -284,13 +284,14 @@ export class ResponseExecution {
           fileWriteInsideAllowed: target.kind === "paths" && target.access === "write" && target.paths.every((p) => insideAllowed(p, ctx.allowedDirectories, ctx.platform)),
         };
         decision = decide(query, pctx);
+        if (preview && "humanOnly" in preview && preview.humanOnly && decision.kind !== "deny") decision = { kind: "ask", step: 4, origin: "explicit", reason: "A block anchor requires confirmation of the actual replacement by a human.", suggestions: [] };
         // The host already approved these very parameters: a decision `ask` on them is its answer (RG-06 of SPEC-MOD-006).
         if (decision.kind === "ask" && approvedByHost?.input === canonical(call.input) && approvedByHost.context === evaluatedContext) {
           this.#deps.emit({ type: "permission", callId: call.callId, decision: "allow", reason: "approved by control_host (parameters replaced)", step: decision.step });
           break;
         }
         const resolved = await this.#resolve(call, tool, decision, pctx.mode, preview && "diff" in preview ? preview : undefined, signal, subject);
-        if (!resolved.allowed) return finish(await this.#refuse(call, resolved.reason, decision.step), false);
+        if (!resolved.allowed) return finish(preview && "humanOnly" in preview && preview.humanOnly ? textOutcome("Passage not found: the anchored edit was not confirmed by a human.", true, "invalid_input") : await this.#refuse(call, resolved.reason, decision.step), false);
         if (!resolved.input) break;
         if (round + 1 >= MAX_HOST_REVISIONS) return finish(await this.#refuse(call, "the control host replaced the parameters too many times.", decision.step), false);
         const errors = this.#deps.registry.validateInput(tool, resolved.input);
@@ -315,7 +316,11 @@ export class ResponseExecution {
         // An unchanged approval remains bound to this call; changed contexts are resolved again, at most three times.
         for (let revision = 0; ; revision++) {
           const now = this.#deps.permissionContext();
-          const again = decide(query, now);
+          let again = decide(query, now);
+          if (preview && "humanOnly" in preview && preview.humanOnly) {
+            if (now.mode !== "ask" && now.mode !== "auto_approve") return finish(textOutcome("Passage not found: the permission mode changed before the anchored edit.", true, "invalid_input"), false);
+            if (again.kind !== "deny") again = { kind: "ask", step: 4, origin: "explicit", reason: "A block anchor requires human confirmation.", suggestions: [] };
+          }
           if (again.kind === "deny") return finish(await this.#refuse(call, again.reason, again.step), false);
           const currentContext = canonical(now);
           if (again.kind !== "ask" || currentContext === evaluatedContext) break;
@@ -396,7 +401,7 @@ export class ResponseExecution {
     tool: Tool<never>,
     decision: Decision,
     mode: PermissionMode,
-    shown: { readonly diff: string; readonly change?: FileChange } | undefined,
+    shown: { readonly diff: string; readonly change?: FileChange; readonly humanOnly?: boolean } | undefined,
     signal: AbortSignal,
     subject: RuleSubject,
   ): Promise<{ allowed: boolean; reason: string; input?: Record<string, unknown> }> {
@@ -416,6 +421,7 @@ export class ResponseExecution {
         action: actionOf(tool.name, subject),
         reason: decision.reason,
         origin: decision.origin,
+        ...(shown?.humanOnly ? { humanOnly: true } : {}),
         suggestions: decision.suggestions,
         ...(shown?.diff ? { preview: shown.diff } : {}),
         ...(shown?.change ? { change: shown.change } : {}),
@@ -432,7 +438,7 @@ export class ResponseExecution {
       if (resolution.stopTurn) this.#stopTurnRequested = true;
       return { allowed: false, reason: resolution.reason };
     }
-    if (resolution.persist) this.#deps.persistRule?.(resolution.persist.scope, resolution.persist.rule);
+    if (resolution.persist && !shown?.humanOnly) this.#deps.persistRule?.(resolution.persist.scope, resolution.persist.rule);
     // Replaced parameters are not allowed yet: they are evaluated again first (FA-05 of SPEC-MOD-006).
     if (resolution.input) return { allowed: true, reason: `parameters replaced by ${resolution.by}`, input: resolution.input };
     const reason = `approved by ${resolution.by}`;

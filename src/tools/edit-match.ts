@@ -1,14 +1,15 @@
 // Implements: SPEC-OUT-004 (§ 5.3 matching cascade steps 1 to 4 and re-indentation rules, FA-02, FA-03, EF-01, EF-02, EF-07, RG-01 to RG-03, ERR-01, ERR-02, ERR-07)
-// Supports: decision D-04 (step 5, block anchor, not implemented: the cascade stops at step 4)
+// Implements: SPEC-OUT-004 (step 5, guarded block anchors), gap E-153.
 // Pure functions on texts with LF line endings.
 
-export type MatchStep = 1 | 2 | 3 | 4;
+export type MatchStep = 1 | 2 | 3 | 4 | 5;
 
 export const STEP_NAMES: Readonly<Record<MatchStep, string>> = {
   1: "exact match",
   2: "normalised quotes",
   3: "shifted indentation",
   4: "lines compared without edge whitespace",
+  5: "block anchor",
 };
 
 export interface EditPlan {
@@ -230,8 +231,36 @@ export function planEdit(file: string, oldText: string, newText: string, allOccu
   if (shifted) return shifted;
   const trimmed = attempt(4, trimmedWindows(fileLines, oldLines));
   if (trimmed) return trimmed;
-  // Step 5 (block anchor) is not implemented in this version (decision D-04).
+  // The caller may try an anchored block only when a human interface can review it.
   return { kind: "not_found", hint };
+}
+
+/** Levenshtein distance with two rows; a bounded work budget makes costly approximate edits fail closed. */
+export function planBlockAnchor(file: string, oldText: string, newText: string, threshold: number): EditPlan | EditFailure {
+  const oldTrailing = oldText.endsWith("\n"), newTrailing = newText.endsWith("\n");
+  const oldLines = (oldTrailing ? oldText.slice(0, -1) : oldText).split("\n"), lines = file.split("\n");
+  if (oldLines.length < 3) return { kind: "not_found" };
+  let budget = 4_000_000;
+  const similarity = (left: string, right: string): number => {
+    if (left === right) return 1;
+    const length = Math.max(left.length, right.length); if (!length) return 1;
+    budget -= left.length * right.length; if (budget < 0) return -1;
+    let previous = Array.from({ length: right.length + 1 }, (_, n) => n);
+    for (let i = 1; i <= left.length; i++) { const row = [i]; for (let j = 1; j <= right.length; j++) row[j] = Math.min(row[j - 1]! + 1, previous[j]! + 1, previous[j - 1]! + (left[i - 1] === right[j - 1] ? 0 : 1)); previous = row; }
+    return 1 - previous[right.length]! / length;
+  };
+  const matches: Array<{ start: number; end: number }> = []; let offset = 0;
+  for (let i = 0; i + oldLines.length <= lines.length; i++) {
+    if (lines[i]!.trim() === oldLines[0]!.trim() && lines[i + oldLines.length - 1]!.trim() === oldLines.at(-1)!.trim()) {
+      let sum = 0;
+      for (let j = 1; j < oldLines.length - 1; j++) { const score = similarity(lines[i + j]!.trim(), oldLines[j]!.trim()); if (score < 0) return { kind: "not_found" }; sum += score; }
+      if (sum / (oldLines.length - 2) >= threshold) { const end = offset + lines.slice(i, i + oldLines.length).join("\n").length; matches.push({ start: offset, end: end + (oldTrailing && !newTrailing && file[end] === "\n" ? 1 : 0) }); }
+      if (matches.length > 1) return { kind: "ambiguous_approximate" };
+    }
+    offset += lines[i]!.length + 1;
+  }
+  const match = matches[0]; if (!match) return { kind: "not_found" };
+  return replaceAt(file, [match.start], match.end - match.start, () => newText, 5);
 }
 
 /** Line numbers copied from `read_file` by mistake (edge case of § 8). */

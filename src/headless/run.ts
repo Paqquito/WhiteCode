@@ -51,6 +51,12 @@ import { createInstructionsRequest, parseChoices, SETUP_CHOICES, type SetupChoic
 import { renderDiagnostics, runDiagnostics, type Finding } from "../admin/diagnostic";
 import { identityFindings } from "../identity/diagnostic";
 import { readUserState, updateUserState, recoverUserState } from "../config/trust";
+import { migrateConfiguration } from "../config/migrations";
+import { FeatureFlags, type FeatureFlagOptions } from "../config/feature-flags";
+import { contextFiles } from "../commands/context-files";
+import { heapSnapshot } from "../platform/heap-snapshot";
+import { parseLoop } from "../schedule/loop";
+import { writeAtomic } from "../tools/text-file";
 import { credentialStore, loginWithKey, logout, type AuthUi, type CredentialValidator } from "../auth/commands";
 import { isCredentialFile } from "../auth/credentials";
 import { credentialValidator } from "../providers/credential-check";
@@ -170,11 +176,12 @@ import { literalTriggers } from "../interactive/triggers";
 import { detectCapabilities } from "../ui/capabilities";
 import { isShellLine, runShellLine, shellCommand, shellObservation, shellOf } from "../interactive/shell-mode";
 import { attach, attachable } from "../interactive/attachments";
+import { attachResources } from "../interactive/resource-attachments";
 import { box, text, type Node } from "../ui/layout";
 import { CommandCatalog, promptUsage, type InternalCommand } from "../commands/catalog";
 import { INTERNAL_COMMANDS } from "../commands/internal";
 import { helpView, shortcutsHelp } from "../interactive/help";
-import { buildKeymap, Keymap } from "../interactive/keymap";
+import { ACTIONS, buildKeymap, Keymap } from "../interactive/keymap";
 import { userView } from "../interactive/views";
 import { buildFileIndex, type FileIndex } from "../interactive/completion";
 import { InputHistory } from "../interactive/history";
@@ -258,6 +265,8 @@ export interface RunDependencies {
   readonly now?: () => Date;
   /** Monotonic clock used by optional local performance diagnostics. */
   readonly performanceNow?: () => number;
+  readonly migrationFault?: () => void;
+  readonly featureFlagsFetch?: FeatureFlagOptions["fetch"];
   readonly scheduleNow?: () => number;
   readonly scheduleRandom?: () => number;
   /** Platform clipboard port; a terminal sequence is used when no local clipboard is available. */
@@ -585,6 +594,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   applyIdentityOverrides(env, loaded.firstPass);
   const offlineMinimal = env.ownBoolean("OFFLINE_MINIMAL") === true;
   await recoverUserState(loaded.locations.userStateFile, (message) => err(`avertissement : ${message}`));
+  if (policyGuard.check(policyCapability).length === 0 && await migrateConfiguration({ userFile: loaded.locations.userSettingsFile, localFile: loaded.trust.trusted ? loaded.locations.localSettingsFile : undefined, stateFile: loaded.locations.userStateFile, platform: system.platform, retentionDays: loaded.firstPass.get<number>("config.migrationBackupRetention"), warn: message => err(`avertissement : ${message}`), fault: deps.migrationFault })) loaded = loadAll(env);
   if (offlineMinimal && (serve?.transport === "network" || ["control-listen", "control-connect", "remote-session", "reopen-remote"].some((name) => parsed.options.has(name)))) {
     throw new RunError("Transport distant indisponible en mode minimal hors ligne.", ExitCode.UsageOrConfiguration);
   }
@@ -961,6 +971,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // SPEC-PER-022: the proxy (public variables, never from the project, RG-01), the extra authorities and the client
   // certificate (own variables); an unreadable file stops the launch.
   const network = (() => { try { return configuredNetwork(env); } catch (error) { throw new RunError((error as Error).message, ExitCode.UsageOrConfiguration); } })();
+  const featureFlags = new FeatureFlags({ url: identity.has("SERVICE_FEATURE_FLAGS") ? identity.get("SERVICE_FEATURE_FLAGS") : undefined, cache: join(locations.configDir, "feature-flags.json"), compiled: buildFlag("scheduled_triggers"), version: identity.version, platform: system.platform, disabled: offlineMinimal || !settings.get<boolean>("config.featureFlagsEnabled"), intervalMs: settings.get<number>("config.featureFlagsRefreshInterval"), fetch: deps.featureFlagsFetch ?? network, overrides: env.own("FEATURE_OVERRIDES"), internal: buildProfile() === "internal" || buildProfile() === "development", canRefresh: () => policyGuard.check(policyCapability).length === 0 && liveSettings.get<boolean>("config.featureFlagsEnabled") });
+  holder.cleanups.push(() => featureFlags.close());
+  let turnFeatures = featureFlags.snapshot();
   const providerOptions: ProviderFactoryOptions = {
     fetch: network,
     providerId,
@@ -1198,7 +1211,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     skillLocations.splice(0, skillLocations.length, ...skillLocations.filter((l) => l.scope === "managed" || l.scope === "extension"));
   }
   // SPEC-EXT-021 to 032: the skills of the product, replaced by any skill of the same name.
-  const productSkills = minimal ? [] : builtinSkills();
+  const productSkills = minimal ? [] : builtinSkills().filter(skill => (skill.name !== "loop" || settings.get<boolean>("schedule.enabled") && trust.trusted && !serve) && (skill.name !== "shortcut-help" || settings.get<boolean>("ui.keybindings.enabled")));
   let skillSet = loadSkills(skillLocations, productSkills);
   let skillsStamp = skillsSignature(skillLocations);
   for (const w of skillSet.warnings) err(`avertissement : ${w}`);
@@ -1737,6 +1750,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // SPEC-MCP-022: connections started in parallel, never awaited but with `--wait-for-mcp` (FA-02).
   const connectorNotes: Reminder[] = [];
   const connectorNote = (e: ConnectorEvent) => {
+    if (e.kind === "resources_changed") { connectorNotes.push({ type: "connectors", text: `The published resource list of ${e.name} changed.`, priority: 2 }); return; }
     if (e.kind === "connected") connectorNotes.push({ type: "connectors", text: `The connector ${e.name} is connected.`, priority: 1 });
     else if (e.kind === "tools_changed")
       connectorNotes.push({ type: "connectors", text: `The tools of the connector ${e.name} changed.${e.added.length ? ` New: ${e.added.join(", ")}.` : ""}${e.removed.length ? ` Removed: ${e.removed.join(", ")}.` : ""}`, priority: 2 });
@@ -1871,6 +1885,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     resultInlineLimit: settings.get<number>("tools.resultInlineLimit"),
     writeMaxSize: settings.get<number>("tools.write.maxSize"),
     editLenientMatching: settings.get<boolean>("tools.edit.lenientMatching"),
+    editMinSimilarity: settings.get<number>("tools.edit.minSimilarity"),
     findMaxResults: settings.get<number>("tools.find.maxResults"),
     findTimeoutMs: settings.get<number>("tools.find.timeout"),
     respectIgnoreFiles: settings.get<boolean>("tools.respectIgnoreFiles"),
@@ -1946,25 +1961,29 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // The interactive application shows the events itself (SPEC-MOD-001 § 5.2 step 5).
   let app: InteractiveApp | undefined;
   const plannedQueue: string[] = [];
+  let processingRequests = 0;
   const schedule = buildFlag("scheduled_triggers") && settings.get<boolean>("schedule.enabled") && trust.trusted && !serve ? new Scheduler({
     folder: join(locations.projectRoot, identity.get("PROJECT_DIR")),
     lock: join(locations.configDir, "schedule-locks", createHash("sha256").update(comparablePath(locations.projectRoot, system.platform)).digest("hex") + ".lock"),
     now: deps.scheduleNow, random: deps.scheduleRandom,
+    enabled: () => liveSettings.get<boolean>("schedule.enabled") && featureFlags.snapshot().scheduled_triggers,
+    jitterMs: () => turnFeatures.schedule_jitter_ms,
     maxActive: () => liveSettings.get<number>("schedule.maxActive"), maxAgeDays: () => liveSettings.get<number>("schedule.maxAgeDays"),
     warn: message => { if (app) app.notice("info", message); else err(`Planification : ${message}`); }, changed: () => app?.refresh(),
     missed: async trigger => app && !app.running ? app.confirm(`Consigne planifiée unique manquée : ${redactOutput(trigger.prompt).slice(0, 500)}. L'exécuter maintenant ?`, "exécuter", "abandonner", true) : undefined,
     submit: trigger => {
       if (controller.signal.aborted) return false;
+      if (trigger.intervalMs && (processingRequests > 0 || app?.running || plannedQueue.length > 0)) return false;
       const content = `[Scheduled prompt ${trigger.id}; ordinary execution permissions apply]\n${trigger.prompt}`;
       let accepted: boolean;
       if (app) accepted = app.enqueueScheduled(content);
-      else if (control) accepted = control.enqueueScheduled(content);
+      else if (control) accepted = control.enqueueScheduled(content, trigger.intervalMs !== undefined);
       else { accepted = plannedQueue.length < 50; if (accepted) plannedQueue.push(content); }
       if (accepted) { transcript?.append("system", { event: "scheduled_prompt", id: trigger.id, due: trigger.nextAt }); if (app) app.notice("info", `Consigne planifiée : ${trigger.id}`); else err(`Consigne planifiée : ${trigger.id}`); }
       return accepted;
     },
   }) : undefined;
-  if (schedule) { for (const tool of scheduleTools(schedule)) if (inToolset(tool.name)) registry.addStatic(tool); holder.cleanups.push(() => schedule.close()); }
+  if (schedule) { for (const tool of scheduleTools(schedule, () => liveSettings.get<boolean>("schedule.enabled") && turnFeatures.scheduled_triggers)) if (inToolset(tool.name)) registry.addStatic(tool); holder.cleanups.push(() => schedule.close()); }
   background.onChange(() => app?.refresh());
   const permissionDenials = new PermissionDenials(() => ({ consecutive: liveSettings.get<number>("permissions.denials.maxConsecutive"), total: liveSettings.get<number>("permissions.denials.maxTotal") }));
   const toolDecisions = new Map<string, Extract<EngineEvent, { type: "permission" }>>();
@@ -2164,6 +2183,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     const reload = reloader.check();
     if (!reload) return;
     liveSettings = reload.settings;
+    featureFlags.recheck();
     if (reload.changed.includes("ui.theme") && !themePreviewActive) {
       activeTheme = liveSettings.get<ThemeId>("ui.theme");
       app?.setTheme(resolveTheme(activeTheme, identity.get("BRAND_COLOR_PRIMARY")), renderOptions(liveSettings));
@@ -2222,6 +2242,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // SPEC-CMD-039: the file of the bindings, over those of the user settings.
   const keybindingsPath = join(locations.configDir, "keybindings.json");
   const composeKeymap = () => {
+    if (!liveSettings.get<boolean>("ui.keybindings.enabled")) return buildKeymap({}, { strictConflicts: false });
     const file = readKeybindingsFile(keybindingsPath);
     const built = buildKeymap({ ...liveSettings.get<Record<string, unknown>>("ui.keybindings.bindings"), ...file.bindings }, { strictConflicts: liveSettings.get<boolean>("ui.keybindings.strictConflicts") });
     return { ...built, warnings: [...(file.error ? [file.error] : []), ...built.warnings] };
@@ -2271,7 +2292,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
                 }),
               };
             }
-            return fileIndex.index;
+            return { ...fileIndex.index, entries: [...fileIndex.index.entries, ...(connectors?.cachedResources() ?? []).filter(r => !effectiveRules().some(rule => rule.decision === "deny" && ruleMatches(rule, "read_connector_resource", { kind: "name", name: r.server }, matchContext))).map(r => ({ value: `${r.server}:${r.uri}`, description: r.name, source: r.server, kind: "file" as const }))] };
           },
         }
       : undefined;
@@ -2456,6 +2477,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         };
       },
       toolContext: (signal): ToolContext => ({
+        editAnchorAllowed: ["ask", "auto_approve"].includes(modeState.mode) && (!!app || control?.designated === true || !!deps.authorities?.human || !!deps.authorities?.controlHost),
         platform: system.platform,
         home: system.home,
         cwd,
@@ -2695,6 +2717,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
 
   // SPEC-MOD-010 EF-05, CA-06: the journal of the start-up, shown with `engine.startup.verboseLog`.
   const reportPhases = () => {
+    featureFlags.start();
     schedule?.start();
     for (const sample of phaseSamples.splice(0)) diagnostics?.record(sample);
     diagnostics?.flush();
@@ -2745,6 +2768,12 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     };
     let text = content;
     switch (skill.name) {
+      case "shortcut-help": {
+        const current = composeKeymap().keymap;
+        values["KEYBINDINGS_FILE"] = keybindingsPath;
+        values["KEYBINDINGS_REFERENCE"] = "Current action catalogue (id, context, effective combinations, essential):\n" + JSON.stringify(ACTIONS.map(action => ({ id: action.id, context: action.context, combinations: current.effective(action.id), essential: action.essential === true })));
+        break;
+      }
       case "batch":
         // SPEC-EXT-021 EF-01: nothing is changed before the split is approved.
         if (modeState.mode !== "planning") {
@@ -2858,7 +2887,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // unknown name is never sent to the model (FA-01, EF-03), or a message; then a turn.
   const results: TurnResult[] = [];
   type RequestOutcome = { result?: TurnResult; refused?: string; shown?: Node; note?: string; exit?: true; silent?: true; send?: string };
-  const processRequestBody = async (original: string | readonly ContentPart[], signal: AbortSignal, literal = false): Promise<RequestOutcome> => {
+  const processRequestBody = async (original: string | readonly ContentPart[], signal: AbortSignal, literal = false, pasted: readonly string[] = []): Promise<RequestOutcome> => {
+    turnFeatures = featureFlags.snapshot();
     let content = original;
     const first = typeof content === "string" ? content : content.find((p) => p.type === "text")?.text;
     if (policyGuard.check(policyCapability).length > 0) {
@@ -2911,7 +2941,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           break;
         }
         case "skill": {
-          const loaded = loadSkill(skillSet, resolved.name, entry.args, "user", { session: sessionId, expand: productSkillContext });
+          let args = entry.args;
+          if (resolved.skill.scope === "product" && resolved.skill.name === "loop") { try { const loop = parseLoop(args); args = `Requested intervalSeconds: ${loop.seconds}. Recurring user request: ${loop.prompt}`; } catch (error) { return { refused: (error as Error).message }; } }
+          const loaded = loadSkill(skillSet, resolved.name, args, "user", { session: sessionId, expand: productSkillContext });
           if (!loaded.ok) return { refused: loaded.message };
           activateSkill(loaded.skill);
           replaceFirst(framed(loaded.skill, loaded.content, `/${entry.name}${entry.args ? ` ${entry.args}` : ""}`));
@@ -2933,6 +2965,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       }
     }
     // Step 5, EF-06, CA-04: the files read, then changed outside the agent since, announced once per change.
+    if (connectors && first !== undefined && entry?.kind !== "command" && !literal) {
+      const resources = await attachResources(first, { connectors, signal, pasted, images: currentModel.capabilities.images, maxCount: settings.get<number>("ui.attachments.maxCount"), maxBytes: Math.min(settings.get<number>("ui.attachments.maxTotalBytes"), settings.get<number>("context.attachments.maxTotalTokens") * 4), denied: server => effectiveRules().some(rule => rule.decision === "deny" && ruleMatches(rule, "read_connector_resource", { kind: "name", name: server }, matchContext)) });
+      for (const message of resources.notices) emit({ type: "warning", message });
+      if (resources.parts.length) content = [...(typeof content === "string" ? [{ type: "text" as const, text: content }] : content), ...resources.parts];
+    }
     for (const [key, record] of readState as Map<string, { mtimeMs: number; size: number }>) {
       let now: ReturnType<typeof statSync>;
       try {
@@ -3016,10 +3053,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     return out;
   };
   // The internal commands of this version (SPEC-CMD-001 rank 1): help, exit, key bindings.
-  const processRequest = async (original: string | readonly ContentPart[], signal: AbortSignal, literal = false): Promise<RequestOutcome> => {
+  const processRequest = async (original: string | readonly ContentPart[], signal: AbortSignal, literal = false, pasted: readonly string[] = []): Promise<RequestOutcome> => {
+    processingRequests++;
     const ended = diagnostics?.start("query", nonInteractive ? "headless" : "query");
-    try { return await processRequestBody(original, signal, literal); }
-    finally { ended?.(); }
+    try { return await processRequestBody(original, signal, literal, pasted); }
+    finally { processingRequests--; ended?.(); }
   };
 
   const runInternalCommand = async (command: InternalCommand, args: string, signal: AbortSignal): Promise<RequestOutcome> => {
@@ -3033,6 +3071,29 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       if (command.name !== "quit" && command.name !== "exit") return { refused: policyGuard.check(policyCapability).map((i) => i.message).join("\n") };
     }
     switch (command.name) {
+      case "context-files": {
+        if (args.trim()) return { refused: "Usage : /context-files" };
+        const rows = contextFiles(conversation.messages);
+        const note = rows.length ? rows.map(row => `${row.path} · ${row.state} · ~${row.tokens} jetons${row.ranges.length ? ` · lignes ${row.ranges.join(", ")}` : ""}`).join("\n") : "Aucun fichier dans le contexte.";
+        return { shown: text(note), note };
+      }
+      case "response-style": {
+        if (args.trim()) return { refused: "Usage : /response-style" };
+        const notice = "/response-style est dépréciée ; utilisez /preferences. Les styles de réponse complets restent à développer.";
+        app?.notice("info", notice);
+        const preferences = commandCatalog().resolve("preferences");
+        if (preferences.kind !== "internal") return { refused: `${notice} ${preferences.kind === "disabled" ? preferences.message : "Préférences indisponibles."}` };
+        const outcome = await runInternalCommand(preferences.command, "", signal);
+        return { ...outcome, note: `${notice}\n${outcome.note ?? ""}` };
+      }
+      case "heap-dump": {
+        if (args.trim()) return { refused: "Usage : /heap-dump" };
+        if (!app) return { refused: "L'instantané exige une confirmation humaine dans le terminal." };
+        if (!(await app.confirm("L'instantané de mémoire peut contenir des données sensibles, des clés et la conversation. Fichier local non chiffré, jamais envoyé automatiquement. Le créer dans votre dossier personnel ?"))) return { silent: true };
+        assertPolicy(); if (signal.aborted || controller.signal.aborted || app.exiting) return { silent: true };
+        try { const path = join(system.home, `heap-${randomUUID()}.heapsnapshot`), bytes = heapSnapshot(); writeAtomic(path, bytes, system.platform, true); const note = `Instantané enregistré : ${path} (${bytes.length} octets).`; return { shown: text(note), note }; }
+        catch (error) { return { refused: `Instantané impossible : ${(error as Error).message}` }; }
+      }
       case "login":
       case "logout": {
         if (args.trim()) return { refused: "Cette commande d'authentification n'accepte aucun argument." };
@@ -3692,6 +3753,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           `Authentification : ${credentialSource}`,
           `Mode de permission : ${modeState.mode}`,
           `Confiance du projet : ${trust.trusted ? "accordée" : "non accordée"}`,
+          `Options dynamiques : ${featureFlags.lastRefresh ?? "valeurs embarquées ou cache, aucun rafraîchissement"}`,
           "Connecteurs :",
           ...(buildProfile() === "internal" ? [`Options de build : ${JSON.stringify(buildInventory())}`] : []),
           ...languages.status().map((s) => `Serveur de langage ${s.name} : ${s.state}`),
@@ -3991,7 +4053,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         recordAttached(attached.read);
         for (const n of attached.notices) interactiveApp.notice("warning", n);
         const content: string | ContentPart[] = attached.parts.length > 0 ? [{ type: "text", text: sent }, ...attached.parts.map((p) => ({ type: "text" as const, text: p }))] : sent;
-        const outcome = await processRequest(content, signal, meta.literal === true);
+        const outcome = await processRequest(content, signal, meta.literal === true, meta.pasted ?? []);
         if (outcome.exit) return { kind: "exit" };
         if (outcome.silent) return { kind: "shown" };
         if (outcome.refused !== undefined) {

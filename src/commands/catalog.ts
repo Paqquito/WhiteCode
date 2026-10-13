@@ -19,6 +19,7 @@ export interface InternalCommand {
   readonly usage?: string;
   /** FA-04: refused in an automated run, with an explanation. */
   readonly interactiveOnly?: boolean;
+  readonly hidden?: boolean;
 }
 
 export interface ConnectorPromptCommand {
@@ -134,7 +135,7 @@ export class CommandCatalog {
   /** EF-08: the catalogue, by source then by name; disabled commands are left out (SPEC-CMD-030 EF-01). */
   entries(): CatalogEntry[] {
     const out: CatalogEntry[] = [];
-    for (const c of this.#internal.values()) if (!this.#isDisabled(c.name) && !(this.#automated && c.interactiveOnly)) out.push({ name: c.name, source: "internal", description: c.description, usage: c.usage });
+    for (const c of this.#internal.values()) if (!c.hidden && !this.#isDisabled(c.name) && !(this.#automated && c.interactiveOnly)) out.push({ name: c.name, source: "internal", description: c.description, usage: c.usage });
     for (const s of this.#skills.skills.values()) {
       if (s.extension || s.invocation === "model" || this.#internal.has(s.name) || this.#isDisabled(s.name)) continue;
       out.push({ name: s.name, source: s.scope === "product" ? "internal" : s.scope, description: s.description, usage: s.argumentsHelp });

@@ -10,6 +10,7 @@ import { suggest } from "../shared/suggest";
 import { isSecureIdentityUrl } from "../identity/identity";
 import { isKnownPrefix, SETTING_BY_KEY, type Origin, type Scope, type SettingDef } from "./settings-schema";
 import { parseAmount, parseDuration, parseSize } from "./units";
+import { convertDeprecated } from "./deprecated";
 
 export interface ConfigIssue {
   readonly code: string;
@@ -207,7 +208,9 @@ export class Settings {
   #readSource(source: ScopeSource): void {
     if (source.text === undefined) return; // FA-01
     const errors: ParseError[] = [];
-    const data = parseJsonc(source.text, errors, { allowTrailingComma: true, disallowComments: false });
+    const converted = convertDeprecated(source.text);
+    if (converted.changed) this.#issue({ code: "MIG-01", severity: "warning", scope: source.scope, message: `Clé dépréciée convertie en mémoire dans ${source.name} : ui.compactWelcome → ui.welcome.compact.` });
+    const data = parseJsonc(converted.text, errors, { allowTrailingComma: true, disallowComments: false });
     if (errors.length > 0 || !isPlainObject(data)) {
       const line = errors[0] ? lineOf(source.text, errors[0].offset) : 1;
       this.#issue({ code: "ERR-01", severity: "warning", kind: "invalid-json", scope: source.scope, message: `Paramètres ignorés dans ${source.name} : JSON invalide ligne ${line}.` });

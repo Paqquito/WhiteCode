@@ -7,7 +7,7 @@ import description from "../../prompts/tools/edit_file.md" with { type: "text" }
 import { ambiguousPathReason, writeContribution } from "../permissions/paths";
 import { isAbsolutePath } from "../platform/system";
 import { unifiedDiff } from "../shared/diff";
-import { planEdit, STEP_NAMES, type EditFailure, type EditPlan } from "./edit-match";
+import { planEdit, planBlockAnchor, STEP_NAMES, type EditFailure, type EditPlan } from "./edit-match";
 import { decodeText, encodeText, newFileFormat, numberedExcerpt, readBytesIfExists, readPreconditionError, recordWrite, toLf, WriteFailure, writeAtomic, type TextFormat } from "./text-file";
 import { textOutcome, type Tool, type ToolContext, type ToolOutcome, type ToolPreview } from "./types";
 
@@ -55,7 +55,8 @@ function plan(input: EditFileInput, ctx: ToolContext): Planned | { refusal: Tool
     if (before !== "") return { refusal: textOutcome("old_text can be empty only to create a file or fill an empty one.", true, "invalid_input") };
     return { plan: { kind: "planned", content: newText, step: 1, count: 1, firstLine: 1, lastLine: Math.max(1, newText.split("\n").length), replaced: "" }, before, format: decoded.format, created: false };
   }
-  const result = planEdit(before, oldText, newText, input.all_occurrences === true, ctx.settings.editLenientMatching);
+  let result = planEdit(before, oldText, newText, input.all_occurrences === true, ctx.settings.editLenientMatching);
+  if (result.kind === "not_found" && ctx.editAnchorAllowed && ctx.settings.editLenientMatching && !input.all_occurrences) result = planBlockAnchor(before, oldText, newText, ctx.settings.editMinSimilarity ?? 0.8);
   if (result.kind !== "planned") return { refusal: failure(result) };
   return { plan: result, before, format: decoded.format, created: false };
 }
@@ -91,7 +92,7 @@ export const editFileTool: Tool<EditFileInput> = {
   async preview(input, ctx): Promise<ToolPreview> {
     const p = plan(input, ctx);
     if ("refusal" in p) return p;
-    return { diff: unifiedDiff(p.before, p.plan.content, input.path), change: { path: input.path, before: p.before, after: p.plan.content } };
+    return { diff: unifiedDiff(p.before, p.plan.content, input.path), change: { path: input.path, before: p.before, after: p.plan.content }, ...(p.plan.step === 5 ? { humanOnly: true } : {}) };
   },
 
   async execute(input, ctx): Promise<ToolOutcome> {
