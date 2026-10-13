@@ -65,6 +65,7 @@ export interface StreamOptions {
   readonly maxEventSize: number;
   readonly now: () => Date;
   readonly profile?: "standard" | "compact";
+  readonly serializationStarted?: () => ((sizeBytes: number) => void) | undefined;
 }
 
 /** Writer of the `jsonl` format. Every event carries a type, a timestamp and the session id (EF-03). */
@@ -88,7 +89,10 @@ export class EventStream {
   emit(type: string, fields: Record<string, unknown>): void {
     if (this.#closed) return;
     const event = { type, timestamp: this.options.now().toISOString(), sessionId: this.#sessionId, ...fields };
-    this.options.write(jsonLine(fitEvent(event, this.options.maxEventSize)));
+    const ended = this.options.serializationStarted?.();
+    const line = jsonLine(fitEvent(event, this.options.maxEventSize));
+    ended?.(Buffer.byteLength(line, "utf8"));
+    this.options.write(line);
   }
 
   /** Engine events mapped to the event types of § 5.3; others are not written. */

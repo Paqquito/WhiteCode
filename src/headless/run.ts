@@ -148,6 +148,11 @@ import { closingFields, combineResults, exitCodeFor, renderResult, type ResultFo
 import { EventStream } from "./stream-output";
 import { sessionLabels } from "../session/sessions";
 // Supports: SPEC-MOD-005 (CA-15), SPEC-MOD-011 (CA-06), SPEC-OBS-022 (CA-04), SPEC-SES-009, SPEC-CMD-069, gap E-149.
+import { contextReport, environmentReport } from "../commands/context-diagnostics";
+import { welcome, releaseNotes } from "../ui/welcome";
+// Supports: SPEC-IHM-025 (CA-01/02), SPEC-IHM-036 (CA-01), SPEC-CMD-053 (CA-01), gap E-150.
+import { PerformanceRecorder, type PerformanceSample } from "../shared/performance";
+import { loadSessionStatistics, renderSessionStatistics } from "../session/statistics";
 import { purgeExpiredSessions } from "../session/maintenance";
 import { correctionMessage, extractStructured, loadOutputSchema, schemaInstruction } from "./structured";
 import { InteractiveApp } from "../interactive/app";
@@ -245,6 +250,8 @@ export interface RunDependencies {
   /** Approval authorities (none in a non-interactive run of lot 1). */
   readonly authorities?: Authorities;
   readonly now?: () => Date;
+  /** Monotonic clock used by optional local performance diagnostics. */
+  readonly performanceNow?: () => number;
   readonly onEvent?: (event: EngineEvent) => void;
   /** Engine API of the session, for a control host or the tests: mode changes (SPEC-PER-003 § 5.3). */
   readonly onSession?: (session: {
@@ -456,10 +463,18 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   for (const warning of parsed.warnings) err(`avertissement : ${warning}`);
   // SPEC-MOD-010 EF-05: the duration of each phase of the start-up, for the journal.
   const phases: Array<[string, number]> = [];
+  const performanceNow = deps.performanceNow ?? (() => performance.now());
+  const performanceOrigin = performanceNow();
+  const phaseSamples: PerformanceSample[] = [];
+  let diagnostics: PerformanceRecorder | undefined;
   let phaseStart = Date.now();
   const phase = (name: string) => {
     const t = Date.now();
     phases.push([name, t - phaseStart]);
+    if (diagnostics || deps.environment[`${identity.get("ENV_PREFIX")}PROFILE`] || deps.environment[`${identity.get("ENV_PREFIX")}PERF_TRACE`]) {
+      const memory = process.memoryUsage();
+      phaseSamples.push({ name: `startup.step-${phases.length}`, phase: "startup", startMs: Math.max(0, performanceNow() - performanceOrigin - (t - phaseStart)), durationMs: t - phaseStart, rssBytes: memory.rss, heapUsedBytes: memory.heapUsed });
+    }
     phaseStart = t;
   };
   const opt = (name: string) => parsed.options.get(name);
@@ -719,6 +734,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           profile: !controlled && buildFlag("stream_compact_profile") ? settings.get<"standard" | "compact">("ui.streamProfile") : "standard",
           maxEventSize: settings.get<number>("engine.output.maxEventSize"),
           now,
+          serializationStarted: () => diagnostics?.start("serialize", nonInteractive ? "headless" : "query"),
         })
       : undefined;
   holder.stream = stream;
@@ -1632,6 +1648,14 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   }
   // SPEC-CMD-006 § 5.3 step 2: the name given to a copy by the session it comes from.
   let manualTitle = holder.pendingTitle !== undefined;
+  let terminalSessionTitle = holder.pendingTitle ?? (reopened ? sessionTitle(reopened.records) : undefined) ?? sessionId.slice(0, 8);
+  let titleWaiting = false;
+  const setTerminalTitle = (waiting = titleWaiting) => {
+    titleWaiting = waiting;
+    if (!terminal || !settings.get<boolean>("ui.terminalTitle")) return;
+    const title = redactOutput(`${waiting ? "En attente" : "Prêt"} ${terminalSessionTitle} — ${identity.get("PRODUCT")}`).replace(/[\u0000-\u001f\u007f]/g, " ");
+    terminal.write(`\u001b]0;${title}\u0007`);
+  };
   if (holder.pendingTitle) transcript?.append("system", { event: "title", title: holder.pendingTitle, source: "manual" });
   // SPEC-SES-015 step 2: results given to the calls left without one are recorded after the branch, never in place.
   for (const repair of reopened?.history.repairs ?? []) transcript?.append("tool_result", { callId: repair.callId, isError: repair.isError, content: repair.content, synthetic: true });
@@ -1662,6 +1686,13 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const sessionWork = transcript?.sessionDir ?? join(system.tmp, `${identity.get("PRODUCT_SLUG")}-${sessionId}`);
   // SPEC-AGT-016: the background tasks of the session, their output in its work folder.
   const background = new BackgroundTasks({ dir: join(sessionWork, "tasks"), maxOutputBytes: settings.get<number>("tasks.maxOutputBytes"), monitorMaxLinesPerMinute: 2_000, monitorWindowMs: 500 });
+  const traceOption = env.own("PERF_TRACE"), profileOption = env.own("PROFILE"), slowMs = env.ownInteger("SLOW_OP_WARN_MS");
+  if (traceOption || profileOption || slowMs !== undefined) {
+    diagnostics = new PerformanceRecorder({ directory: transcript?.sessionDir ?? join(locations.configDir, "performance", sessionId), trace: traceOption === "1" ? "1" : traceOption ? absolute(traceOption, cwd) : undefined, profile: profileOption, slowMs, now: performanceNow, originMs: performanceOrigin, warn: message => err(`avertissement : ${message}`), log: (name, durationMs, sizeBytes) => {
+      debug.log("engine", "slow operation", { name, durationMs, sizeBytes }); err(`Opération lente : ${name}, ${durationMs.toFixed(2)} ms, ${sizeBytes} octets.`);
+    } });
+    holder.cleanups.push(() => { diagnostics?.close(); for (const path of diagnostics?.paths ?? []) err(`Diagnostic de performance : ${path}.`); });
+  }
   // FA-02: at the end of the session the tasks stop, and the user is told which.
   const stopBackground = async () => {
     const stopped = await background.stopAll();
@@ -2219,6 +2250,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       return ok;
     };
     app = new InteractiveApp({
+      onApprovalWaiting: waiting => setTerminalTitle(waiting),
       terminal: terminal!,
       capabilities,
       settings: {
@@ -2624,6 +2656,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
 
   // SPEC-MOD-010 EF-05, CA-06: the journal of the start-up, shown with `engine.startup.verboseLog`.
   const reportPhases = () => {
+    for (const sample of phaseSamples.splice(0)) diagnostics?.record(sample);
+    diagnostics?.flush();
     debug.log("startup", "phases", Object.fromEntries(phases));
     if (settings.get<boolean>("engine.startup.verboseLog")) err(`Démarrage : ${phases.map(([n, ms]) => `${n} ${ms} ms`).join(" · ")}.`);
   };
@@ -2784,7 +2818,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // unknown name is never sent to the model (FA-01, EF-03), or a message; then a turn.
   const results: TurnResult[] = [];
   type RequestOutcome = { result?: TurnResult; refused?: string; shown?: Node; note?: string; exit?: true; silent?: true; send?: string };
-  const processRequest = async (original: string | readonly ContentPart[], signal: AbortSignal, literal = false): Promise<RequestOutcome> => {
+  const processRequestBody = async (original: string | readonly ContentPart[], signal: AbortSignal, literal = false): Promise<RequestOutcome> => {
     let content = original;
     const first = typeof content === "string" ? content : content.find((p) => p.type === "text")?.text;
     if (policyGuard.check(policyCapability).length > 0) {
@@ -2895,7 +2929,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     // SPEC-CMD-058 EF-01, CA-01: a manual title is never replaced by the automatic one.
     if (transcript && results.length === 1 && !manualTitle && !(reopened && sessionTitle(reopened.records) !== undefined)) {
       const title = titleFrom(content);
-      if (title) transcript.append("system", { event: "title", title, source: "first_message" });
+      if (title) { transcript.append("system", { event: "title", title, source: "first_message" }); terminalSessionTitle = title; setTerminalTitle(); }
     }
     return { result };
   };
@@ -2942,6 +2976,12 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     return out;
   };
   // The internal commands of this version (SPEC-CMD-001 rank 1): help, exit, key bindings.
+  const processRequest = async (original: string | readonly ContentPart[], signal: AbortSignal, literal = false): Promise<RequestOutcome> => {
+    const ended = diagnostics?.start("query", nonInteractive ? "headless" : "query");
+    try { return await processRequestBody(original, signal, literal); }
+    finally { ended?.(); }
+  };
+
   const runInternalCommand = async (command: InternalCommand, args: string): Promise<RequestOutcome> => {
     if (offlineMinimal && ((command.name === "extensions" && args.trim() !== "" && args.trim() !== "installées") || (command.name === "connectors" && args.trim() !== "") || (command.name === "shortcuts" && args.trim() === "edit"))) {
       return { refused: "Opération indisponible en mode minimal hors ligne." };
@@ -3582,7 +3622,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         if (!transcript) return { refused: "Cette session n'est pas enregistrée : elle ne peut pas recevoir de titre." };
         transcript.append("system", { event: "title", title, source: "manual" });
         manualTitle = true;
-        terminal?.write(`\u001b]0;${title.replace(/[\u0000-\u001f\u007f]/g, " ")}\u0007`); // the title of the window
+        terminalSessionTitle = title; setTerminalTitle();
         return { shown: text(`Titre de la session : ${title}.`), note: `Titre de la session : ${title}.` };
       }
       case "save-transcript": {
@@ -3630,6 +3670,26 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         const row = (label: string, n: number) => `${label.padEnd(22)} ${String(n).padStart(9)}  ${((100 * n) / window).toFixed(1).padStart(5)} %`;
         const lines = ["Catégorie                  Jetons  Fenêtre", ...Object.entries(parts).map(([k, n]) => row(names[k] ?? k, n)), row("Total", total), `Fenêtre effective : ${window} jetons (estimation locale).`];
         return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
+      }
+      case "context-debug": {
+        const report = redactOutput(contextReport(conversation));
+        return { shown: box(report.split("\n").map(line => text(line))), note: report };
+      }
+      case "release-notes": {
+        if (args.trim()) return { refused: "Usage : /release-notes." };
+        const report = redactOutput(releaseNotes(identity.version, join(locations.configDir, "release-notes.json")));
+        return { shown: box(report.split("\n").map(line => text(line))), note: report };
+      }
+      case "env": {
+        const report = redactOutput(environmentReport(env, identity.get("ENV_PREFIX")));
+        return { shown: box(report.split("\n").map(line => text(line))), note: report };
+      }
+      case "stats": {
+        if (args.trim()) return { refused: "Usage : /stats." };
+        app?.notice("info", "Calcul des statistiques locales…");
+        if (!app) err("Calcul des statistiques locales…");
+        const report = renderSessionStatistics(await loadSessionStatistics(locations.sessionsDir));
+        return { shown: box(report.split("\n").map(line => text(line))), note: report };
       }
       case "spending": {
         // SPEC-CMD-016: by model (CA-01), as estimates (EF-01); a model without price in tokens.
@@ -3753,15 +3813,32 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     const replay = settings.get<string>("ui.replayOnResume");
     stopStartupInput?.(); stopStartupInput = undefined;
     interactiveApp.start();
+    if (settings.get<boolean>("ui.terminalTitle")) {
+      terminal!.write("\u001b[22;0t"); setTerminalTitle();
+      holder.cleanups.push(() => terminal!.write("\u001b[23;0t"));
+    }
     // Install the input consumer before any asynchronous startup consent, so the first message is not stranded.
     const initialEntry = parsed.prompt ? undefined : interactiveApp.nextEntry();
     interactiveApp.acceptStartupInput(startupInput.splice(0));
+    const showWelcome = (news: boolean) => {
+      const report = redactOutput(welcome(identity, { model: currentModel.id, cwd, credentialSource, compact: !!reopened || settings.get<boolean>("ui.welcome.compact") || terminal!.columns < 70, news }));
+      interactiveApp.commit(box(report.split("\n").map(line => text(line))));
+    };
+    showWelcome(false);
     // SPEC-PER-003 EF-03: a launch in `unrestricted` asks for the warning first; refused, the session starts in `ask`.
     if (modeState.mode === "unrestricted" && !(await unrestrictedAccepted())) {
       modeState.set("ask");
       interactiveApp.refresh();
     }
     holder.cleanups.push(() => interactiveApp.stop());
+    // Startup consent precedes this optional state write, even while another process holds the state lock.
+    if (!controller.signal.aborted) {
+      assertPolicy();
+      let news = false;
+      try { await updateUserState(locations.userStateFile, state => { news = state.lastSeenVersion !== identity.version; return { ...state, lastSeenVersion: identity.version }; }, system.platform); }
+      catch { interactiveApp.notice("warning", "La version affichée n'a pas pu être mémorisée."); }
+      if (news) interactiveApp.commit(box(redactOutput(releaseNotes(identity.version)).split("\n").map(line => text(line))));
+    }
     // SPEC-MOD-010 § 5.4, EF-04: the deferred maintenance (here, the pruning of the history) after the display.
     phase("affichage");
     reportPhases();

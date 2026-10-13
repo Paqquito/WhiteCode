@@ -124,6 +124,8 @@ export const EXIT_COMMAND = /^\s*\/(exit|quit)\s*$/;
 const SCOPE_LABEL: Readonly<Record<(typeof RULE_SCOPES)[number], string>> = { session: "session", local: "projet (local)", project: "projet (partagé)", user: "utilisateur" };
 
 export interface AppOptions {
+  // Supports: SPEC-IHM-036 (CA-01, pending decision), gap E-150.
+  readonly onApprovalWaiting?: (waiting: boolean) => void;
   readonly reducedMotion?: boolean;
   readonly terminal: Terminal;
   readonly capabilities: Capabilities;
@@ -631,6 +633,7 @@ export class InteractiveApp {
             const i = this.#approvals.indexOf(pending);
             if (i !== -1) this.#approvals.splice(i, 1);
             if (this.#approvals[0]) this.#approvals[0].shownAt = this.#now;
+            this.#o.onApprovalWaiting?.(this.#approvals.length > 0);
             resolve(a);
             this.#redraw();
           },
@@ -642,6 +645,7 @@ export class InteractiveApp {
         pending.selected = request.danger ? this.#choices(pending).findIndex((c) => c.label === "Non") : 0;
         signal.addEventListener("abort", onAbort, { once: true });
         this.#approvals.push(pending);
+        this.#o.onApprovalWaiting?.(true);
         this.#session?.screen.flush();
       }),
   };

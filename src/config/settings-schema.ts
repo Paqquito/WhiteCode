@@ -277,6 +277,9 @@ export const SETTINGS: readonly SettingDef[] = [
   // SPEC-IHM-001, SPEC-IHM-002: rendering and layout of the interactive interface (lot 5; values in English, gap E-093).
   { key: "ui.colorMode", schema: enumOf(["auto", "none", "16", "256", "truecolor"]), default: "auto", scopes: [U], owner: "SPEC-IHM-001" },
   { key: "ui.theme", schema: enumOf(["dark", "light", "dark-accessible", "light-accessible"]), default: "dark", scopes: [U], owner: "SPEC-IHM-020", hot: true },
+  { key: "ui.welcome.compact", schema: bool(), default: false, scopes: [U], owner: "SPEC-IHM-025" },
+  { key: "ui.welcome.hideAccount", schema: bool(), default: false, scopes: [U], owner: "SPEC-IHM-025" },
+  { key: "ui.terminalTitle", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-036" },
   { key: "ui.maxFramesPerSecond", schema: int(1, 240), default: 30, scopes: [U], owner: "SPEC-IHM-001" },
   { key: "ui.minColumns", schema: int(10, 1_000), default: 60, scopes: [U], owner: "SPEC-IHM-001" },
   { key: "ui.unicodeLevel", schema: enumOf(["full", "restricted", "ascii"]), default: "full", scopes: [U], owner: "SPEC-IHM-001" },

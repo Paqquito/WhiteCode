@@ -1,6 +1,7 @@
 // Implements: SPEC-CFG-010 (CA-01, CA-02, CA-03, EF-03, EF-04, FA-01, § 12: concurrent state and recovery).
 // Supports: gap E-134 (bounded exclusive lock, union of trust changes; explicit failure on sustained contention).
 // Supports: SPEC-PER-018 (consent version, date and revocation), gap E-138.
+// Supports: SPEC-IHM-025 (CA-02, once-per-version state), gap E-150.
 import { lstatSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -10,6 +11,7 @@ import { tryFileLock } from "../platform/file-lock";
 import { currentPlatform, type PlatformName } from "../platform/system";
 
 export interface UserState {
+  readonly lastSeenVersion?: string;
   readonly trustedProjects?: readonly string[];
   readonly restrictedProjects?: readonly string[];
   readonly unrestrictedAccepted?: boolean;
@@ -29,6 +31,7 @@ function load(path: string): UserState {
   let value: unknown;
   try { value = JSON.parse(readFileSync(path, "utf8")); } catch (error) { if (error instanceof SyntaxError) throw new CorruptState(); throw error; }
   if (!object(value) || ["trustedProjects", "restrictedProjects"].some((key) => value[key] !== undefined && (!Array.isArray(value[key]) || value[key].some((p) => typeof p !== "string"))) ||
+      (value["lastSeenVersion"] !== undefined && (typeof value["lastSeenVersion"] !== "string" || value["lastSeenVersion"].length > 100)) ||
       (value["unrestrictedAccepted"] !== undefined && typeof value["unrestrictedAccepted"] !== "boolean") ||
       (value["autoApproveConsent"] !== undefined && (!object(value["autoApproveConsent"]) || !Number.isSafeInteger(value["autoApproveConsent"]["version"]) ||
         typeof value["autoApproveConsent"]["at"] !== "string" || !Number.isFinite(Date.parse(value["autoApproveConsent"]["at"])))) ||
