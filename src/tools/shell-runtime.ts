@@ -1,6 +1,7 @@
 // Implements: SPEC-OUT-008 (§ 5.1, § 5.3 points 4, 5, 7 and 8, FA-02, EF-01 to EF-08, EF-11, ERR-02 to ERR-04, RG-03, ENF-02, CA-01, CA-03, CA-04, CA-06, CA-07),
 //             SPEC-OUT-009 (§ 5.1, § 5.3 points 1, 3 to 5, EF-01 to EF-03, EF-05, RG-02, ERR-01, ERR-02, CA-01, CA-04, CA-05)
 // Supports: SPEC-CFG-007 (RG-02 environment of child processes), SPEC-MOT-002 (RG-05), gap E-051 (environment snapshot, detection)
+// Supports: SPEC-OUT-008 (RG-03, cancellation waits for the process group), gap E-148.
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, normalize } from "node:path";
@@ -269,7 +270,8 @@ export class ShellRuntime {
     this.#running.add(child);
     let timedOut = false;
     let interrupted = false;
-    const stop = () => void child.killTree(this.options.settings.graceMs);
+    let stopping: Promise<void> | undefined;
+    const stop = () => { stopping ??= child.killTree(this.options.settings.graceMs); };
     const timer = setTimeout(() => {
       timedOut = true;
       stop();
@@ -283,6 +285,8 @@ export class ShellRuntime {
     const exitCode = await child.exited;
     clearTimeout(timer);
     signal.removeEventListener("abort", onAbort);
+    // The group can outlive its leader: wait for cancellation before returning a stopped result.
+    await stopping;
     this.#running.delete(child);
 
     // New working folder (§ 5.3 point 5): kept when inside the allowed folders, otherwise reset (ERR-04, CA-07).

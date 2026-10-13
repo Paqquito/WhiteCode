@@ -3,6 +3,7 @@
 // The files referenced by `@` in a message, read when the message is sent (so that the current state goes), within the
 // allowed folders and the reading rules, bounded in number and in size. A reference inside a pasted text or inside code
 // attaches nothing.
+// Implements: SPEC-IHM-007 (CA-10, distinct agent mentions), gap E-148.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -10,6 +11,7 @@ import { insideAllowed } from "../permissions/paths";
 import type { PlatformName } from "../platform/system";
 
 export interface AttachmentOptions {
+  readonly agents?: readonly string[];
   readonly cwd: string;
   readonly allowedDirectories: readonly string[];
   readonly platform: PlatformName;
@@ -42,7 +44,7 @@ function codeSpans(text: string): Array<[number, number]> {
 }
 
 /** The `@<path>` references at a trigger position (start or after a blank), outside code and outside pasted texts. */
-export function references(text: string, pasted: readonly string[] = []): Array<{ ref: string; at: number }> {
+export function references(text: string, pasted: readonly string[] = [], trigger: "@" | "&" = "@"): Array<{ ref: string; at: number }> {
   const code = codeSpans(text);
   const excluded: Array<[number, number]> = [];
   for (const p of pasted) {
@@ -51,7 +53,8 @@ export function references(text: string, pasted: readonly string[] = []): Array<
   }
   const out: Array<{ ref: string; at: number }> = [];
   // `@"a path with spaces"` or `@path` (EF-01 of SPEC-MOT-006).
-  for (const m of text.matchAll(/(^|\s)@(?:"([^"\n]+)"|([^\s@`]+))/g)) {
+  const pattern = trigger === "@" ? /(^|\s)@(?:"([^"\n]+)"|([^\s@`]+))/g : /(^|\s)&([a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)?)(?=$|[^a-z0-9-:])/g;
+  for (const m of text.matchAll(pattern)) {
     const at = m.index! + m[1]!.length;
     if (code.some(([a, b]) => at >= a && at < b) || excluded.some(([a, b]) => at >= a && at < b)) continue;
     out.push({ ref: m[2] ?? m[3]!.replace(/[),.;:!?]+$/, ""), at });
@@ -170,5 +173,7 @@ export function attach(text: string, o: AttachmentOptions, pasted: readonly stri
       continue;
     }
   }
+  const agents = [...new Set(references(text, pasted, "&").map(r => r.ref).filter(name => o.agents?.includes(name)))].slice(0, o.maxCount);
+  for (const name of agents) parts.push(`<requested-agent name="${name}">The user selected this agent for the request. This mention grants no additional tools or permissions and does not start an agent automatically.</requested-agent>`);
   return { parts, notices, read };
 }

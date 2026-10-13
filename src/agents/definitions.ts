@@ -3,6 +3,7 @@
 // the most specific source winning a name. Definitions are read again at each launch, so that a change is used at the
 // next one (EF-04, CA-02).
 // Supports: SPEC-EXT-011 (CA-03: individually validated extension agents), gap E-132.
+// Implements: SPEC-AGT-003 (CA-01, EF-01, RG-01), SPEC-AGT-004 (CA-01, EF-02/03), gap E-148.
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -11,6 +12,10 @@ import { splitHeader } from "../skills/registry";
 import generalInstructions from "../../prompts/agents/general.md" with { type: "text" };
 import usageGuideInstructions from "../../prompts/agents/usage-guide.md" with { type: "text" };
 import footerLineInstructions from "../../prompts/agents/footer-line-setup.md" with { type: "text" };
+import explorerInstructions from "../../prompts/agents/explorer.md" with { type: "text" };
+import plannerInstructions from "../../prompts/agents/planner.md" with { type: "text" };
+import verifierInstructions from "../../prompts/agents/verifier.md" with { type: "text" };
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 export type AgentSource = "built-in" | "user" | "project" | "managed" | "extension";
 
@@ -42,6 +47,13 @@ const NAME = /^[a-z][a-z0-9-]*$/;
 export const READING_TOOLS: ReadonlySet<string> = new Set(["read_file", "find_files", "search_content", "discover_tools", "use_skill", "update_todo_list", "spawn_agent"]);
 
 export const BUILT_IN_AGENTS: readonly AgentDefinition[] = [
+  ...(buildFlag("agent_explorer_planner") ? [
+    { name: "explorer", description: "Locates code and answers repository questions with paths and excerpts at the requested search depth.", source: "built-in" as const, instructions: explorerInstructions.trim(), tools: ["read_file", "find_files", "search_content"], excludedTools: [], model: "small", detached: false },
+    { name: "planner", description: "Designs an implementation plan with critical files, tradeoffs, risks and verification steps.", source: "built-in" as const, instructions: plannerInstructions.trim(), tools: ["read_file", "find_files", "search_content"], excludedTools: [], model: "inherit", detached: false },
+  ] : []),
+  ...(buildFlag("agent_verifier") ? [
+    { name: "verifier", description: "Exercises changed behavior and reports verified, failed or not verifiable results with observed evidence.", source: "built-in" as const, instructions: verifierInstructions.trim(), tools: ["read_file", "find_files", "search_content", "run_shell", "run_powershell"], excludedTools: [], detached: false },
+  ] : []),
   {
     name: "general",
     description: "General-purpose agent for research, broad exploration and multi-step tasks; returns a concise report.",

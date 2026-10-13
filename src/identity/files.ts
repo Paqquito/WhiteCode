@@ -1,6 +1,8 @@
 // Implements: SPEC-CAD-002 (CA-08, CA-09, CA-19: standalone scan and Markdown rendering).
 // Supports: SPEC-CAD-002 (EF-31 to EF-34: text/binary scanning, gzip inspection; other archives explicitly refused).
 // Supports: gap E-133 (exact relative file/line exceptions; distinct empty output; no symlink traversal).
+// Supports: SPEC-BLD-003 (unchanged scan inputs reused by content fingerprints), gap E-148.
+import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -26,6 +28,8 @@ function files(root: string): string[] {
 
 const normalize = (text: string) => text.normalize("NFD").replace(/\p{M}/gu, "").toUpperCase().replace(/[_\-\s]/gu, "");
 export interface ScanIssue { readonly file: string; readonly line: number; readonly column: number; readonly term: string }
+/** Invocation-owned cache: no file content or private list is persisted. */
+export type ScanCache = Map<string, { readonly fingerprint: string; readonly issues: readonly ScanIssue[] }>;
 
 /** No extraction to disk. Unknown compression and excessive nested/expanded content fail the control. */
 function scanBytes(file: string): Buffer {
@@ -55,16 +59,21 @@ function* scanTexts(bytes: Buffer): Generator<{ text: string; bytePrefix?: numbe
 }
 
 /** Text positions use original UTF-16 units; binary UTF-16 positions use a one-based byte offset. */
-export function scanDirectory(root: string, identity: Identity): ScanIssue[] {
+export function scanDirectory(root: string, identity: Identity, cache?: ScanCache): ScanIssue[] {
   const issues: ScanIssue[] = [];
   const seen = new Set<string>();
   const terms = identity.resolved.compatibility.forbiddenTerms.map((term) => ({ term, key: normalize(term) })).filter((t) => t.key !== "");
+  const rulesHash = cache ? createHash("sha256").update(JSON.stringify(identity.resolved.compatibility)).digest("hex") : "";
   for (const file of files(root)) {
     const bytes = scanBytes(file);
     if (terms.length === 0) continue; // Still validate file kinds and compression before skipping text normalization.
+    const path = relative(root, file).replace(/\\/g, "/");
+    const fingerprint = cache ? `${createHash("sha256").update(bytes).digest("hex")}:${rulesHash}` : "";
+    const previous = cache?.get(path);
+    if (previous?.fingerprint === fingerprint) { issues.push(...previous.issues.map(issue => ({ ...issue }))); continue; }
+    const firstIssue = issues.length;
     for (const { text, bytePrefix } of scanTexts(bytes)) {
       const normalized = normalize(text);
-      const path = relative(root, file).replace(/\\/g, "/");
       const hits: Array<{ index: number; term: string }> = [];
       for (const { term, key } of terms) {
         let index = normalized.indexOf(key);
@@ -87,6 +96,10 @@ export function scanDirectory(root: string, identity: Identity): ScanIssue[] {
         const key = JSON.stringify([path, issueLine, issueColumn, hit.term]);
         if (!excepted && !seen.has(key)) { seen.add(key); issues.push({ file: path, line: issueLine, column: issueColumn, term: hit.term }); }
       }
+    }
+    if (cache) {
+      if (cache.size >= 128 && !cache.has(path)) cache.clear();
+      cache.set(path, { fingerprint, issues: issues.slice(firstIssue).map(issue => ({ ...issue })) });
     }
   }
   return issues;

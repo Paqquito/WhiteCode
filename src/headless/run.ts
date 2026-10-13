@@ -16,6 +16,8 @@
 // Supports: SPEC-CAD-002 (CA-13), SPEC-API-006 (CA-02, unknown identifiers with minimal capabilities), gap E-145.
 // Supports: SPEC-MCP-003 (CA-01/02/03, shared network settings and authentication status), gap E-146.
 // Supports: SPEC-AGT-017 (CA-02), SPEC-AGT-018 (CA-01), gap E-147.
+// Supports: SPEC-IHM-028 (CA-01/02), SPEC-IHM-007 (CA-10), gap E-148.
+// Supports: SPEC-CMD-075 (CA-01, persistent editing toggle), gap E-148.
 // interactive application (lot 5).
 
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
@@ -148,6 +150,7 @@ import { purgeExpiredSessions } from "../session/maintenance";
 import { correctionMessage, extractStructured, loadOutputSchema, schemaInstruction } from "./structured";
 import { InteractiveApp } from "../interactive/app";
 import { InputStateWriter, inputStatePath, readInputState, sessionDirOf } from "../interactive/input-state";
+import { openBackgroundPanel } from "../interactive/background-panel";
 import { replayHistory } from "../interactive/replay";
 import { runInteractiveLoop } from "../interactive/session";
 import { literalTriggers } from "../interactive/triggers";
@@ -1186,7 +1189,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     activate: (skill) => activateSkill(skill, allows),
     runInAgent: (skill, content, signal) => depth >= maxAgentDepth
       ? Promise.resolve({ text: "This skill cannot start an agent beyond agents.maxDepth.", isError: true })
-      : runSubagent({ description: `skill ${skill.name}`, prompt: content }, BUILT_IN_AGENTS[0]!, signal, depth, caller, parentContext, callerMaxIterations),
+      : runSubagent({ description: `skill ${skill.name}`, prompt: content }, BUILT_IN_AGENTS.find(agent => agent.name === "general")!, signal, depth, caller, parentContext, callerMaxIterations),
   }) as never;
   const useSkillTool = skillTool(0, registry, mainPermissionContext, skillAllows);
   // SPEC-OUT-001 CA-01: `use_skill` too is presented only when --toolset names it.
@@ -2098,6 +2101,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
 
   // SPEC-IHM-010 § 5.4: the files referenced by `@`, read at sending within the allowed folders.
   const attachmentOptions = () => ({
+    agents: [...agentCatalog().keys()],
     cwd,
     allowedDirectories,
     platform: system.platform,
@@ -2228,6 +2232,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       backgroundTasks: () => background.running.length,
       canBackground: () => background.hasForeground,
       backgroundCurrent: () => background.detachForeground(),
+      openBackgroundTasks: () => openBackgroundPanel(app!, background),
       backgroundActivity: () => background.running.filter((task) => task.kind === "agent"),
       describeCall: (name, input) => {
         try {
@@ -3469,6 +3474,17 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         }
         return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
       }
+      case "modal-editing": {
+        applySettingsChanges();
+        if (args.trim()) return { refused: "Usage : /modal-editing." };
+        if (liveSettings.isManaged("ui.input.editMode")) return { refused: "Ce réglage est fixé par l'organisation : ui.input.editMode (lecture seule)." };
+        const enabled = !app!.modalEnabled;
+        try { setValueInSettingsFile(locations.userSettingsFile, ["ui", "input", "editMode"], enabled ? "modal" : "standard", system.platform); }
+        catch { return { refused: "Le choix du mode d'édition n'a pas pu être enregistré." }; }
+        applySettingsChanges();
+        app!.setModal(enabled);
+        return { shown: text(enabled ? "Édition modale activée et enregistrée." : "Édition standard rétablie et enregistrée.") };
+      }
       case "edit-mode": {
         // SPEC-IHM-013 EF-03, CA-06: switched during the input, the content kept, for this session.
         const wanted = args.trim();
@@ -3588,6 +3604,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
       }
       case "background-tasks": {
+        if (app) { await openBackgroundPanel(app, background); return { silent: true }; }
         // SPEC-CMD-070 CA-01: the active tasks are listed, with their state.
         const tasks = background.tasks;
         const lines = tasks.length === 0 ? ["Aucune tâche de fond."] : tasks.map((t) => `${t.id}  ${t.status === "running" ? "en cours" : t.status}  ${t.description}${t.status === "running" ? ` (${Math.round((Date.now() - t.startedAt) / 1000)} s)` : ""}${t.activity ? ` · ${t.activity} · ${t.toolCalls ?? 0} outils · ${t.tokens ?? 0} jetons` : ""}`);

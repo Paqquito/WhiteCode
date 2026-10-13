@@ -1,6 +1,7 @@
 // Supports: SPEC-OUT-008 (EF-04 standard input closed, EF-06 whole process group stopped, ENF-03 no leak), SPEC-MOT-002 (RG-05 grace period),
 //           SPEC-HOK-003 (payload on the standard input, standard error apart)
 // Runtime adapter: child processes and process trees. The only module that starts or kills processes for the tools.
+// Supports: SPEC-OUT-008 (EF-06: await group exit), gap E-148.
 
 import { spawn, spawnSync } from "node:child_process";
 import { extname } from "node:path";
@@ -120,6 +121,12 @@ export function startChild(file: string, args: readonly string[], options: Child
         const timer = new Promise<void>((r) => setTimeout(r, graceMs));
         await Promise.race([exited, timer]);
         signalGroup(pid, "SIGKILL"); // the group may outlive its leader
+        const deadline = Date.now() + graceMs + 1000;
+        while (Date.now() < deadline) {
+          try { process.kill(-pid, 0); }
+          catch { break; }
+          await new Promise<void>(resolve => setTimeout(resolve, 10));
+        }
       }
       await Promise.race([exited, new Promise<void>((r) => setTimeout(r, graceMs + 1000))]);
     },
@@ -161,14 +168,11 @@ export function runToCompletion(file: string, args: readonly string[], options: 
 
 /** True while a process with this id exists. */
 export function processExists(pid: number): boolean {
-  if (currentPlatform() === "windows") {
-    const r = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/NH"], { encoding: "utf8", windowsHide: true });
-    return (r.stdout ?? "").includes(String(pid));
-  }
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }

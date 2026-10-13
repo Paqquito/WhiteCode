@@ -16,6 +16,22 @@ const ask = async (ws: Workspace, prompt: string, args: string[] = [], userConfi
   return { p, r, history: sent(p) };
 };
 
+test("SPEC-IHM-007/CA-10 — an agent and a file named revue: ampersand selects the agent and at-sign attaches the file without starting an agent", async () => {
+  const ws = workspace();
+  ws.write("home/config/agents/revue.md", '---\nname: revue\ndescription: Review the requested code.\n---\nRead and review only.\n');
+  ws.write("project/revue", "FILE_REVIEW_641");
+  const agent = await ask(ws, "&revue examine ceci");
+  expect(agent.r.code).toBe(0);
+  expect(agent.history).toContain('<requested-agent name=\\"revue\\">');
+  expect(agent.history).not.toContain("FILE_REVIEW_641");
+  expect(agent.p.requests.filter(r => r.purpose === "subagent")).toHaveLength(0);
+  const file = await ask(ws, "@revue examine ceci");
+  expect(file.history).toContain("FILE_REVIEW_641");
+  expect(file.history).not.toContain("<requested-agent");
+  const literal = await ask(ws, "&&revue `&revue` \\&revue");
+  expect(literal.history).not.toContain("<requested-agent");
+});
+
 describe("SPEC-MOT-006 references", () => {
   test("SPEC-MOT-006/CA-01 — « explique @src/a.ts »: the content of src/a.ts is attached, numbered", async () => {
     const ws = workspace();

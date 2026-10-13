@@ -95,8 +95,9 @@ export class BackgroundTasks {
     task.activity = activity; task.toolCalls = toolCalls; task.tokens = tokens; this.#changed();
   }
 
-  onChange(listener: () => void): void {
+  onChange(listener: () => void): () => void {
     this.#listeners.push(listener);
+    return () => { const index = this.#listeners.indexOf(listener); if (index !== -1) this.#listeners.splice(index, 1); };
   }
 
   /** EF-03, CA-01: the ends and the monitor lines, each delivered once, at the next request of the owner (FA-03). */

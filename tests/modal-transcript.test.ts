@@ -41,6 +41,24 @@ function standalone(columns = 80, rows = 24) {
 }
 
 describe("SPEC-IHM-013 modal editing", () => {
+  test("TECH — an incoming approval preempts passive task choices and stop confirmations", async () => {
+    const { term, app, screen } = standalone();
+    const request = { callId: "background-c", toolName: "run_shell", summary: "Run a verification.", reason: "Confirmation required.", origin: "tool_check" as const, suggestions: [] };
+    try {
+      const choice = app.choose("Passive tasks", [{ label: "Task" }], { interruptible: true });
+      const approval = app.approvals.request(request, new AbortController().signal);
+      expect(await choice).toEqual({ kind: "cancelled" });
+      expect(screen()).not.toContain("Passive tasks");
+      expect(screen()).toContain("Run a verification");
+      expect(await app.confirm("Stop task?", "stop", "keep", true)).toBe(false);
+      term.type("2"); expect(await approval).toEqual({ answer: "no" });
+      const confirm = app.confirm("Stop task?", "stop", "keep", true);
+      const second = app.approvals.request({ ...request, callId: "background-d" }, new AbortController().signal);
+      expect(await confirm).toBe(false);
+      expect(screen()).not.toContain("Stop task?");
+      term.type("2"); expect(await second).toEqual({ answer: "no" });
+    } finally { app.stop(); }
+  });
   test("SPEC-IHM-013/CA-01 — passing to the command mode changes the indicator and the shape of the cursor", async () => {
     const ws = workspace();
     const run = interactive([], ws, { provider: new ScriptedProvider([]), userConfig: MODAL });

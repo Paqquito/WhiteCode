@@ -4,6 +4,8 @@
 // the messages to the session one at a time.
 // Supports: SPEC-IHM-038 (EF-03, CA-02: no waiting animation in reduced motion).
 // Supports: SPEC-AGT-017 (CA-02), SPEC-AGT-018 (CA-01), gap E-147.
+// Supports: SPEC-IHM-028 (CA-01/02, passive task dialogs), gap E-148.
+// Supports: SPEC-IHM-022 (CA-01/02, current task and reduced motion), gap E-148.
 // Supports: SPEC-IHM-019 (CA-01/02, choices and preview), SPEC-IHM-020 (CA-02), SPEC-CMD-072 (CA-01), SPEC-IHM-005 (CA-07), SPEC-MOD-001 (CA-06), gap E-142.
 
 import type { Terminal } from "../platform/terminal";
@@ -82,6 +84,7 @@ interface PendingApproval {
 export type ChoiceAnswer = { readonly kind: "options"; readonly labels: readonly string[] } | { readonly kind: "other"; readonly text: string } | { readonly kind: "cancelled" };
 
 interface ChoiceDialog {
+  readonly interruptible?: boolean;
   readonly title: string;
   readonly header?: string;
   readonly options: ReadonlyArray<{ readonly label: string; readonly description?: string; readonly disabledReason?: string }>;
@@ -103,6 +106,7 @@ interface Capture {
 }
 
 interface Confirm {
+  readonly interruptible?: boolean;
   readonly message: string;
   readonly yes: string;
   readonly no: string;
@@ -128,6 +132,7 @@ export interface AppOptions {
   /** Supports: SPEC-AGT-017 CA-02, SPEC-AGT-018 CA-01, gap E-147. */
   readonly canBackground?: () => boolean;
   readonly backgroundCurrent?: () => string | undefined;
+  readonly openBackgroundTasks?: () => Promise<void>;
   readonly backgroundActivity?: () => readonly { readonly id: string; readonly activity?: string; readonly toolCalls?: number; readonly tokens?: number }[];
   /** The task list of the main agent, shown above the input area (SPEC-OUT-021 § 10). */
   readonly tasks?: () => ReadonlyArray<{ readonly subject: string; readonly status: string; readonly progressLabel?: string }>;
@@ -352,6 +357,8 @@ export class InteractiveApp {
   get running(): boolean {
     return this.#turn !== undefined;
   }
+
+  get modalEnabled(): boolean { return this.#modal !== undefined; }
 
   get exiting(): boolean { return this.#exiting; }
 
@@ -607,6 +614,8 @@ export class InteractiveApp {
     request: (request, signal) =>
       new Promise<HumanAnswer>((resolve) => {
         if (signal.aborted) { resolve({ answer: "no_stop" }); return; }
+        if (this.#choice?.interruptible) this.#choice.resolve({ kind: "cancelled" });
+        if (this.#confirm?.interruptible) this.#confirm.resolve(false);
         let settled = false;
         const onAbort = () => pending.resolve({ answer: "no_stop" });
         const pending: PendingApproval = {
@@ -711,12 +720,14 @@ export class InteractiveApp {
    * A question with options, entirely usable from the keyboard (EF-04 of SPEC-OUT-033): arrows, numbers, space to mark
    * with several answers, Enter to validate, Échap to give no answer; the last option is a free answer.
    */
-  choose(title: string, options: ReadonlyArray<{ readonly label: string; readonly description?: string; readonly disabledReason?: string }>, o: { readonly multiple?: boolean; readonly header?: string; readonly other?: boolean; readonly selected?: number; readonly preview?: (index: number) => void } = {}): Promise<ChoiceAnswer> {
+  choose(title: string, options: ReadonlyArray<{ readonly label: string; readonly description?: string; readonly disabledReason?: string }>, o: { readonly multiple?: boolean; readonly header?: string; readonly other?: boolean; readonly selected?: number; readonly preview?: (index: number) => void; readonly interruptible?: boolean } = {}): Promise<ChoiceAnswer> {
+    if (o.interruptible && this.#approvals.length > 0) return Promise.resolve({ kind: "cancelled" });
     if (this.#exiting) return Promise.resolve({ kind: "cancelled" });
     if (options.length === 0 && o.other === false) return Promise.resolve({ kind: "cancelled" });
     return new Promise((resolve) => {
       this.#choice = {
         title,
+        interruptible: o.interruptible,
         ...(o.header ? { header: o.header } : {}),
         options,
         multiple: o.multiple === true,
@@ -810,10 +821,11 @@ export class InteractiveApp {
     } };
   }
 
-  confirm(message: string, yes = "Oui", no = "Non"): Promise<boolean> {
-    if (this.#exiting) return Promise.resolve(false);
+  confirm(message: string, yes = "Oui", no = "Non", interruptible = false): Promise<boolean> {
+    if (this.#exiting || (interruptible && this.#approvals.length > 0)) return Promise.resolve(false);
     return new Promise((resolve) => {
       this.#confirm = {
+        interruptible,
         message,
         yes,
         no,
@@ -988,6 +1000,10 @@ export class InteractiveApp {
         if (id) this.notice("info", `Commande transférée vers la tâche ${id}, sans redémarrage.`);
       } catch { this.notice("warning", "Transfert impossible : la commande reste au premier plan."); }
       this.#redraw(); return;
+    }
+    if (action === "task.panel") {
+      if (!this.running && !this.#capture) void this.#o.openBackgroundTasks?.().catch(() => this.notice("warning", "Le panneau des tâches est indisponible."));
+      return;
     }
     if (action !== "app.interrupt" && action !== "app.exit") {
       this.#exitArmed = undefined;
@@ -1338,7 +1354,7 @@ export class InteractiveApp {
       if (this.#render && !this.#streamRenderer) this.#streamRenderer = new MarkdownRenderer(this.#render.markdown, this.#view.unicode);
       stream.push(modelView(this.#streamRenderer ? this.#streamRenderer.render(this.#stream) : this.#stream, this.#view));
     }
-    if (this.running) stream.push(activityView(this.#activity, this.#now - this.#turnStarted, this.#spinner, this.#view));
+    if (this.running) stream.push(activityView(tasks.find(task => task.status === "in_progress")?.progressLabel ?? this.#activity, this.#now - this.#turnStarted, this.#spinner, this.#view));
     const background = this.#o.backgroundActivity?.() ?? [];
     if (background.length > 0) panels.push(box(background.slice(-3).map((task) => text(`Agent ${task.id} · ${task.activity ?? "En attente…"} · ${task.toolCalls ?? 0} outil${task.toolCalls === 1 ? "" : "s"} · ${task.tokens ?? 0} jetons`, { overflow: "clip" })), { padding: { left: 2 } }));
     const frame = composeFrame(

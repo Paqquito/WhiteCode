@@ -7,7 +7,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, u
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Identity } from "../src/identity/identity";
 import { resolveIdentityText, runtimeIdentity } from "../src/identity/resolver";
-import { scanDirectory } from "../src/identity/files";
+import { scanDirectory, type ScanCache } from "../src/identity/files";
 import { VARIABLE_BY_NAME } from "../src/identity/catalog";
 import { suggest } from "../src/shared/suggest";
 import { BUILD_OPTIONS, resolveBuildOptions } from "../src/extension-points/build-options";
@@ -72,8 +72,9 @@ const forbiddenTerms = [...new Set([...original.compatibility.forbiddenTerms, ..
 const scanExceptions = original.compatibility.scanExceptions?.filter((e) => !mandatoryKeys.has(normalize(e.terme)));
 const scanIdentity = new Identity({ ...original, compatibility: { ...original.compatibility, forbiddenTerms, scanExceptions } });
 const manifest: Array<{ target: string; file: string; sha256: string }> = [];
+const scanCache: ScanCache = new Map();
 function control(): void {
-  const issues = scanDirectory(outDir, scanIdentity);
+  const issues = scanDirectory(outDir, scanIdentity, scanCache);
   for (const issue of issues) console.error(`Chaîne interdite « ${issue.term} » : ${issue.file}:${issue.line}:${issue.column}.`);
   if (issues.length) throw new Error("Contrôle anti-fuite refusé.");
   for (const file of manifest.map((d) => d.file)) {

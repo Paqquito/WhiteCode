@@ -23,6 +23,45 @@ const toolsOf = (r: ModelRequest | undefined) => (r?.tools ?? []).map((t) => t.n
 const lastResults = (r: ModelRequest | undefined) => JSON.stringify(r?.history.at(-1) ?? null);
 const run = (ws: Workspace, p: ScriptedProvider, args: string[] = []) => cli(["--non-interactive", ...args, "go"], ws, { provider: p });
 
+test("SPEC-AGT-003/CA-01 — explorer in planning mode reads the repository without any writing or modifying tool", async () => {
+  const ws = workspace();
+  const file = ws.write("project/entry.ts", "export const value = 7;");
+  const p = new ScriptedProvider([{ toolCalls: [spawn({ role: "explorer", prompt: "Find value, exhaustiveness: quick." })] }, { text: "Parent finished." }], [
+    { toolCalls: [{ name: "read_file", input: { path: file } }] },
+    (request) => { expect(JSON.stringify(request.history)).toContain("export const value = 7;"); return { text: "entry.ts:1 defines value." }; },
+  ]);
+  const result = await run(ws, p, ["--approval-mode", "planning"]);
+  expect(result.code).toBe(0);
+  expect(sub(p)).toHaveLength(2);
+  expect(sub(p)[0]!.model.id).toBe("test-small");
+  expect(toolsOf(sub(p)[0])).toContain("read_file");
+  for (const name of ["write_file", "edit_file", "run_shell", "run_powershell", "update_notebook_cell"]) expect(toolsOf(sub(p)[0])).not.toContain(name);
+  expect(lastResults(main(p)[1])).toContain("entry.ts:1 defines value.");
+});
+
+test("SPEC-AGT-004/CA-01 — verifier executes a broken feature and returns its observed failure without editing files", async () => {
+  const ws = workspace();
+  ws.write("project/check.sh", "printf 'FEATURE_BROKEN_728\\n'; exit 3\n");
+  let observedResult = "";
+  let observedSystem = "";
+  const p = new ScriptedProvider([{ toolCalls: [spawn({ role: "verifier", prompt: "Verify the feature with sh check.sh; report observed evidence." })] }, { text: "Parent finished." }], [
+    { toolCalls: [{ name: "run_shell", input: { command: "sh check.sh" } }] },
+    (request) => {
+      observedResult = lastResults(request);
+      observedSystem = JSON.stringify(request.system);
+      return { text: "Failed: sh check.sh exited with code 3 and printed FEATURE_BROKEN_728." };
+    },
+  ]);
+  const result = await cli(["--non-interactive", "--allow-rule", "run_shell", "go"], ws, { provider: p, env: productEnv(ws) });
+  expect(result.code).toBe(0);
+  expect(sub(p)).toHaveLength(2);
+  expect(observedResult).toContain("FEATURE_BROKEN_728");
+  expect(observedResult).toContain("Exit code 3.");
+  expect(observedSystem).toContain("observed evidence");
+  for (const name of ["write_file", "edit_file", "update_notebook_cell"]) expect(toolsOf(sub(p)[0])).not.toContain(name);
+  expect(lastResults(main(p)[1])).toContain("Failed: sh check.sh exited with code 3 and printed FEATURE_BROKEN_728.");
+});
+
 describe("SPEC-AGT-001 sub-agents", () => {
   test("SPEC-HOK-001/CA-04 — before_tool identifies the actual child and its effective permission mode", async () => {
     const ws = workspace();
@@ -68,7 +107,7 @@ describe("SPEC-AGT-001 sub-agents", () => {
     const p = new ScriptedProvider([{ toolCalls: [spawn({ role: "inconnu" }), spawn({ prompt: "cherche le secret" })] }, { text: "le secret est 42" }, { text: "fini" }]);
     await run(ws, p);
     const results = lastResults(main(p)[1]);
-    expect(results).toContain("Unknown agent type: inconnu. Available: general, usage-guide, footer-line-setup.");
+    expect(results).toContain("Unknown agent type: inconnu. Available: explorer, planner, verifier, general, usage-guide, footer-line-setup.");
     expect(results).toContain("le secret est 42");
     expect(results).toMatch(/\[agent agent-[0-9a-f]{8} \(general\) · \d+ s · 1 iteration · \d+ tokens\]/);
     expect(results).not.toContain("cherche le secret"); // the conversation of the agent stays its own

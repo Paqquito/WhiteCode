@@ -3,7 +3,7 @@ import { workspace } from "./helpers/env";
 import { interactive, KEY, sleep } from "./helpers/interactive";
 import { ScriptedProvider } from "./helpers/scripted-provider";
 
-for (const reduced of [true, false]) test("SPEC-IHM-038/CA-02 — a reduced-motion turn has a static waiting display, with animation as a control", async () => {
+for (const reduced of [true, false]) test("SPEC-IHM-038/CA-02 SPEC-IHM-022/CA-02 — a reduced-motion turn has a static waiting display, with animation as a control", async () => {
   const ws = workspace();
   const provider = new ScriptedProvider([{ hang: true }]);
   const run = interactive(["Work."], ws, { provider, userConfig: { ui: { reducedMotion: reduced } } });

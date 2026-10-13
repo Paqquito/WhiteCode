@@ -2,6 +2,7 @@
 //             SPEC-CMD-009, SPEC-CMD-006, SPEC-CMD-059, SPEC-CMD-058, SPEC-CMD-024 (§ 5.2: commands of the user)
 // The internal commands of this version. Each one declares its kind and whether it widens what the agent may do.
 // Supports: SPEC-IHM-019 (model selector), SPEC-CMD-072 (appearance command), gap E-142.
+// Supports: SPEC-CMD-075 (CA-01, persistent editing toggle), gap E-148.
 
 import type { InternalCommand } from "./catalog";
 
@@ -13,6 +14,7 @@ export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
   { name: "quit", description: "Quitte la session, comme /exit.", kind: "action", widening: false, interactiveOnly: true },
   { name: "transcript", description: "Ouvre la vue plein écran de la transcription (Alt+T).", kind: "display", widening: false, interactiveOnly: true },
   { name: "edit-mode", description: "Choisit l'édition standard ou modale de la zone de saisie, le contenu conservé.", kind: "action", widening: false, usage: "standard|modal", interactiveOnly: true },
+  { name: "modal-editing", description: "Bascule l'édition modale et mémorise le choix dans la configuration utilisateur.", kind: "action", widening: false, interactiveOnly: true },
   { name: "history", description: "Efface l'historique des saisies (/history clear).", kind: "action", widening: false, usage: "clear", interactiveOnly: true },
   { name: "allow-dir", description: "Ajoute un dossier au périmètre de travail de la session.", kind: "action", widening: true, usage: "<chemin>" },
   { name: "clear", description: "Commence une nouvelle conversation ; l'actuelle reste reprenable.", kind: "action", widening: false, interactiveOnly: true },

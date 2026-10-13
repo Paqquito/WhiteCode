@@ -80,15 +80,20 @@ test("SPEC-BLD-001/CA-01, SPEC-BLD-003/CA-02, SPEC-BLD-007/CA-02 — two stable 
 }, 240_000);
 
 test("SPEC-BLD-002/CA-01 — disabled automatic approval: classifier code and its prompt are absent from the product bundle and executable", async () => {
-  const f = fixture(), options = f.ws.write("options.json", JSON.stringify({ permission_auto_approve: false }));
+  const f = fixture(), options = f.ws.write("options.json", JSON.stringify({ permission_auto_approve: false, agent_explorer_planner: false, agent_verifier: false }));
   const result = await f.build(["--build-options", options]);
   expect(result.code).toBe(0);
   const manifest = f.manifest();
   expect(manifest.build.options.permission_auto_approve).toBe(false);
+  expect(manifest.build.options.agent_explorer_planner).toBe(false);
+  expect(manifest.build.options.agent_verifier).toBe(false);
   for (const d of manifest.deliverables.filter((d: { target: string }) => ["bundle", "current"].includes(d.target))) {
     const contents = readFileSync(join(f.root, "dist", d.file)).toString("latin1");
     expect(contents).not.toContain("You are the approval classifier for a coding session");
     expect(contents).not.toContain("The complete action is too large for an approval decision");
+    expect(contents).not.toContain("You are the repository explorer");
+    expect(contents).not.toContain("You are the implementation planner");
+    expect(contents).not.toContain("You are the independent feature verifier");
   }
 }, 150_000);
 

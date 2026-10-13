@@ -15,6 +15,39 @@ import { ScriptedProvider } from "./helpers/scripted-provider";
 
 const call = (name: string, input: Record<string, unknown>) => ({ toolCalls: [{ name, input }] });
 
+test("SPEC-IHM-028/CA-01 SPEC-IHM-028/CA-02 — the keyboard task panel lists two live commands and stops the selected one only after confirmation", async () => {
+  const ws = workspace(), first = commandFixture(ws);
+  const secondStarts = join(ws.root, "second-starts.txt");
+  const secondScript = ws.write("scripts/second.ts", `import { appendFileSync } from "node:fs"; appendFileSync(${JSON.stringify(secondStarts)}, process.pid + " READY\\n"); await Bun.sleep(30_000);`);
+  const provider = new ScriptedProvider([
+    { toolCalls: [
+      { name: "run_shell", input: { command: first.command, detached: true, description: "première commande" } },
+      { name: "run_shell", input: { command: bunCommand(secondScript.replace(/\\/g, "/")), detached: true, description: "seconde commande" } },
+    ] }, { text: "deux commandes lancées" },
+  ]);
+  const controller = new AbortController();
+  const run = interactive(["--allow-rule", "run_shell"], ws, { provider, env: productEnv(ws), signal: controller.signal });
+  try {
+    await run.idle(); run.type("lance les deux"); run.type(KEY.enter);
+    await run.waitFor(t => t.includes("deux commandes lancées"));
+    const firstPid = await ready(first.starts), secondPid = await ready(secondStarts);
+    run.type("brouillon conservé"); run.type("\u001bk");
+    await run.waitFor(t => t.includes("Tâches de fond — choisir"), "keyboard task panel");
+    const screen = run.screen().join("\n");
+    expect(screen).toContain("première commande"); expect(screen).toContain("seconde commande");
+    expect(screen.match(/en cours/g)?.length).toBeGreaterThanOrEqual(2);
+    await sleep(380); run.type(KEY.enter);
+    await run.waitFor(t => t.includes("Détail de b1"));
+    await sleep(380); run.type(KEY.down); run.type(KEY.enter);
+    await run.waitFor(t => t.includes("Arrêter la tâche b1"));
+    expect(processExists(firstPid)).toBe(true); expect(processExists(secondPid)).toBe(true);
+    await sleep(380); run.type("o");
+    await run.waitFor(t => t.includes("Tâche b1 arrêtée"));
+    expect(processExists(firstPid)).toBe(false); expect(processExists(secondPid)).toBe(true);
+    expect(run.screen().join("\n")).toContain("brouillon conservé");
+  } finally { controller.abort(); await run.done; }
+}, 25_000);
+
 function commandFixture(ws: ReturnType<typeof workspace>) {
   const starts = join(ws.root, "starts.txt");
   const release = join(ws.root, "release");
@@ -113,7 +146,9 @@ test("SPEC-AGT-018/CA-01 — the live task panel shows the current tool, tool co
     expect(panel).toContain("110 jetons");
     await run.waitFor((text) => text.includes("principal disponible"));
     run.type("/background-tasks"); run.type(KEY.enter);
-    await run.waitFor((text) => text.includes("Outil run_shell"), "activity in task details");
+    await run.waitFor((text) => text.includes("Tâches de fond — choisir") && text.includes("run_shell"), "activity in task details");
+    await sleep(380); run.type(KEY.escape);
+    await run.idle();
     writeFileSync(fixture.release, "go");
     run.type("lis le rapport"); run.type(KEY.enter);
     await run.waitFor((text) => text.includes("rapport reçu"));
