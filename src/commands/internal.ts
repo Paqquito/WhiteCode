@@ -3,6 +3,7 @@
 // The internal commands of this version. Each one declares its kind and whether it widens what the agent may do.
 // Supports: SPEC-IHM-019 (model selector), SPEC-CMD-072 (appearance command), gap E-142.
 // Supports: SPEC-CMD-075 (CA-01, persistent editing toggle), gap E-148.
+// Supports: SPEC-CMD-069, SPEC-SES-009 (persistent labels), gap E-149.
 
 import type { InternalCommand } from "./catalog";
 
@@ -21,6 +22,7 @@ export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
   { name: "duplicate-session", description: "Copie la conversation dans une nouvelle session et y bascule (les fichiers ne sont pas dupliqués).", kind: "action", widening: false, usage: "[nom]", interactiveOnly: true },
   { name: "reopen", description: "Reprend une autre session du projet à la place de la courante.", kind: "action", widening: false, usage: "[identifiant ou nom]", interactiveOnly: true },
   { name: "retitle", description: "Donne un titre à la session.", kind: "action", widening: false, usage: "[titre]" },
+  { name: "label-session", description: "Ajoute ou retire une étiquette ; sans argument, les affiche.", kind: "action", widening: false, usage: "[étiquette]" },
   { name: "save-transcript", description: "Enregistre la conversation dans un fichier texte, valeurs sensibles masquées.", kind: "action", widening: false, usage: "[fichier]" },
   { name: "status", description: "Affiche l'état de la session : version, modèle, mode, dossier, connecteurs.", kind: "display", widening: false },
   { name: "context-usage", description: "Affiche la répartition du contexte par catégorie.", kind: "display", widening: false },

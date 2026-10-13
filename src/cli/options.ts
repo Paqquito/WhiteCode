@@ -22,6 +22,8 @@ export interface OptionDef {
   readonly danger?: boolean;
   readonly delivered: boolean;
   readonly hidden?: boolean;
+  /** Deprecated spelling, resolved before validation of combinations. */
+  readonly replacement?: string;
   readonly owner: string;
 }
 
@@ -30,6 +32,7 @@ const MODES = ["ask", "planning", "auto_edit", "no_prompt", "auto_approve", "unr
 export const OPTIONS: readonly OptionDef[] = [
   // Session and execution
   { name: "non-interactive", value: "none", group: "Session et exécution", description: "Exécution automatisée, sans interface.", delivered: true, owner: "SPEC-MOD-002" },
+  { name: "automated", value: "none", group: "Session et exécution", description: "Ancienne forme de --non-interactive.", delivered: true, hidden: true, replacement: "non-interactive", owner: "SPEC-MOD-011" },
   { name: "reopen-last", value: "none", group: "Session et exécution", description: "Reprend la dernière session du dossier courant.", delivered: true, owner: "SPEC-SES-002" },
   { name: "reopen", value: "optional", type: "string", group: "Session et exécution", description: "Reprend une session désignée (--reopen=<id>), ou propose une sélection.", delivered: true, owner: "SPEC-SES-002" },
   { name: "reopen-at", value: "required", type: "string", group: "Session et exécution", description: "Reprend à un point donné de l'historique.", delivered: true, owner: "SPEC-SES-004" },
@@ -57,7 +60,7 @@ export const OPTIONS: readonly OptionDef[] = [
   // Input and output (decision D-06: machine-readable values in English)
   { name: "request-format", value: "required", type: "enum", enumValues: ["text", "jsonl"], group: "Entrées et sorties", description: "Format d'entrée.", defaultText: "text", delivered: true, owner: "SPEC-MOD-003" },
   { name: "result-format", value: "required", type: "enum", enumValues: ["text", "json", "jsonl"], group: "Entrées et sorties", description: "Format de sortie.", defaultText: "text", delivered: true, owner: "SPEC-MOD-003" },
-  { name: "stream-profile", value: "required", type: "enum", enumValues: ["standard", "compact"], group: "Entrées et sorties", description: "Profil de présentation d'une sortie jsonl.", defaultText: "standard", delivered: false, owner: "SPEC-OBS-022" },
+  { name: "stream-profile", value: "required", type: "enum", enumValues: ["standard", "compact"], group: "Entrées et sorties", description: "Profil de présentation d'une sortie jsonl.", defaultText: "standard", delivered: true, owner: "SPEC-OBS-022" },
   { name: "output-schema", value: "required", type: "path-or-content", group: "Entrées et sorties", description: "Schéma JSON du résultat attendu (fichier ou contenu).", delivered: true, owner: "SPEC-MOD-004" },
   { name: "control-channel", value: "none", group: "Entrées et sorties", description: "Ouvre le canal de contrôle d'un programme hôte (avec --request-format jsonl et --result-format jsonl).", delivered: true, owner: "SPEC-MOD-006" },
   { name: "control-listen", value: "optional", type: "string", group: "Entrées et sorties", description: "Canal de contrôle sur une connexion persistante : attend l'hôte (--control-listen=<hôte:port>).", defaultText: "remote.transport.listenAddress", delivered: true, owner: "SPEC-MOD-007" },

@@ -100,7 +100,8 @@ export class TranscriptWriter {
       try {
         fsyncSync(this.#fd);
       } catch {
-        // an fsync failure leaves the data in the system buffers; nothing else to do
+        this.#failed = true;
+        this.warning = "La durabilité de l'enregistrement de session ne peut plus être garantie.";
       }
     }
   }

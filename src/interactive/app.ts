@@ -84,10 +84,14 @@ interface PendingApproval {
 export type ChoiceAnswer = { readonly kind: "options"; readonly labels: readonly string[] } | { readonly kind: "other"; readonly text: string } | { readonly kind: "cancelled" };
 
 interface ChoiceDialog {
+  // Supports: SPEC-SES-009 (CA-03, filtering without sending the query to the model), gap E-149.
   readonly interruptible?: boolean;
   readonly title: string;
   readonly header?: string;
-  readonly options: ReadonlyArray<{ readonly label: string; readonly description?: string; readonly disabledReason?: string }>;
+  options: ReadonlyArray<{ readonly label: string; readonly description?: string; readonly disabledReason?: string }>;
+  readonly filter?: (query: string) => ChoiceDialog["options"];
+  query: string;
+  filtering: boolean;
   readonly preview?: (index: number) => void;
   readonly multiple: boolean;
   /** A free answer is offered as the last option (EF-01 of SPEC-OUT-033). */
@@ -720,7 +724,7 @@ export class InteractiveApp {
    * A question with options, entirely usable from the keyboard (EF-04 of SPEC-OUT-033): arrows, numbers, space to mark
    * with several answers, Enter to validate, Échap to give no answer; the last option is a free answer.
    */
-  choose(title: string, options: ReadonlyArray<{ readonly label: string; readonly description?: string; readonly disabledReason?: string }>, o: { readonly multiple?: boolean; readonly header?: string; readonly other?: boolean; readonly selected?: number; readonly preview?: (index: number) => void; readonly interruptible?: boolean } = {}): Promise<ChoiceAnswer> {
+  choose(title: string, options: ReadonlyArray<{ readonly label: string; readonly description?: string; readonly disabledReason?: string }>, o: { readonly multiple?: boolean; readonly header?: string; readonly other?: boolean; readonly selected?: number; readonly preview?: (index: number) => void; readonly interruptible?: boolean; readonly filter?: (query: string) => ChoiceDialog["options"] } = {}): Promise<ChoiceAnswer> {
     if (o.interruptible && this.#approvals.length > 0) return Promise.resolve({ kind: "cancelled" });
     if (this.#exiting) return Promise.resolve({ kind: "cancelled" });
     if (options.length === 0 && o.other === false) return Promise.resolve({ kind: "cancelled" });
@@ -730,6 +734,9 @@ export class InteractiveApp {
         interruptible: o.interruptible,
         ...(o.header ? { header: o.header } : {}),
         options,
+        filter: o.filter,
+        query: "",
+        filtering: false,
         multiple: o.multiple === true,
         other: o.other !== false,
         selected: Math.max(0, Math.min(o.selected ?? 0, options.length - 1)),
@@ -771,9 +778,19 @@ export class InteractiveApp {
 
   #choiceKey(c: ChoiceDialog, e: KeyEvent, action: string | undefined): void {
     if (this.#now - c.shownAt < this.#o.settings.dialogGuardMs) return;
+    if (c.filter && (c.filtering || e.text === "#")) {
+      if (!c.filtering && e.text === "#") c.query = "";
+      if (e.name === "escape") return c.resolve({ kind: "cancelled" });
+      if (e.name === "enter") c.filtering = false;
+      else if (e.name === "backspace") c.query = c.query.slice(0, -1);
+      else if (e.text && !e.ctrl && !e.alt && c.query.length < 64) { c.filtering = true; c.query += e.text; }
+      else return;
+      c.options = c.filter(c.query); c.selected = 0; c.marked.clear(); this.#redraw(); return;
+    }
     const count = c.options.length + (c.other ? 1 : 0);
     const pick = (index: number) => {
       if (c.other && index === c.options.length) return c.resolve({ kind: "other", text: "\u0000" });
+      if (!c.options[index]) return;
       if (c.options[index]?.disabledReason) { this.#redraw(); return; }
       if (c.multiple) {
         if (c.marked.has(index)) c.marked.delete(index);
@@ -783,6 +800,7 @@ export class InteractiveApp {
       }
       c.resolve({ kind: "options", labels: [c.options[index]!.label] });
     };
+    if (count === 0 && e.name !== "escape" && action !== "dialog.refuse") return;
     if (e.name === "up" || action === "dialog.previous") c.selected = (c.selected + count - 1) % count;
     else if (e.name === "down" || action === "dialog.next") c.selected = (c.selected + 1) % count;
     else if (e.name === "escape" || action === "dialog.refuse") return c.resolve({ kind: "cancelled" }); // FA-01: no answer
@@ -808,16 +826,17 @@ export class InteractiveApp {
       const description = [c.options[i]?.description, c.options[i]?.disabledReason ? `verrouillé : ${c.options[i]!.disabledReason}` : undefined].filter(Boolean).join(" · ");
       return text([{ text: `${i === c.selected ? "❯" : " "} ${i + 1}. ${box}`, style: i === c.selected ? { bold: true } : {} }, { text: label, style: i === c.selected ? { bold: true } : {} }, ...(description ? [{ text: ` — ${description}`, style: { dim: true } }] : [])]);
     });
+    if (labels.length === 0) lines.push(text("Aucune session correspondante."));
     const hint = c.multiple ? "↑↓ · Espace : cocher · Entrée : valider · Échap : sans réponse" : "↑↓ ou chiffre · Entrée : choisir · Échap : sans réponse";
     return { kind: "render", render: (width, ctx) => {
       // Keep the selected entry visible; descriptions may wrap and consume more than one row.
-      const room = Math.max(1, this.#o.terminal.rows - this.#o.settings.inputMinHeight - 8);
+      const room = Math.max(1, this.#o.terminal.rows - this.#o.settings.inputMinHeight - 8 - (c.filter ? 1 : 0));
       const heights = lines.map((line) => layoutNode(line, Math.max(1, width - 4), ctx).lines.length);
       let start = c.selected, end = start + 1, used = heights[start] ?? 1;
       while (end < lines.length && used + heights[end]! <= room) used += heights[end++]!;
       while (start > 0 && used + heights[start - 1]! <= room) used += heights[--start]!;
       const range = start > 0 || end < lines.length ? ` · options ${start + 1}–${end}/${lines.length}` : "";
-      return layoutNode(box([text([...(c.header ? [{ text: `[${c.header}] `, style: { dim: true } }] : []), { text: c.title + range, style: { bold: true } }]), ...lines.slice(start, end), text([{ text: hint, style: { dim: true } }])], { border: { style: t.style }, padding: { left: 1, right: 1 } }), width, ctx);
+      return layoutNode(box([text([...(c.header ? [{ text: `[${c.header}] `, style: { dim: true } }] : []), { text: c.title + range, style: { bold: true } }]), ...(c.filter ? [text(`Filtre : ${c.query || "(aucun)"}${c.filtering ? " — Entrée : appliquer" : " — # : étiquette"}`)] : []), ...lines.slice(start, end), text([{ text: hint, style: { dim: true } }])], { border: { style: t.style }, padding: { left: 1, right: 1 } }), width, ctx);
     } };
   }
 

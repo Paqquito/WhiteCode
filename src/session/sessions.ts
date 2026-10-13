@@ -6,6 +6,15 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ContentPart, HistoryMessage, ToolCall, ToolResultPart } from "../providers/types";
 import { decodeProjectKey, projectKey, type TranscriptRecord } from "./transcript";
+// Implements: SPEC-SES-009 (EF-02/03, CA-03), gap E-149.
+
+export function sessionLabels(records: readonly TranscriptRecord[]): string[] {
+  let labels: string[] = [];
+  for (const record of records) if (record.type === "session_meta" && Array.isArray(record.data["labels"])) {
+    labels = [...new Set(record.data["labels"].filter((value): value is string => typeof value === "string" && /^[a-z0-9_-]{1,32}$/.test(value)))].slice(0, 20);
+  }
+  return labels;
+}
 
 export interface SessionInfo {
   readonly id: string;

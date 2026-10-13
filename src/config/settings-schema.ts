@@ -113,6 +113,7 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "engine.output.format", schema: enumOf(["text", "json", "jsonl"]), default: "text", scopes: [U, P], owner: "SPEC-MOD-003" },
   { key: "engine.output.maxEventSize", schema: durationSchema(), kind: "size", default: 1_048_576, scopes: [U], owner: "SPEC-MOD-003" },
   { key: "engine.output.includeThinking", schema: bool(), default: false, scopes: [U, P], owner: "SPEC-MOD-003" },
+  { key: "ui.streamProfile", schema: enumOf(["standard", "compact"]), default: "standard", scopes: [U, C, G], owner: "SPEC-OBS-022" },
   { key: "engine.outputReserveTokens", schema: int(0), default: 16_000, scopes: [G], owner: "SPEC-MOT-010" },
   { key: "engine.unknownModelContextWindow", schema: int(1), default: 128_000, scopes: [G], owner: "SPEC-MOT-010" },
 

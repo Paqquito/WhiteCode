@@ -14,7 +14,7 @@ export const BUILD_OPTIONS = {
   context_token_target: option(false, "Cible dynamique de taille du contexte.", ["SPEC-MOT-022"]),
   memory_auto_extraction: option(false, "Extraction automatique de mémoire.", ["SPEC-MOT-038"]),
   agent_forked: option(false, "Agent issu d’une copie de contexte.", ["SPEC-AGT-010"]),
-  stream_compact_profile: option(false, "Profil compact du flux de sortie.", ["SPEC-OBS-022"]),
+  stream_compact_profile: option(true, "Profil compact du flux de sortie.", ["SPEC-OBS-022"], ["tool_summary"]),
   system_instructions_export: option(false, "Export des instructions système.", ["SPEC-OBS-019"]),
 } as const;
 export type BuildFlagName = keyof typeof BUILD_OPTIONS;

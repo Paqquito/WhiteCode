@@ -146,6 +146,8 @@ import { backgroundOutputTool, backgroundStopTool, createWorkItemTools, monitorP
 import type { HookBus } from "../extension-points/hooks";
 import { closingFields, combineResults, exitCodeFor, renderResult, type ResultFormat } from "./output";
 import { EventStream } from "./stream-output";
+import { sessionLabels } from "../session/sessions";
+// Supports: SPEC-MOD-005 (CA-15), SPEC-MOD-011 (CA-06), SPEC-OBS-022 (CA-04), SPEC-SES-009, SPEC-CMD-069, gap E-149.
 import { purgeExpiredSessions } from "../session/maintenance";
 import { correctionMessage, extractStructured, loadOutputSchema, schemaInstruction } from "./structured";
 import { InteractiveApp } from "../interactive/app";
@@ -451,6 +453,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     return runSubcommand(argv, { streams, identity, catalog: deps.catalog, env, cwd: deps.cwd, system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, profilePolicyReader: deps.profilePolicyReader, policyFileProtection: deps.policyFileProtection, cachePolicy, credentialVault: deps.credentialVault, validateCredential: deps.validateCredential, signal: deps.signal, assertPolicy });
   }
   const parsed = parseCommandLine(argv);
+  for (const warning of parsed.warnings) err(`avertissement : ${warning}`);
   // SPEC-MOD-010 EF-05: the duration of each phase of the start-up, for the journal.
   const phases: Array<[string, number]> = [];
   let phaseStart = Date.now();
@@ -521,6 +524,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   if (typeof model === "string") cliValues["models.selected"] = model;
   const backupModel = opt("backup-model");
   if (typeof backupModel === "string") cliValues["models.fallback"] = backupModel;
+  if (typeof opt("stream-profile") === "string") cliValues["ui.streamProfile"] = opt("stream-profile");
   const allowRules = opt("allow-rule");
   if (Array.isArray(allowRules)) cliValues["permissions.allowRules"] = allowRules;
   const denyRules = opt("deny-rule");
@@ -712,6 +716,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       ? new EventStream({
           write: (t) => (link ? link.sendLine(t) : streams.writeOut(t)),
           includeThinking: settings.get<boolean>("engine.output.includeThinking"),
+          profile: !controlled && buildFlag("stream_compact_profile") ? settings.get<"standard" | "compact">("ui.streamProfile") : "standard",
           maxEventSize: settings.get<number>("engine.output.maxEventSize"),
           now,
         })
@@ -1369,6 +1374,13 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     );
   }
   const ledger = new BudgetLedger(maxCost, referenceCurrency);
+  const previousBudget = [...(reopened?.records ?? [])].reverse().find(record => record.type === "system" && record.data["event"] === "budget_state");
+  if (previousBudget) {
+    try { ledger.restore(previousBudget.data["state"]); }
+    catch (error) { throw new RunError((error as Error).message, ExitCode.UsageOrConfiguration); }
+  } else if (reopened && maxCost !== undefined && reopened.chain.some(record => record.type === "assistant")) {
+    throw new RunError("Cette ancienne session ne contient pas de journal de budget fiable ; reprenez-la sans plafond ou commencez une nouvelle session sous plafond.", ExitCode.UsageOrConfiguration);
+  }
   // SPEC-API-005: the backup model, checked at start-up (EF-02, ERR-01, ERR-02).
   let fallback: FallbackPolicy | undefined;
   const fallbackValue = settings.get<string | undefined>("models.fallback");
@@ -1598,6 +1610,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
 
   if (reopened) conversation.restore(reopened.history.messages);
   const sessionMeta = {
+    labels: sessionLabels(reopened?.chain ?? []),
     productVersion: identity.version,
     identityHash: identity.hash,
     cwd: projectReal,
@@ -1622,6 +1635,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   if (holder.pendingTitle) transcript?.append("system", { event: "title", title: holder.pendingTitle, source: "manual" });
   // SPEC-SES-015 step 2: results given to the calls left without one are recorded after the branch, never in place.
   for (const repair of reopened?.history.repairs ?? []) transcript?.append("tool_result", { callId: repair.callId, isError: repair.isError, content: repair.content, synthetic: true });
+  if (transcript) ledger.journal(state => {
+    transcript.append("system", { event: "budget_state", state }); transcript.flush();
+    return transcript.warning === undefined;
+  });
 
   // Engine.
   const controller = new AbortController();
@@ -2021,6 +2038,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     stream.sessionId = sessionId;
     control?.channel.sendInit(sessionId); // § 5.4 step 2: before any other message
     stream.emit("session", {
+      streamProfile: stream.profile,
       model: resolvedModel.id,
       tools: registry.list().map((t) => t.name),
       cwd: projectReal,
@@ -3518,10 +3536,18 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           if (args.trim() !== "") target = designateSession(locations.sessionsDir, projectReal, args.trim());
           else {
             // § 5.3 steps 1 and 2: the sessions of the project, the most recent first.
-            const others = projectSessions(locations.sessionsDir, projectReal).filter((s) => s.id !== sessionId).slice(0, 9);
+            const all = projectSessions(locations.sessionsDir, projectReal).filter((s) => s.id !== sessionId).map(session => {
+              const records = readTranscript(session.path).records;
+              return { session, title: sessionTitle(records) ?? session.id.slice(0, 8), labels: sessionLabels(records) };
+            });
+            const others = all.map(entry => entry.session);
             if (others.length === 0) return { refused: "Aucune autre session dans ce projet." };
-            const label = (s: SessionInfo) => `${sessionTitle(readTranscript(s.path).records) ?? s.id.slice(0, 8)} — ${new Date(s.modifiedMs).toLocaleString("fr-FR")}`;
-            const choice = await app!.choose("Quelle session reprendre ?", others.map((s) => ({ label: label(s) })), { other: false });
+            const label = (s: SessionInfo) => {
+              const entry = all.find(entry => entry.session.id === s.id)!;
+              return `${entry.title}${entry.labels.map(value => ` #${value}`).join("")} — ${new Date(s.modifiedMs).toLocaleString("fr-FR")} [${s.id.slice(0, 8)}]`;
+            };
+            const filter = (query: string) => all.filter(entry => query.startsWith("#") ? entry.labels.includes(query.slice(1).toLowerCase()) : entry.title.toLowerCase().includes(query.toLowerCase())).slice(0, 9).map(entry => ({ label: label(entry.session) }));
+            const choice = await app!.choose("Quelle session reprendre ?", filter(""), { other: false, filter });
             if (choice.kind !== "options") return { silent: true };
             target = others.find((s) => label(s) === choice.labels[0]);
           }
@@ -3533,6 +3559,20 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         if (comparablePath(target.project, system.platform) !== comparablePath(projectReal, system.platform)) return { refused: `Cette session appartient à un autre projet (${target.project}) : relancez le produit dans ce dossier.` }; // FA-01
         holder.restart = [...carryArgs(false), `--reopen=${target.id}`];
         return { exit: true };
+      }
+      case "label-session": {
+        // Implements: SPEC-SES-009 (CA-01/02, EF-01/02, RG-01), SPEC-CMD-069 (CA-01), gap E-149.
+        if (!transcript) return { refused: "Cette session n'est pas enregistrée : ses étiquettes ne peuvent pas être conservées." };
+        const labels = new Set(sessionLabels(readTranscript(transcript.path).records));
+        if (!args.trim()) return { note: labels.size ? `Étiquettes : ${[...labels].map(label => `#${label}`).join(" ")}` : "Aucune étiquette." };
+        const label = args.trim().toLowerCase().replace(/\s+/g, "-");
+        if (!/^[a-z0-9_-]{1,32}$/.test(label)) return { refused: "Nom d'étiquette invalide (1 à 32 caractères : lettres sans accent, chiffres, tirets)." };
+        const removing = labels.has(label);
+        if (!removing && labels.size >= 20) return { refused: "Une session peut porter au plus 20 étiquettes." };
+        if (removing) labels.delete(label); else labels.add(label);
+        transcript.append("session_meta", { labels: [...labels] }); transcript.flush();
+        if (transcript.warning) return { refused: transcript.warning };
+        return { note: `Étiquette #${label} ${removing ? "retirée" : "ajoutée"}.` };
       }
       case "retitle": {
         // SPEC-CMD-058 § 5.3: the title given, or one to edit, recorded at once and never replaced automatically.

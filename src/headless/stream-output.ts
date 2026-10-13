@@ -3,6 +3,8 @@
 
 import type { EngineEvent } from "../engine/events";
 import type { ContentPart, ToolResultPart } from "../providers/types";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
+// Implements: SPEC-OBS-022 (CA-01 to CA-03, EF-01 to EF-04, EF-06, RG-01), gap E-149.
 
 /**
  * One JSON object per line (EF-02), written as soon as it is produced. Line separators that JSON leaves raw
@@ -62,14 +64,18 @@ export interface StreamOptions {
   readonly includeThinking: boolean;
   readonly maxEventSize: number;
   readonly now: () => Date;
+  readonly profile?: "standard" | "compact";
 }
 
 /** Writer of the `jsonl` format. Every event carries a type, a timestamp and the session id (EF-03). */
 export class EventStream {
   #sessionId: string | null = null;
   #closed = false;
+  readonly #counts = new Map<string, number>();
 
   constructor(private readonly options: StreamOptions) {}
+
+  get profile(): "standard" | "compact" { return buildFlag("stream_compact_profile") ? this.options.profile ?? "standard" : "standard"; }
 
   set sessionId(id: string) {
     this.#sessionId = id;
@@ -87,6 +93,26 @@ export class EventStream {
 
   /** Engine events mapped to the event types of § 5.3; others are not written. */
   engine(e: EngineEvent): void {
+    if (buildFlag("stream_compact_profile") && this.options.profile === "compact") {
+      if (e.type === "thinking_delta" || e.type === "tool_call" || e.type === "user_message") return;
+      if (e.type === "tool_result") {
+        if (e.isError) this.emit("error", { code: "tool_error", callId: e.callId, message: e.output, elapsedMs: e.durationMs });
+        return;
+      }
+      if (e.type === "text_delta") { this.#counts.clear(); return this.emit("assistant", { content: e.text, partial: true }); }
+      if (e.type === "assistant_message") {
+        if (e.text !== "") { this.#counts.clear(); return this.emit("assistant", { content: e.text, partial: false }); }
+        for (const call of e.toolCalls) {
+          const category = call.name === "read_file" ? "lecture" : ["find_files", "search_content", "search_web"].includes(call.name) ? "recherche" : ["write_file", "edit_file", "edit_notebook"].includes(call.name) ? "modification" : ["run_shell", "run_powershell"].includes(call.name) ? "commande" : "autre";
+          this.#counts.set(category, (this.#counts.get(category) ?? 0) + 1);
+        }
+        if (this.#counts.size > 0) {
+          const label = [...this.#counts].map(([category, count]) => category === "lecture" ? `${count} fichier${count > 1 ? "s lus" : " lu"}` : `${count} ${category}${count > 1 ? "s" : ""}`).join(", ");
+          this.emit("tool_summary", { label, counts: Object.fromEntries(this.#counts) });
+        }
+        return;
+      }
+    }
     switch (e.type) {
       case "text_delta":
         return this.emit("assistant", { content: e.text, partial: true });

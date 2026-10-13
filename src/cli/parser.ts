@@ -1,5 +1,6 @@
 // Implements: SPEC-MOD-011 (§ 5.4, FA-01, FA-03, FA-05, FA-06, EF-01, EF-02, ERR-01 to ERR-06, ENF-02), SPEC-MOD-012 (§ 5.1 structure)
 // Parses the command line against the declarative catalogue. Every error is a usage error (exit code 2).
+// Supports: SPEC-MOD-011 (CA-06, aliases are canonicalized before restrictions), gap E-149.
 
 import { suggest } from "../shared/suggest";
 import { CONFLICTS, DEBUG_DOMAINS, FAMILIES, OPTION_BY_NAME, REQUIRES, type OptionDef } from "./options";
@@ -12,6 +13,7 @@ export type OptionValueMap = Map<string, string | true | string[]>;
 
 export interface ParsedCommandLine {
   readonly options: OptionValueMap;
+  readonly warnings: readonly string[];
   /** Sub-command family and operation, when the first positional names a family (SPEC-MOD-012). */
   readonly subcommand?: { readonly family: string; readonly operation?: string; readonly args: readonly string[] };
   /** Initial request, when given as a positional argument. */
@@ -60,6 +62,7 @@ function checkValue(def: OptionDef, raw: string): void {
 
 export function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
   const options: OptionValueMap = new Map();
+  const warnings = new Set<string>();
   const positionals: string[] = [];
   let endOfOptions = false;
 
@@ -74,12 +77,17 @@ export function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
       continue;
     }
     const eq = token.indexOf("=");
-    const name = token.slice(2, eq === -1 ? undefined : eq);
+    let name = token.slice(2, eq === -1 ? undefined : eq);
     const inline = eq === -1 ? undefined : token.slice(eq + 1);
-    const def = OPTION_BY_NAME.get(name);
+    let def = OPTION_BY_NAME.get(name);
     if (!def) {
       const near = suggest(name, [...OPTION_BY_NAME.keys()].filter((n) => !OPTION_BY_NAME.get(n)!.hidden));
       throw new CliUsageError(`Option inconnue : --${name}.${near[0] ? ` Vouliez-vous dire --${near[0]} ?` : ""}`);
+    }
+    if (def.replacement) {
+      warnings.add(`--${name} est dépréciée ; utilisez --${def.replacement}.`);
+      name = def.replacement;
+      def = OPTION_BY_NAME.get(name)!;
     }
     let value: string | true;
     if (def.value === "none") {
@@ -124,7 +132,7 @@ export function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
   // Positionals: a family name starts a sub-command; otherwise a single request (ERR-05).
   const first = positionals[0];
   if (first !== undefined && FAMILIES.includes(first)) {
-    return { options, subcommand: { family: first, operation: positionals[1], args: positionals.slice(2) } };
+    return { options, warnings: [...warnings], subcommand: { family: first, operation: positionals[1], args: positionals.slice(2) } };
   }
   if (positionals.length > 1) {
     // Several positionals can only be a sub-command: an unknown family gets a suggestion (gap E-031).
@@ -132,7 +140,7 @@ export function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
     if (near[0]) throw new CliUsageError(`Commande inconnue : ${first}. Vouliez-vous dire ${near[0]} ?`);
     throw new CliUsageError("Une seule demande initiale est acceptée (mettez-la entre guillemets).");
   }
-  return { options, prompt: first };
+  return { options, warnings: [...warnings], prompt: first };
 }
 
 /** Options given on the command line whose feature is not delivered in this version. */
