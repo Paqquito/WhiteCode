@@ -42,7 +42,8 @@ function gitCatalog(dir: string, name: string, extra: Record<string, string> = {
 /** A workspace whose user settings are written once: the commands under test write into them. */
 function workspace(): Workspace {
   const ws = bareWorkspace();
-  writeFileSync(join(ws.configHome, "config.json"), JSON.stringify(TEST_USER_CONFIG));
+  // These lifecycle tests inspect the static catalogue; discovery has separate runtime tests.
+  writeFileSync(join(ws.configHome, "config.json"), JSON.stringify({ ...TEST_USER_CONFIG, skills: { discovery: { enabled: false } } }));
   return ws;
 }
 const admin = (ws: Workspace, args: string[], cwd?: string) => cli(args, ws, { env: productEnv(ws), userConfig: null, extra: cwd ? { cwd } : {} });

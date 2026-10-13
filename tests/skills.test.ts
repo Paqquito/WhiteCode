@@ -28,7 +28,7 @@ describe("SPEC-EXT-019 skills", () => {
     const ws = workspace();
     projectSkill(ws, "revue", { description: "Reviews a change against the team checklist." }, "SECRET-CHECKLIST-BODY");
     const p = new ScriptedProvider([{ text: "done" }]);
-    await run(ws, p, ["--allow-project-trust", "x"]);
+    await run(ws, p, ["--allow-project-trust", "x"], { skills: { discovery: { enabled: false } } });
     expect(system(p)).toContain("- revue: Reviews a change against the team checklist.");
     expect(system(p)).not.toContain("SECRET-CHECKLIST-BODY");
     expect(toolNames(p, 0)).toContain("use_skill");
@@ -70,7 +70,7 @@ describe("SPEC-EXT-019 skills", () => {
     projectSkill(ws, "revue", { description: "Project review." }, "project body");
     userSkill(ws, "revue", { description: "User review." }, "user body");
     const p = new ScriptedProvider([{ text: "done" }]);
-    const res = await run(ws, p, ["--allow-project-trust", "x"]);
+    const res = await run(ws, p, ["--allow-project-trust", "x"], { skills: { discovery: { enabled: false } } });
     expect(system(p)).toContain("- revue: Project review.");
     expect(system(p)).not.toContain("User review.");
     expect(res.stderr).toContain("La compétence revue de portée user est masquée par celle de portée project ; elle reste joignable par /user:revue.");

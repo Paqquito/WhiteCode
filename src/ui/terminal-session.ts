@@ -1,3 +1,5 @@
+// Supports: SPEC-IHM-038 (sequential terminal option), gap E-161.
+// Supports: SPEC-OBS-010 (configurable slow-frame threshold), gap E-160.
 // Implements: SPEC-IHM-001 (§ 5.5 restoration on exit, error or signal, EF-02, RG-02, CA-04; § 5.4 resize)
 // A terminal taken over by the interface: raw input, rendering, resize handling, and restoration of the state found at
 // start whatever the way out (normal close, error, process exit).
@@ -20,9 +22,11 @@ export function openTerminalSession(
     readonly source: (size: { columns: number; rows: number }) => Frame;
     readonly scheduler?: Scheduler;
     readonly onBroken?: (error: unknown) => void;
+    readonly slowFrameMs?: number;
+    readonly sequential?: boolean;
   },
 ): TerminalSession {
-  const screen = new Screen({ terminal, capabilities: o.capabilities, maxFramesPerSecond: o.maxFramesPerSecond, source: o.source, scheduler: o.scheduler, onBroken: o.onBroken });
+  const screen = new Screen({ terminal, capabilities: o.capabilities, maxFramesPerSecond: o.maxFramesPerSecond, source: o.source, scheduler: o.scheduler, onBroken: o.onBroken, slowFrameMs: o.slowFrameMs, sequential: o.sequential });
   let closed = false;
   const unsubscribe: Array<() => void> = [];
   const close = () => {

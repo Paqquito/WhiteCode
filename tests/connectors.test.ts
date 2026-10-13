@@ -118,9 +118,15 @@ describe("SPEC-MCP-002 stdio transport", () => {
     const r = record(ws, "connector-hook");
     userConnectors(ws, { docs: fake(ws, "docs", { tools: tools("search") }) });
     const p = new ScriptedProvider([{ toolCalls: [{ name: "cnx_docs_search", input: { q: "a" } }] }, { text: "done" }]);
-    await run(ws, p, { ...allow, hooks: { before_tool: [{ match: "cnx_docs_*", actions: [{ type: "command", command: r.command }] }] } });
+    const result = await cli(["--non-interactive", "--wait-for-mcp", "x"], ws, {
+      provider: p, env: productEnv(ws), signal: AbortSignal.timeout(10_000),
+      userConfig: { ...allow, hooks: { before_tool: [{ match: "cnx_docs_*", actions: [{ type: "command", command: r.command }] }] } },
+    });
+    expect(result.code).toBe(0);
     expect(r.read().map((x) => x.toolId)).toEqual(["cnx_docs_search"]);
-  });
+    expect(p.requests).toHaveLength(2);
+    expect(results(p, 1).join("")).toContain('called search with {\\"q\\":\\"a\\"}');
+  }, 15_000);
 
   test("SPEC-MCP-002/CA-02 — the session ends: the server process no longer exists", async () => {
     const ws = workspace();

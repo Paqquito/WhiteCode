@@ -4,9 +4,13 @@ export const BUILD_PROFILES = ["public", "internal", "development", "test"] as c
 export type BuildProfile = (typeof BUILD_PROFILES)[number];
 const option = (value: boolean, description: string, specs: string[], absentMarkers: string[] = []) => ({ description, specs, implemented: value, values: { public: value, internal: value, development: value, test: value }, absentMarkers });
 export const BUILD_OPTIONS = {
+  mode_brief: option(true, "Vue des messages adressés avec accès au détail.", ["SPEC-MOD-029", "SPEC-OUT-034", "SPEC-CMD-007"]),
+  skill_discovery: option(true, "Sélection locale des compétences pertinentes.", ["SPEC-OUT-038"]),
+  review_artifact: option(true, "Décisions humaines sur les constats de revue.", ["SPEC-OUT-045"]),
   ui_fast_find: option(true, "Navigation par fichier et recherche locale au clavier.", ["SPEC-IHM-015", "SPEC-IHM-018"], ["Ouverture rapide", "Recherche globale"]),
   ui_history_browser: option(true, "Sélecteur filtrable de l’historique des saisies.", ["SPEC-IHM-016"], ["Filtrer mes saisies"]),
   ui_message_menu: option(true, "Copie et reprise des messages en vue plein écran.", ["SPEC-IHM-017", "SPEC-IHM-034"], ["Copier le bloc"]),
+  ui_dev_bar: { ...option(true, "Dernières opérations lentes du profil de développement.", ["SPEC-IHM-039"], ["Développement ·"]), values: { public: false, internal: true, development: true, test: true } },
   hook_questions: option(true, "Questions humaines posées par les crochets synchrones.", ["SPEC-HOK-011"], ["Question du crochet"]),
   scheduled_triggers: option(true, "Déclencheurs locaux et outils de planification.", ["SPEC-PLA-001", "SPEC-PLA-005", "SPEC-OUT-031"], ["Create a local scheduled prompt", "List the local scheduled prompts"]),
   agent_explorer_planner: option(true, "Agents intégrés d’exploration et de planification en lecture seule.", ["SPEC-AGT-003"], ["You are the repository explorer", "You are the implementation planner"]),
@@ -22,10 +26,14 @@ export const BUILD_OPTIONS = {
   cache_miss_diagnostics: option(true, "Détection de pertes de cache non expiré.", ["SPEC-MOT-034"]),
   thinking_max_keyword: option(true, "Réflexion maximale pour un seul tour.", ["SPEC-MOT-024"]),
   context_overflow_probe: { ...option(true, "Résultat volumineux déterministe, réservé aux tests.", ["SPEC-OUT-048"], ["Generate a deterministic context overflow probe"]), values: { public: false, internal: false, development: false, test: true } },
+  permission_test: { ...option(true, "Vérification sans effet du circuit de permission.", ["SPEC-OUT-049"], ["Exercise the ordinary permission circuit"]), values: { public: false, internal: false, development: false, test: true } },
+  telemetry_enhanced: option(true, "Traces enrichies sur double consentement, en bêta.", ["SPEC-OBS-005"], ["tool.input.bytes", "tool.output.bytes"]),
+  telemetry_orchestrator_role: { ...option(true, "Étiquette du rôle de collaboration dans les diagnostics.", ["SPEC-OBS-007"], ["orchestrator.role"]), values: { public: false, internal: true, development: true, test: true } },
   memory_auto_extraction: option(false, "Extraction automatique de mémoire.", ["SPEC-MOT-038"]),
   agent_forked: option(false, "Agent issu d’une copie de contexte.", ["SPEC-AGT-010"]),
   stream_compact_profile: option(true, "Profil compact du flux de sortie.", ["SPEC-OBS-022"], ["tool_summary"]),
-  system_instructions_export: option(false, "Export des instructions système.", ["SPEC-OBS-019"]),
+  strict_failure: { ...option(true, "Arrêt à la première erreur journalisée.", ["SPEC-OBS-014"], ["STRICT-FAILURE:"]), values: { public: false, internal: true, development: true, test: true } },
+  system_instructions_export: { ...option(true, "Export des instructions système.", ["SPEC-OBS-019"], ["Export non masqué des instructions système"]), values: { public: false, internal: true, development: true, test: true } },
 } as const;
 export type BuildFlagName = keyof typeof BUILD_OPTIONS;
 export type BuildValues = Readonly<Record<BuildFlagName, boolean>>;
@@ -37,6 +45,8 @@ export function resolveBuildOptions(profile: string, overrides: unknown = {}): B
   for (const [name, value] of Object.entries(overrides)) {
     if (!Object.hasOwn(BUILD_OPTIONS, name)) throw new Error(`Option de build inconnue : ${name}.`);
     if (typeof value !== "boolean") throw new Error(`Valeur booléenne attendue pour ${name}.`);
+    if (value && profile === "public" && ["telemetry_orchestrator_role", "ui_dev_bar", "strict_failure", "system_instructions_export"].includes(name)) throw new Error(`Option réservée aux profils internes : ${name}.`);
+    if (value && profile !== "test" && ["permission_test", "context_overflow_probe"].includes(name)) throw new Error(`Option réservée au profil de test : ${name}.`);
     if (value && !BUILD_OPTIONS[name as BuildFlagName].implemented) throw new Error(`Option de build réservée, fonctionnalité non livrée : ${name}.`);
     values[name as BuildFlagName] = value;
   }

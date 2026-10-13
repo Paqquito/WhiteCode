@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
-import { runToCompletion } from "../src/platform/process";
+import { runToCompletion, startChild } from "../src/platform/process";
 import { loadIdentity, ROOT, workspace } from "./helpers/env";
 import { BUN, productEnv } from "./helpers/hooks";
 import { resolveIdentityText, runtimeIdentity } from "../src/identity/resolver";
@@ -24,9 +24,64 @@ function fixture() {
     return runToCompletion(BUN, [join(root, "scripts/build.ts"), ...args], { cwd: root, env: productEnv(ws), timeoutMs: 120_000 });
   };
   const manifest = () => JSON.parse(readFileSync(join(root, "dist/manifest.json"), "utf8"));
-  const run = (file: string, args: string[]) => runToCompletion(join(root, "dist", file), args, { cwd: ws.project, env: productEnv(ws), timeoutMs: 10_000 });
+  const run = async (file: string, args: string[], env: Record<string, string> = {}) => {
+    const stdout: Buffer[] = [], stderr: Buffer[] = [];
+    const child = startChild(join(root, "dist", file), args, { cwd: ws.project, env: productEnv(ws, { [`${loadIdentity().get("ENV_PREFIX")}CONFIG_HOME`]: ws.configHome, ...env }), onData: chunk => stdout.push(chunk), onErrorData: chunk => stderr.push(chunk) });
+    const deadline = setTimeout(() => void child.killTree(50), 10_000);
+    try { return { code: await child.exited, stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8") }; }
+    finally { clearTimeout(deadline); }
+  };
   return { root, ws, build, manifest, run };
 }
+
+test("SPEC-BLD-006/CA-01 — SPEC-BLD-008/CA-01 — two identities generate their package manifests and extension author documentation", async () => {
+  const f = fixture();
+  for (const file of ["identity/dev.identity.json", "identity/test-omega.identity.json"]) {
+    const result = await runToCompletion(BUN, [join(f.root, "scripts/generate.ts"), "--identity", file], { cwd: f.root, env: productEnv(f.ws), timeoutMs: 10_000 });
+    expect(result.code).toBe(0); const expected = loadIdentity(file);
+    const pkg = JSON.parse(readFileSync(join(f.root, "src/identity/generated/package.json"), "utf8"));
+    const documentation = readFileSync(join(f.root, "src/identity/generated/extension-authors.html"), "utf8");
+    expect(documentation).toContain(expected.get("HINT_TAG")); expect(documentation).toContain(`${expected.get("ENV_PREFIX")}CHILD_PROCESS`); expect(documentation).not.toMatch(/\{\{[A-Z_]+\}\}/);
+    expect(pkg.name).toBe(expected.get("PRODUCT_SLUG")); expect(pkg.author).toBe(expected.get("SOCIETY")); expect(pkg.bin).toEqual({ [expected.get("PRODUCT_SLUG")]: `${expected.get("PRODUCT_CLI")}.js` }); expect(pkg.engines.bun).toBe(">=1.4.2");
+  }
+}, 30_000);
+
+test("SPEC-BLD-009/CA-01 — SPEC-BLD-009/CA-02 — the public executable ignores profile environment overrides and contains no internal feature markers", async () => {
+  const f = fixture(); expect((await f.build()).code).toBe(0);
+  const file = f.manifest().deliverables.find((d: { target: string }) => d.target === "current").file;
+  const prefix = loadIdentity().get("ENV_PREFIX");
+  const result = await runToCompletion(join(f.root, "dist", file), ["--strict-failure"], { cwd: f.ws.project, env: productEnv(f.ws, { [`${prefix}BUILD_PROFILE`]: "internal", [`${prefix}ORCHESTRATOR_ROLE`]: "relecteur", [`${prefix}FEATURE_OVERRIDES`]: '{"strict_failure":true}' }), timeoutMs: 10_000 });
+  expect(result.code).not.toBe(0); expect(result.stderr).toContain("inconnue");
+  for (const d of f.manifest().deliverables.filter((d: { target: string }) => ["bundle", "current"].includes(d.target))) {
+    const content = readFileSync(join(f.root, "dist", d.file));
+    for (const marker of ["STRICT-FAILURE:", "orchestrator.role", "Export non masqu", "Développement ·"]) expect(content.includes(Buffer.from(marker))).toBe(false);
+  }
+}, 150_000);
+
+test("SPEC-OBS-019/CA-01 — the internal export includes project instructions without connecting to the model service", async () => {
+  const f = fixture(), identity = loadIdentity();
+  writeFileSync(join(f.ws.configHome, "config.json"), JSON.stringify({ api: { provider: "openai_compatible", baseUrl: "http://127.0.0.1:9/v1" }, models: { selected: "fixture-model" } }));
+  writeFileSync(join(f.ws.project, identity.get("INSTRUCTIONS_FILE")), "PROJECT_INSTRUCTION_EXPORT_WITNESS\n");
+  const built = await f.build(["--profile", "internal"]); if (built.code !== 0) throw new Error(built.stderr + built.stdout);
+  const file = f.manifest().deliverables.find((d: { target: string }) => d.target === "current").file;
+  const result = await f.run(file, ["--export-system-instructions", "--non-interactive", "--ephemeral", "--allow-project-trust"]);
+  if (result.code !== 0) throw new Error(result.stderr + result.stdout);
+  expect(result.code).toBe(0); expect(result.stdout).toContain("PROJECT_INSTRUCTION_EXPORT_WITNESS"); expect(result.stderr).toContain("Export non masqué"); expect(existsSync(join(f.ws.configHome, "sessions"))).toBe(false);
+}, 150_000);
+
+test("SPEC-OBS-014/CA-01 — the internal strict mode stops on a recoverable logged model error with exit code one", async () => {
+  const f = fixture(), server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({ error: { message: "fixture failure" } }, { status: 503 }) });
+  writeFileSync(join(f.ws.configHome, "config.json"), JSON.stringify({ api: { provider: "openai_compatible", baseUrl: `http://127.0.0.1:${server.port}/v1`, maxRetries: 0 }, models: { selected: "fixture-model" } }));
+  try {
+    const built = await f.build(["--profile", "internal"]); if (built.code !== 0) throw new Error(built.stderr + built.stdout);
+    const file = f.manifest().deliverables.find((d: { target: string }) => d.target === "current").file;
+    const prefix = loadIdentity().get("ENV_PREFIX");
+    const result = await f.run(file, ["--strict-failure", "--non-interactive", "--ephemeral", "go"], { [`${prefix}TELEMETRY`]: "1", [`${prefix}ORCHESTRATOR_ROLE`]: "relecteur", OTEL_LOGS_EXPORTER: "console", OTEL_METRICS_EXPORTER: "none", OTEL_TRACES_EXPORTER: "none" });
+    if (result.code !== 1) throw new Error(`Exit ${result.code}: ${result.stderr + result.stdout}`);
+    expect(result.code).toBe(1); expect(result.stderr).toContain("STRICT-FAILURE:"); expect(result.stderr).toContain("Error");
+    expect(result.stderr).toContain('"key":"orchestrator.role"'); expect(result.stderr).toContain('"stringValue":"relecteur"');
+  } finally { server.stop(true); }
+}, 150_000);
 
 test("SPEC-CAD-002/CA-10 — an unknown variable in a product resource rejects the actual strict build with ERR-06 and a spelling suggestion", async () => {
   const f = fixture(), entry = join(f.root, "src/main.ts");

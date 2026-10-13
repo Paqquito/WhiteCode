@@ -1,3 +1,4 @@
+// Supports: SPEC-IHM-002 (CA-03, explicit transcript navigation and new-content indicator), gap E-161.
 // Implements: SPEC-IHM-006 (§ 5.1 opening and closing on the alternate screen, § 5.2 content, § 5.3 navigation, § 5.4 folding, § 5.5 search, FA-01 to FA-05, EF-01 to EF-07, ERR-02, ERR-03, RG-01 to RG-03, ENF-01, ENF-02, CA-01 to CA-06),
 //             SPEC-IHM-002 (§ 5.5 keyboard navigation of a view with its own scrolling, EF-07, CA-05 wide content scrolled horizontally)
 // The full-screen view of the transcript: every item of the session with its author, time, kind and content; long
@@ -84,6 +85,7 @@ export class TranscriptView {
   #selected: number | undefined;
   #menu: Array<{ label: string; content: string }> | undefined;
   #message = "";
+  #newContent = false;
   readonly #actions?: MessageActions;
 
   constructor(o: {
@@ -128,6 +130,7 @@ export class TranscriptView {
   refresh(): void {
     this.#screen?.invalidate();
   }
+  newContent(): void { if (!this.#state.atBottom) this.#newContent = true; this.refresh(); }
 
   resized(): void {
     // FA-05, CA-06: the current item stays in view once the lines are computed again for the new width.
@@ -230,6 +233,7 @@ export class TranscriptView {
     const current = this.#state.atBottom && items.length > 0 ? (this.#rows[this.#rows.length - 1]?.item ?? 0) : (this.#rows[this.#state.top]?.item ?? 0);
     const header: Span[] = [
       { text: ` ${this.#title}`, style: { bold: true, inverse: true } },
+      ...(this.#newContent && !this.#state.atBottom ? [{ text: " · nouveau contenu", style: { inverse: true } }] : []),
       { text: ` · élément ${items.length === 0 ? 0 : current + 1}/${items.length} · tour ${items[current]?.turn ?? 0}${this.#state.scrollX > 0 ? ` · décalage ${this.#state.scrollX}` : ""} `, style: { inverse: true } },
     ];
     const lines: Cell[][] = [this.#line(header, size.columns, true)];
@@ -261,6 +265,7 @@ export class TranscriptView {
     const maxTop = Math.max(0, this.#rows.length - bodyHeight);
     this.#state.top = Math.max(0, Math.min(top, maxTop));
     this.#state.atBottom = this.#state.top >= maxTop;
+    if (this.#state.atBottom) this.#newContent = false;
   }
 
   #toItem(index: number): void {

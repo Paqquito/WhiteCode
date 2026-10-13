@@ -80,9 +80,11 @@ describe("openai_compatible: end to end through the SDK", () => {
     expect(server.requests[0]!.path).toBe("/v1/chat/completions");
     expect(server.requests[0]!.body["model"]).toBe("test-medium");
     const second = server.requests[1]!.body["messages"] as Array<Record<string, unknown>>;
-    expect(second[2]).toEqual({ role: "assistant", content: null, tool_calls: [{ id: "call_a", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: file }) } }] });
-    expect(second[3]).toMatchObject({ role: "tool", tool_call_id: "call_a" });
-    expect(String(second[3]!["content"])).toContain("ARTICHOKE");
+    const assistantIndex = second.findIndex(message => message["role"] === "assistant");
+    expect(assistantIndex).toBeGreaterThanOrEqual(0);
+    expect(second[assistantIndex]).toEqual({ role: "assistant", content: null, tool_calls: [{ id: "call_a", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: file }) } }] });
+    expect(second[assistantIndex + 1]).toMatchObject({ role: "tool", tool_call_id: "call_a" });
+    expect(String(second[assistantIndex + 1]!["content"])).toContain("ARTICHOKE");
     // Append-only: the second request extends the first one.
     const first = server.requests[0]!.body["messages"] as unknown[];
     expect(JSON.stringify(second.slice(0, first.length))).toBe(JSON.stringify(first));
@@ -109,9 +111,11 @@ describe("openai_compatible: end to end through the SDK", () => {
     const r = await cli(["--non-interactive", "--result-format", "json", "Which port?"], workspace(), { userConfig: withServer(server.baseURL) });
     expect(JSON.parse(r.stdout)).toMatchObject({ result: "8080", haltReason: "completed", iterations: 2 });
     const second = server.requests[1]!.body["messages"] as Array<Record<string, unknown>>;
-    expect(second[2]).toEqual({ role: "assistant", content: "" });
-    expect(second[3]).toMatchObject({ role: "user" });
-    expect(String(JSON.stringify(second[3]))).toContain("contained no answer");
+    const assistantIndex = second.findIndex(message => message["role"] === "assistant");
+    expect(assistantIndex).toBeGreaterThanOrEqual(0);
+    expect(second[assistantIndex]).toEqual({ role: "assistant", content: "" });
+    expect(second[assistantIndex + 1]).toMatchObject({ role: "user" });
+    expect(String(JSON.stringify(second[assistantIndex + 1]))).toContain("contained no answer");
   });
 
   test("TECH — invalid JSON arguments are reported to the model, never executed", async () => {

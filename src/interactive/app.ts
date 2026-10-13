@@ -1,3 +1,5 @@
+// Supports: SPEC-MOD-029, SPEC-OUT-034/045, SPEC-IHM-002/023/038, gap E-161.
+// Supports: SPEC-OBS-010, SPEC-IHM-039 (frame measurements and internal development bar), gap E-160.
 // Implements: SPEC-MOD-001 (§ 5.2 steps 2 to 7, § 5.4 states, FA-01, FA-02, FA-04, EF-02, EF-03, EF-05, EF-06, ERR-03, CA-01, CA-02, CA-03), SPEC-IHM-007 (§ 5.4, § 5.5, § 5.6, FA-01, FA-02, FA-05, EF-04 to EF-07, CA-01, CA-03, CA-06, CA-07, CA-12), SPEC-IHM-011 (§ 5.1 to § 5.5, EF-01 to EF-05, EF-07, ERR-01, ERR-02, CA-01 to CA-06), SPEC-IHM-027 (§ 5.1, § 5.3, FA-01, EF-01 to EF-04, RG-01, CA-01, CA-02)
 // The interactive application: input area, conversation flow, temporary panels, status line. It turns keys into actions,
 // keeps the draft, the queue of messages and the stashed drafts, shows the permission dialog in a fixed zone, and hands
@@ -10,7 +12,7 @@
 
 import type { Terminal } from "../platform/terminal";
 // Supports: SPEC-IHM-015/016/017/018/021/024/034, SPEC-IHM-005 CA-05, SPEC-INT-019, gap E-159.
-import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
+import { buildFlag, buildProfile } from "../extension-points/build-flags" with { type: "macro" };
 import { matchQuality } from "./completion";
 import type { FileMatch } from "./file-browser";
 import { highlight, DEFAULT_CODE_THEME } from "../ui/highlight";
@@ -43,6 +45,7 @@ import { diffNode, type DiffOptions } from "../ui/diff-view";
 import { activityView, interruptionView, modelView, noticeView, toolCallView, toolResultView, userView, type ViewContext } from "./views";
 
 export interface AppSettings {
+  readonly slowFrameMs?: number;
   readonly maxFramesPerSecond: number;
   readonly minColumns: number;
   readonly retainedLines: number;
@@ -109,6 +112,7 @@ interface ChoiceDialog {
   /** A free answer is offered as the last option (EF-01 of SPEC-OUT-033). */
   readonly other: boolean;
   selected: number;
+  previewOffset: number;
   readonly marked: Set<number>;
   readonly shownAt: number;
   readonly resolve: (answer: ChoiceAnswer) => void;
@@ -141,15 +145,19 @@ export function principalElement(input: unknown): string | undefined {
 const SCOPE_LABEL: Readonly<Record<(typeof RULE_SCOPES)[number], string>> = { session: "session", local: "projet (local)", project: "projet (partagé)", user: "utilisateur" };
 
 export interface AppOptions {
+  readonly brief?: () => boolean;
   readonly externalEditor?: (draft: string) => Promise<string | undefined>;
   readonly messageActions?: { readonly enabled: boolean; readonly copy: (text: string) => Promise<boolean>; readonly edit?: (item: TranscriptItem) => Promise<void> };
   readonly footer?: () => { readonly spans: readonly Span[]; readonly padding: number } | undefined;
+  readonly developmentBar?: () => string | undefined;
   readonly fileBrowser?: { readonly matches: (query: string, global: boolean) => FileMatch[]; readonly debounceMs: number; readonly open?: (match: FileMatch) => Promise<void> };
   readonly historyBrowser?: boolean;
   readonly maxKeyword?: () => { keyword: string; supported: boolean } | undefined;
   // Supports: SPEC-IHM-036 (CA-01, pending decision), gap E-150.
   readonly onApprovalWaiting?: (waiting: boolean) => void;
   readonly reducedMotion?: boolean;
+  readonly screenReader?: boolean;
+  readonly tips?: boolean;
   readonly terminal: Terminal;
   readonly capabilities: Capabilities;
   readonly settings: AppSettings;
@@ -228,12 +236,16 @@ export class InteractiveApp {
   #session: TerminalSession | undefined;
   #unsubscribeInput: (() => void) | undefined;
   #unsubscribeResize: (() => void) | undefined;
+  #developmentTimer?: ReturnType<typeof setInterval>;
   #waiting: ((e: Entry) => void) | undefined;
   #turn: AbortController | undefined;
   #turnStarted = 0;
   #activity = "Réflexion…";
   #tokenGoal = "";
   #spinner = 0;
+  #tipTimer?: ReturnType<typeof setTimeout>;
+  #tip?: string;
+  readonly #shownTips = new Set<string>();
   #animation: ReturnType<typeof setInterval> | undefined;
   #stream = "";
   /** Renderer of the response being produced: its finished blocks are not parsed again (ENF-02 of SPEC-IHM-003). */
@@ -250,6 +262,7 @@ export class InteractiveApp {
   #shellCommand = "";
   /** The text of the current response was committed before its end (by a call of a tool). */
   #responseCommitted = false;
+  #lastAddressed = "";
   #exitArmed: { combo: string; until: number } | undefined;
   #hint: string | undefined;
   #exiting = false;
@@ -307,6 +320,7 @@ export class InteractiveApp {
 
   /** The shape of the cursor follows the mode: a bar to insert, a block for the commands (CA-01). */
   #updateCursorShape(): void {
+    if (this.#o.screenReader) return;
     const shape = !this.#modal ? "" : this.#modal.mode === "insert" ? "\u001b[6 q" : "\u001b[2 q";
     if (shape === this.#cursorShape) return;
     this.#o.terminal.write(shape || "\u001b[0 q");
@@ -378,6 +392,7 @@ export class InteractiveApp {
 
   /** § 5.1: the view opens over the session, which goes on behind it (EF-05, CA-04). */
   openTranscript(): void {
+    if (this.#o.screenReader) { for (const item of this.#items) this.commit(text(`${item.title}\n${item.body}`)); return; }
     if (this.#transcriptView || !this.#session) return;
     const settings = this.#o.transcript ?? { defaultDetail: "normal", collapseThreshold: 20, showThinking: true, title: "Transcription" };
     this.#session.screen.suspend();
@@ -470,6 +485,8 @@ export class InteractiveApp {
     this.#session = openTerminalSession(this.#o.terminal, {
       capabilities: this.#o.capabilities,
       maxFramesPerSecond: this.#o.settings.maxFramesPerSecond,
+      slowFrameMs: this.#o.settings.slowFrameMs,
+      sequential: this.#o.screenReader,
       source: (size) => this.#frame(size),
       scheduler: this.#o.scheduler,
     });
@@ -477,14 +494,18 @@ export class InteractiveApp {
     this.#unsubscribeResize = this.#o.terminal.onResize(() => this.#transcriptView?.resized());
     this.#updateCursorShape();
     this.#session.screen.flush();
+    if (buildFlag("ui_dev_bar") && buildProfile() !== "public" && this.#o.developmentBar) this.#developmentTimer = setInterval(() => this.#redraw(), 500);
   }
 
   /** Replays input captured after startup consent once the ordinary input consumer is installed. */
+  get renderStats() { return this.#session?.screen.stats; }
   acceptStartupInput(chunks: readonly string[]): void { for (const chunk of chunks) this.#input(chunk); }
 
   /** Restores the terminal; idempotent. */
   stop(): void {
+    if (this.#tipTimer) clearTimeout(this.#tipTimer); this.#tipTimer = undefined;
     this.#exiting = true;
+    clearInterval(this.#developmentTimer); this.#developmentTimer = undefined;
     if (this.#cursorShape) {
       this.#o.terminal.write("\u001b[0 q"); // the shape of the cursor found at start
       this.#cursorShape = "";
@@ -555,13 +576,22 @@ export class InteractiveApp {
 
   /** A turn starts: the input area stays usable (EF-07 of SPEC-IHM-007); an interruption aborts `controller`. */
   beginTurn(controller: AbortController): void {
+    this.#tip = undefined; if (this.#tipTimer) clearTimeout(this.#tipTimer);
+    if (this.#o.tips !== false) this.#tipTimer = setTimeout(() => {
+      this.#tipTimer = undefined; if (!this.running || this.#o.screenReader) return;
+      for (const [action, label] of [["view.transcript", "consulter la transcription"], ["app.interrupt", "interrompre le tour"]]) {
+        const combo = this.#keymap.effective(action!)[0]; if (!combo || this.#shownTips.has(action!)) continue;
+        this.#shownTips.add(action!); this.#tip = `Astuce : ${comboLabel(combo)} pour ${label}.`; this.#redraw(); break;
+      }
+    }, 600);
     this.#tokenGoal = "";
     this.#turn = controller;
     this.#turnStarted = this.#now;
     this.#activity = "Réflexion…";
     this.#stream = "";
     this.#responseCommitted = false;
-    if (!this.#o.reducedMotion) this.#animation = setInterval(() => {
+    this.#lastAddressed = "";
+    if (!this.#o.reducedMotion && !this.#o.screenReader) this.#animation = setInterval(() => {
       this.#spinner++;
       this.#redraw();
     }, 120);
@@ -570,6 +600,7 @@ export class InteractiveApp {
 
   /** The turn is over: what remains of the response is committed; the interruption leaves its marker (FA-01). */
   endTurn(outcome: { readonly stopCause: string; readonly message?: string }): void {
+    if (this.#tipTimer) clearTimeout(this.#tipTimer); this.#tipTimer = undefined;
     this.#stopAnimation();
     this.#flushStream();
     this.#turn = undefined;
@@ -585,6 +616,12 @@ export class InteractiveApp {
   /** Engine events of the turn, displayed as they arrive (ENF-01: the first character as soon as it is received). */
   onEngineEvent(e: EngineEvent): void {
     switch (e.type) {
+      case "addressed_message":
+        this.#lastAddressed = e.message; this.commit(modelView(e.message, this.#view)); this.record("model", e.status === "proactive" ? "Initiative" : "Message", e.message);
+        for (const attachment of e.attachments) this.notice("info", `Pièce jointe : ${attachment.name}`);
+        break;
+      case "notification":
+        this.notice("info", `Notification : ${e.message}`); break;
       case "token_goal":
         this.#tokenGoal = ` · ${e.consumed} / ${e.goal} jetons`;
         this.#redraw(); break;
@@ -605,6 +642,7 @@ export class InteractiveApp {
       }
       case "text_delta":
         this.#stream += e.text;
+        this.#transcriptView?.newContent();
         this.#activity = "Rédaction…";
         this.#redraw();
         break;
@@ -619,7 +657,8 @@ export class InteractiveApp {
         this.#redraw();
         break;
       case "assistant_message":
-        this.#flushStream(e.text);
+        if (!this.#o.brief?.() || (e.toolCalls.length === 0 && e.text.trim() && e.text.trim() !== this.#lastAddressed.trim())) this.#flushStream(e.text);
+        else { this.#stream = ""; this.#streamRenderer = undefined; }
         if (this.#thinking.trim()) this.record("thinking", "", this.#thinking.trim());
         this.#thinking = "";
         if (e.text.trim()) this.record("model", "", e.text.trim());
@@ -628,12 +667,12 @@ export class InteractiveApp {
         this.#flushStream();
         this.#callNames.set(e.callId, e.name);
         this.#activity = `${e.name}…`;
-        this.commit(toolCallView(e.name, this.#o.describeCall(e.name, e.input), this.#view));
+        if (!this.#o.brief?.()) this.commit(toolCallView(e.name, this.#o.describeCall(e.name, e.input), this.#view));
         this.record("tool", `${e.name}  ${this.#o.describeCall(e.name, e.input)}`, JSON.stringify(e.input ?? {}, null, 2), { primary: principalElement(e.input) });
         break;
       case "tool_result":
         // EF-06 of SPEC-IHM-006: a sensitive value is masked in the flow as in the view.
-        this.commit(toolResultView(maskSecrets(e.output), e.isError, this.#view));
+        if (!this.#o.brief?.() || e.isError) this.commit(toolResultView(maskSecrets(e.output), e.isError, this.#view));
         this.record("result", `${this.#callNames.get(e.callId) ?? "outil"}${e.isError ? " (erreur)" : ""}`, e.output);
         this.#activity = "Réflexion…";
         break;
@@ -661,6 +700,7 @@ export class InteractiveApp {
    * response that follows then adds nothing.
    */
   #flushStream(final?: string): void {
+    if (this.#o.brief?.() && final === undefined) { this.#stream = ""; this.#streamRenderer = undefined; return; }
     if (final !== undefined && this.#responseCommitted) {
       this.#responseCommitted = false;
       this.#stream = "";
@@ -856,6 +896,7 @@ export class InteractiveApp {
         multiple: o.multiple === true,
         other: o.other !== false,
         selected: Math.max(0, Math.min(o.selected ?? 0, options.length - 1)),
+        previewOffset: 0,
         ...(o.preview ? { preview: o.preview } : {}),
         marked: new Set(),
         shownAt: this.#now,
@@ -898,6 +939,8 @@ export class InteractiveApp {
 
   #choiceKey(c: ChoiceDialog, e: KeyEvent, action: string | undefined): void {
     if (this.#now - c.shownAt < this.#o.settings.dialogGuardMs) return;
+    if (c.previewText && (e.name === "pageup" || e.name === "pagedown")) { c.previewOffset = Math.max(0, c.previewOffset + (e.name === "pagedown" ? 5 : -5)); this.#redraw(); return; }
+    c.previewOffset = 0;
     if (e.ctrl && e.name === "g" && c.secondary && c.options[c.selected]) { c.resolve({ kind: "cancelled" }); void c.secondary(c.selected); return; }
     if (c.liveFilter && c.filter && (e.name === "backspace" || !!e.text && !e.ctrl && !e.alt)) {
       c.query = e.name === "backspace" ? [...c.query].slice(0, -1).join("") : (c.query + e.text).slice(0, 64);
@@ -959,7 +1002,9 @@ export class InteractiveApp {
     return { kind: "render", render: (width, ctx) => {
       // Keep the selected entry visible; descriptions may wrap and consume more than one row.
       const preview = c.previewText?.(c.selected);
-      const previewLines = preview ? layoutNode(text(highlight(maskSecrets(preview.text), preview.language, this.#render?.markdown.highlight ?? { enabled: true, maxBytes: 262_144, timeoutMs: 20, theme: DEFAULT_CODE_THEME }), { overflow: "clip" }), Math.max(1, width - 4), ctx).lines.slice(0, 6) : [];
+      const allPreviewLines = preview ? layoutNode(text(highlight(maskSecrets(preview.text), preview.language, this.#render?.markdown.highlight ?? { enabled: true, maxBytes: 262_144, timeoutMs: 20, theme: DEFAULT_CODE_THEME })), Math.max(1, width - 4), ctx).lines : [];
+      c.previewOffset = Math.min(c.previewOffset, Math.max(0, allPreviewLines.length - 6));
+      const previewLines = allPreviewLines.slice(c.previewOffset, c.previewOffset + 6);
       const room = Math.max(1, this.#o.terminal.rows - this.#o.settings.inputMinHeight - 8 - (c.filter ? 1 : 0) - (previewLines.length ? previewLines.length + 1 : 0));
       const heights = lines.map((line) => layoutNode(line, Math.max(1, width - 4), ctx).lines.length);
       let start = c.selected, end = start + 1, used = heights[start] ?? 1;
@@ -967,7 +1012,7 @@ export class InteractiveApp {
       while (start > 0 && used + heights[start - 1]! <= room) used += heights[--start]!;
       const range = start > 0 || end < lines.length ? ` · options ${start + 1}–${end}/${lines.length}` : "";
       const previewNode: Node | undefined = previewLines.length ? { kind: "render", render: () => ({ lines: previewLines }) } : undefined;
-      return layoutNode(box([text([...(c.header ? [{ text: `[${c.header}] `, style: { dim: true } }] : []), { text: c.title + range, style: { bold: true } }]), ...(c.filter ? [text(`Filtre : ${c.query || "(aucun)"}${c.liveFilter ? "" : c.filtering ? " — Entrée : appliquer" : " — # : étiquette"}`)] : []), ...lines.slice(start, end), ...(previewNode ? [text("Aperçu :"), previewNode] : []), text([{ text: hint, style: { dim: true } }])], { border: { style: t.style }, padding: { left: 1, right: 1 } }), width, ctx);
+      return layoutNode(box([text([...(c.header ? [{ text: `[${c.header}] `, style: { dim: true } }] : []), { text: c.title + range, style: { bold: true } }]), ...(c.filter ? [text(`Filtre : ${c.query || "(aucun)"}${c.liveFilter ? "" : c.filtering ? " — Entrée : appliquer" : " — # : étiquette"}`)] : []), ...lines.slice(start, end), ...(previewNode ? [text(`Aperçu : ligne ${c.previewOffset + 1}/${allPreviewLines.length} · Pg↑/Pg↓ pour relire`), previewNode] : []), text([{ text: hint, style: { dim: true } }])], { border: { style: t.style }, padding: { left: 1, right: 1 } }), width, ctx);
     } };
   }
 
@@ -1490,6 +1535,7 @@ export class InteractiveApp {
     if (this.#secret) panels.push(box([text(this.#secret.title), text("•".repeat(Math.min(60, [...this.#secret.value].length))), text("Entrée : valider · Échap : annuler")], { border: {}, padding: { left: 1, right: 1 } }));
     if (this.#choice) panels.push(this.#choiceView(this.#choice));
     if (this.#capture) panels.push(box([text([{ text: this.#capture.prompt, style: { bold: true } }]), text([{ text: "Entrée : valider · Échap : annuler", style: { dim: true } }])], { padding: { left: 2 } }));
+    if (this.#o.screenReader) return layoutNode(box(panels.length ? panels : [text(this.running ? "Tour en cours…" : "Votre message (Entrée pour envoyer)")]), size.columns, ctx);
     // SPEC-OUT-021 § 10: the task list above the input area, emptied once every task is done (§ 5.3 step 3).
     const tasks = this.#o.tasks?.() ?? [];
     if (tasks.length > 0 && tasks.some((t) => t.status !== "completed")) {
@@ -1520,14 +1566,16 @@ export class InteractiveApp {
       const tail = this.#shellOutput.split("\n").slice(-30).join("\n");
       stream.push(box([text([{ text: tail, style: { dim: true } }], { overflow: "clip" })], { padding: { left: 2 } }));
     }
-    if (this.#stream) {
+    if (this.#stream && !this.#o.brief?.()) {
       // § 5.2 of SPEC-IHM-003: the content being produced is rendered by its probable intention.
       if (this.#render && !this.#streamRenderer) this.#streamRenderer = new MarkdownRenderer(this.#render.markdown, this.#view.unicode);
       stream.push(modelView(this.#streamRenderer ? this.#streamRenderer.render(this.#stream) : this.#stream, this.#view));
     }
     if (this.running) stream.push(activityView((tasks.find(task => task.status === "in_progress")?.progressLabel ?? this.#activity) + this.#tokenGoal, this.#now - this.#turnStarted, this.#spinner, this.#view));
+    if (this.running && this.#tip) stream.push(text([{ text: this.#tip, style: { dim: true } }]));
     const background = this.#o.backgroundActivity?.() ?? [];
     if (background.length > 0) panels.push(box(background.slice(-3).map((task) => text(`Agent ${task.id} · ${task.activity ?? "En attente…"} · ${task.toolCalls ?? 0} outil${task.toolCalls === 1 ? "" : "s"} · ${task.tokens ?? 0} jetons`, { overflow: "clip" })), { padding: { left: 2 } }));
+    if (buildFlag("ui_dev_bar") && buildProfile() !== "public") { const development = this.#o.developmentBar?.(); if (development) panels.push(text([{ text: development, style: { dim: true } }], { overflow: "clip" })); }
     const frame = composeFrame(
       { stream: stream.length > 0 ? box(stream) : undefined, panels, input: this.#inputNode(size.columns, ctx), status: this.#statusNode() },
       size,

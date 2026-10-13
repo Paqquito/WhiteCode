@@ -1,5 +1,8 @@
+// Supports: SPEC-CMD-107 (CA-01, displayed identifier shared by actual spans), gap E-161.
 // Implements: SPEC-OBS-001/002/004/011/020 (bounded exports, refusal, private diagnostics).
 // Supports: SPEC-CFG-008, SPEC-MOT-001, SPEC-SES-012, E-157.
+// Supports: SPEC-OBS-005/007/010 (consented metadata and measured frame histogram), E-160.
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
@@ -11,7 +14,7 @@ import { currentPlatform } from "../platform/system";
 import { maskSecrets } from "../shared/secrets";
 
 const TOOLS = new Set(["read_file", "write_file", "edit_file", "run_shell", "run_powershell", "find_files", "search_content", "fetch_url", "spawn_agent", "configure", "submit_result", "background_output", "other"]);
-const EVENTS = ["session_started", "message_submitted", "api_request", "api_error", "tool_result", "permission", "session_ended"] as const;
+const EVENTS = ["session_started", "message_submitted", "api_request", "api_error", "tool_result", "permission", "session_ended", "render_summary"] as const;
 type EventName = typeof EVENTS[number];
 type Attributes = Record<string, string | number | boolean>;
 type OtlpAttribute = { key: string; value: { stringValue: string } | { intValue: string } | { doubleValue: number } | { boolValue: boolean } };
@@ -52,6 +55,9 @@ function exportUrl(value: string | undefined, insecureLocal = false): string | u
 }
 
 export interface ObserverOptions {
+  readonly onLoggedError?: (stack: string) => void;
+  readonly enhanced?: boolean; readonly includeToolContent?: boolean;
+  readonly commonProductAttributes?: Readonly<Record<string, string>>; readonly commonTraceAttributes?: Readonly<Record<string, string>>;
   readonly slug: string; readonly eventPrefix: string; readonly version: string;
   readonly configDir: string; readonly platform: string; readonly persist: boolean;
   readonly sessionId: () => string; readonly entrypoint: "interactive" | "non-interactive" | "control";
@@ -83,8 +89,14 @@ export class SessionObserver {
   #products: ProductEvent[] = []; #logs: Array<Record<string, unknown>> = []; #spans: Span[] = [];
   #previousFiles: string[] = []; #timer?: ReturnType<typeof setInterval>; #flushing?: Promise<void>;
   #closed = false;
+  #manualTrace?: string;
+  #traceStopped = false;
+  #renderSummary?: { frames: number; durationMs: number; slowFrames: number; buckets: readonly number[] };
 
   constructor(options: ObserverOptions) { this.#o = options; }
+  get traceId(): string | undefined { return this.#manualTrace; }
+  beginTrace(): string { this.#traceStopped = false; return this.#manualTrace ??= randomBytes(16).toString("hex"); }
+  stopTrace(): void { this.#traceStopped = true; this.#manualTrace = undefined; }
   start(): void {
     this.#diagnostic("session_started");
     if (this.#o.persist && this.#o.productEnabled() && exportUrl(this.#o.productUrl)) this.#loadPending();
@@ -103,7 +115,7 @@ export class SessionObserver {
   }
   #record(name: EventName, data: Attributes): void {
     if (!this.#o.productEnabled() || !exportUrl(this.#o.productUrl)) { this.#products = []; return; }
-    if (this.#products.length < 256) this.#products.push({ name, attributes: productAttributes(data) });
+    if (this.#products.length < 256) this.#products.push({ name, attributes: { ...productAttributes(data), ...this.#o.commonProductAttributes } });
   }
   #log(name: EventName, data: Attributes): void {
     if (!this.#o.otelEnabled() || this.#logs.length >= 512) return;
@@ -124,12 +136,12 @@ export class SessionObserver {
   }
   #span(name: string, data: Attributes = {}): Span | undefined {
     const ctx = this.#context.getStore();
-    if (!ctx || !this.#o.otelEnabled() || ctx.spans.length >= 1000) return undefined;
+    if (!ctx || this.#traceStopped || !this.#o.otelEnabled() || ctx.spans.length >= 1000) return undefined;
     const span: Span = { traceId: ctx.root.traceId, spanId: randomBytes(8).toString("hex"), parentSpanId: ctx.root.spanId, name, kind: 1, startTimeUnixNano: nano(), attributes: attributes(data), status: { code: 0 } };
     ctx.spans.push(span); return span;
   }
   async interaction<T>(parts: string | readonly ContentPart[], signal: AbortSignal, run: () => Promise<T>): Promise<T> {
-    const root: Span = { traceId: randomBytes(16).toString("hex"), spanId: randomBytes(8).toString("hex"), name: "interaction", kind: 1, startTimeUnixNano: nano(), attributes: [], status: { code: 0 } };
+    const root: Span = { traceId: this.#manualTrace ?? randomBytes(16).toString("hex"), spanId: randomBytes(8).toString("hex"), name: "interaction", kind: 1, startTimeUnixNano: nano(), attributes: [], status: { code: 0 } };
     const ctx: Interaction = { root, spans: [root], calls: new Map() }, start = Date.now();
     return this.#context.run(ctx, async () => {
       const prompt = typeof parts === "string" ? parts : parts.filter(p => p.type === "text").map(p => p.text).join("\n");
@@ -143,7 +155,7 @@ export class SessionObserver {
         const cancelled = signal.aborted;
         for (const span of ctx.spans) { span.endTimeUnixNano ??= nano(); if (cancelled) span.status = { code: 2, message: "cancelled" }; else if (failed) span.status = { code: 2, message: "error" }; }
         this.#duration("interaction.duration", Date.now() - start);
-        if (this.#o.otelEnabled() && this.#spans.length + ctx.spans.length <= 2000) this.#spans.push(...ctx.spans);
+        if (!this.#traceStopped && this.#o.otelEnabled() && this.#spans.length + ctx.spans.length <= 2000) this.#spans.push(...ctx.spans);
       }
     });
   }
@@ -163,6 +175,7 @@ export class SessionObserver {
           const known = e instanceof ProviderError;
           observer.#diagnostic(known && e.kind === "connection" ? "connection_error" : "api_error", known ? e.kind : "unexpected");
           observer.#record("api_error", { result: "error" }); observer.#log("api_error", { result: "error" });
+          if (known) observer.#o.onLoggedError?.(observer.#safeContent(e.stack ?? e.message));
           if (!known) observer.reportUnexpected(e);
           if (span) span.status = { code: 2, message: "error" };
         }
@@ -174,11 +187,20 @@ export class SessionObserver {
     const ctx = this.#context.getStore();
     if (event.type === "tool_call") {
       const name = toolName(event.name), span = this.#span("tool", { tool: name });
+      if (buildFlag("telemetry_enhanced") && span && this.#o.enhanced) {
+        const input = JSON.stringify(event.input) ?? "";
+        span.attributes.push(...attributes({ "tool.input.bytes": Buffer.byteLength(input) }));
+        if (this.#o.includeToolContent) span.attributes.push(...attributes({ "tool.input.content": this.#safeContent(input) }));
+      }
       ctx?.calls.set(event.callId, { span, name, start: Date.now() });
     } else if (event.type === "tool_started") {
       const call = ctx?.calls.get(event.callId); if (call?.span) call.span.attributes.push(...attributes({ permission_wait_ms: Math.max(0, Date.now() - call.start) }));
     } else if (event.type === "tool_result") {
       const call = ctx?.calls.get(event.callId), name = call?.name ?? "other", result = event.isError ? "error" : "ok";
+      if (buildFlag("telemetry_enhanced") && call?.span && this.#o.enhanced) {
+        call.span.attributes.push(...attributes({ "tool.output.bytes": Buffer.byteLength(event.output) }));
+        if (this.#o.includeToolContent) call.span.attributes.push(...attributes({ "tool.output.content": this.#safeContent(event.output) }));
+      }
       if (call?.span) { call.span.endTimeUnixNano = nano(); call.span.status = { code: event.isError ? 2 : 0 }; } ctx?.calls.delete(event.callId);
       this.#count("tool.usage", { tool: name, result }, 1); this.#duration("tool.duration", event.durationMs);
       const data = { tool: name, result, duration_ms: event.durationMs }; this.#record("tool_result", data); this.#log("tool_result", data);
@@ -191,6 +213,7 @@ export class SessionObserver {
     this.#duration("hook.duration", durationMs);
   }
   reportUnexpected(error: unknown): void {
+    this.#o.onLoggedError?.(this.#safeContent(error instanceof Error ? error.stack ?? error.message : String(error)));
     this.#diagnostic("unexpected_error");
     if (!this.#o.errorEnabled() || !exportUrl(this.#o.errorUrl)) return;
     const type = error instanceof TypeError ? "TypeError" : error instanceof RangeError ? "RangeError" : error instanceof SyntaxError ? "SyntaxError" : "Error";
@@ -206,13 +229,20 @@ export class SessionObserver {
   }
   readonly #reports = new Set<Promise<boolean>>();
   #sessionId(): string { try { return this.#o.sessionId(); } catch { return this.#instance; } }
+  #safeContent(content: string): string { let safe = maskSecrets(content); for (const secret of this.#o.secrets.filter(Boolean)) safe = safe.split(secret).join("[redacted]"); return safe.slice(0, 4096); }
+  render(summary: { frames: number; durationMs: number; slowFrames: number; buckets: readonly number[] }): void {
+    this.#count("render.frames", {}, summary.frames); this.#count("render.slow_frames", {}, summary.slowFrames);
+    this.#renderSummary = { ...summary, buckets: [...summary.buckets] };
+    this.#log("render_summary", { frames: summary.frames, duration_ms: summary.durationMs, slow_frames: summary.slowFrames });
+  }
   #resource(): { attributes: OtlpAttribute[] } {
-    return { attributes: attributes({ "service.name": this.#o.slug, "service.version": this.#o.version, "entrypoint": this.#o.entrypoint, ...(this.#o.includeSessionId ? { "session.id": this.#sessionId() } : {}) }) };
+    return { attributes: attributes({ "service.name": this.#o.slug, "service.version": this.#o.version, "entrypoint": this.#o.entrypoint, ...this.#o.commonTraceAttributes, ...(this.#o.includeSessionId ? { "session.id": this.#sessionId() } : {}) }) };
   }
   #metricData(): Array<Record<string, unknown>> {
     const groups = new Map<string, Array<Record<string, unknown>>>(), time = nano();
     for (const m of this.#metrics.values()) { const list = groups.get(m.name) ?? []; list.push({ attributes: attributes(m.attributes), startTimeUnixNano: this.#started, timeUnixNano: time, ...(Number.isSafeInteger(m.value) ? { asInt: String(m.value) } : { asDouble: m.value }) }); groups.set(m.name, list); }
     const result: Array<Record<string, unknown>> = [...groups].map(([name, dataPoints]) => ({ name: this.#o.slug + "." + name, sum: { aggregationTemporality: 2, isMonotonic: true, dataPoints } }));
+    if (this.#renderSummary) result.push({ name: this.#o.slug + ".render.duration", unit: "ms", histogram: { aggregationTemporality: 2, dataPoints: [{ startTimeUnixNano: this.#started, timeUnixNano: time, count: String(this.#renderSummary.frames), sum: this.#renderSummary.durationMs, explicitBounds: [1, 5, 10, 20, 50, 100, 500], bucketCounts: this.#renderSummary.buckets.map(String) }] } });
     const bounds = [5, 20, 100, 500, 2000, 10000];
     for (const d of this.#durations.values()) {
       const buckets = Array.from({ length: bounds.length + 1 }, () => 0); for (const value of d.values) buckets[bounds.findIndex(b => value <= b) === -1 ? bounds.length : bounds.findIndex(b => value <= b)]!++;

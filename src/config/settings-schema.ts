@@ -1,3 +1,4 @@
+// Supports: SPEC-MOD-029, SPEC-OUT-013/034/038, SPEC-IHM-023/038, gap E-161.
 // Implements: SPEC-CFG-002 (EF-02, § 6 widening keys, § 6.1 catalogue for the keys of lot 1)
 // Supports: SPEC-CFG-003 (policy.requiredKeys), SPEC-PER-001 (detachedWaitTimeout catalogue), gap E-120.
 // Supports: SPEC-PER-004/014/018 (approval instructions, denial thresholds, managed consent), gap E-138.
@@ -66,6 +67,8 @@ export const SETTINGS: readonly SettingDef[] = [
   // Supports: SPEC-CAD-002 (CA-13, EF-42), gap E-145; administration-only startup URL overrides.
   { key: "identity.services", schema: Type.Object(Object.fromEntries(OVERRIDABLE_SERVICE_URLS.map((name) => [name, Type.Optional(str())])), { additionalProperties: false }), default: {}, scopes: [G], owner: "SPEC-CAD-002" },
   { key: "ui.reducedMotion", schema: bool(), default: false, scopes: [U], owner: "SPEC-IHM-038" },
+  { key: "ui.hints.enabled", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-023" },
+  { key: "ui.screenReaderMode", schema: bool(), default: false, scopes: [U], owner: "SPEC-IHM-038" },
   { key: "ui.announcements", schema: strList(), default: [], scopes: [G], owner: "SPEC-CFG-011" },
   { key: "ui.search.maxMatches", schema: int(1, 5000), default: 500, scopes: [U], owner: "SPEC-IHM-018" },
   { key: "ui.search.debounceMs", schema: int(0, 2000), default: 150, scopes: [U], owner: "SPEC-IHM-018" },
@@ -75,6 +78,13 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "ui.footerLine.timeoutMs", schema: int(1, 60_000), default: 1500, scopes: [U], owner: "SPEC-IHM-021" },
   { key: "ui.externalEditor", schema: str(), scopes: [U], widening: true, owner: "SPEC-INT-019" },
   // Models, thinking and effort
+  { key: "modes.brief", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-MOD-029" },
+  { key: "ui.shortMessages.maxAttachmentBytes", schema: int(1, 104857600), default: 10485760, scopes: [U], owner: "SPEC-OUT-034" },
+  { key: "tools.webSearch.enabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-OUT-013" },
+  { key: "tools.webSearch.endpoint", schema: str(), default: "", scopes: [U, G], owner: "SPEC-OUT-013" },
+  { key: "tools.webSearch.maxUsesPerTurn", schema: int(1, 100), default: 8, scopes: [G], owner: "SPEC-OUT-013" },
+  { key: "skills.discovery.enabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-OUT-038" },
+  { key: "skills.discovery.perTurn", schema: int(1, 10), default: 5, scopes: [U], owner: "SPEC-OUT-038" },
   { key: "models.selected", schema: str(), scopes: [U, P, G, C], owner: "SPEC-MOT-001" },
   // Tier alias → model identifier (SPEC-API-007); how each developer maps the neutral tiers (gap E-040).
   { key: "models.identifierMap", schema: Type.Object({ large: Type.Optional(str()), medium: Type.Optional(str()), small: Type.Optional(str()) }, { additionalProperties: false }), default: {}, scopes: [U, G], owner: "SPEC-API-007" },
@@ -321,6 +331,7 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "ui.welcome.hideAccount", schema: bool(), default: false, scopes: [U], owner: "SPEC-IHM-025" },
   { key: "ui.terminalTitle", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-036" },
   { key: "ui.maxFramesPerSecond", schema: int(1, 240), default: 30, scopes: [U], owner: "SPEC-IHM-001" },
+  { key: "ui.render.slowFrameMs", schema: int(1, 10000), default: 50, scopes: [U], owner: "SPEC-OBS-010" },
   { key: "ui.minColumns", schema: int(10, 1_000), default: 60, scopes: [U], owner: "SPEC-IHM-001" },
   { key: "ui.unicodeLevel", schema: enumOf(["full", "restricted", "ascii"]), default: "full", scopes: [U], owner: "SPEC-IHM-001" },
   { key: "ui.retainedLines", schema: int(10, 1_000_000), default: 2_000, scopes: [U], owner: "SPEC-IHM-002" },

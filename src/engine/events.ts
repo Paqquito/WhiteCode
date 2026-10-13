@@ -1,3 +1,4 @@
+// Supports: SPEC-MOD-029, SPEC-OUT-034, gap E-161.
 // Implements: SPEC-MOT-001 (EF-07 structured events), SPEC-MOT-002 (EF-07 per-call events)
 // Supports: SPEC-MOD-003 (EF-05 order, EF-08 conversation rebuilt from the events)
 
@@ -16,6 +17,8 @@ export type StopCause =
   | "error";
 
 export type EngineEvent =
+  | { readonly type: "addressed_message"; readonly message: string; readonly status: "normal" | "proactive"; readonly attachments: readonly import("../tools/message-user").AddressedAttachment[] }
+  | { readonly type: "notification"; readonly message: string }
   | { readonly type: "token_goal"; readonly consumed: number; readonly goal: number }
   | { readonly type: "turn_started"; readonly sessionId: string }
   | { readonly type: "text_delta"; readonly text: string }

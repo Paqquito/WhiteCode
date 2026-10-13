@@ -1,3 +1,5 @@
+// Supports: SPEC-CMD-007/008/027/036/093/096/098/101/107, gap E-161.
+// Supports: SPEC-CMD-108 (CA-01, current and downloaded versions), gap E-160.
 // Implements: SPEC-CMD-001 (§ 5.3 rank 1, § 5.5 kinds, EF-13 widening attribute declared by each internal command), SPEC-CMD-023 (§ 5.2), SPEC-CMD-030 (§ 5.2), SPEC-IHM-008 (EF-06), SPEC-CMD-002 (§ 5.3),
 //             SPEC-CMD-009, SPEC-CMD-006, SPEC-CMD-059, SPEC-CMD-058, SPEC-CMD-024 (§ 5.2: commands of the user)
 // The internal commands of this version. Each one declares its kind and whether it widens what the agent may do.
@@ -9,12 +11,22 @@ import type { InternalCommand } from "./catalog";
 import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
+  { name: "browser", description: "Affiche les instructions d’installation de l’extension navigateur configurée.", kind: "display", widening: false },
+  { name: "install-chat-app", description: "Ouvre les instructions d’installation de l’application de messagerie configurée.", kind: "action", widening: false, interactiveOnly: true },
+  { name: "prune-history", description: "Demande l’élagage des anciens résultats d’outils au prochain tour.", kind: "action", widening: false },
+  { name: "getting-started", description: "Reprend les choix de thème et de modèle en conservant les paramètres existants.", kind: "action", widening: false, interactiveOnly: true },
+  { name: "send-feedback", description: "Prépare un retour à relire avant son envoi, sans transcription.", kind: "action", widening: false, interactiveOnly: true },
+  { name: "report-issue", description: "Prépare un ticket avec des informations techniques à relire.", kind: "action", widening: false, interactiveOnly: true },
+  { name: "perf-report", description: "Prépare un signalement de performances à relire.", kind: "action", widening: false, interactiveOnly: true },
+  { name: "trace", description: "Affiche ou bascule le traçage technique de la session.", kind: "action", widening: false, usage: "[on|off]" },
+  ...(buildFlag("mode_brief") ? [{ name: "concise-replies", description: "Active ou désactive les messages courts, avec accès au détail.", kind: "action", widening: false }] as readonly InternalCommand[] : []),
   ...(buildFlag("ui_fast_find") ? [{ name: "quick-open", description: "Ouvre le sélecteur local des fichiers du projet.", kind: "action", widening: false, interactiveOnly: true }, { name: "global-search", description: "Recherche un texte dans les fichiers autorisés du projet.", kind: "action", widening: false, interactiveOnly: true }] as readonly InternalCommand[] : []),
   { name: "native-install", description: "Installe une version native vérifiée dans le profil utilisateur.", kind: "action", widening: false, usage: "[stable|latest|version] [--force]" },
   { name: "context-files", description: "Liste les fichiers présents dans le contexte, leurs plages et les jetons estimés.", kind: "display", widening: false },
   { name: "heap-dump", description: "Enregistre localement un instantané de mémoire après avertissement et confirmation.", kind: "action", widening: false, interactiveOnly: true, hidden: true },
   { name: "response-style", description: "Commande dépréciée : ouvre les préférences.", kind: "display", widening: false, hidden: true },
   { name: "release-notes", description: "Affiche les notes de la version installée, disponibles hors ligne.", kind: "display", widening: false },
+  { name: "version", description: "Affiche la version en cours et une mise à jour téléchargée dans cette session.", kind: "display", widening: false },
   { name: "copy-reply", description: "Copie une réponse textuelle du modèle, en comptant depuis la plus récente.", kind: "action", widening: false, usage: "[N]" },
   { name: "peers", description: "Affiche les autres sessions actives du même utilisateur.", kind: "display", widening: false },
   { name: "inspect-tool-call", description: "Affiche un appel d'outil et sa décision de permission, secrets masqués.", kind: "display", widening: false, usage: "[N]" },

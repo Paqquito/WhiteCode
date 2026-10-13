@@ -30,7 +30,8 @@ function writeCatalog(ws: Workspace, extensions: Record<string, ExtSpec>, flagge
 
 function workspace(): Workspace {
   const ws = bareWorkspace();
-  writeFileSync(join(ws.configHome, "config.json"), JSON.stringify(TEST_USER_CONFIG));
+  // These policy tests inspect the static catalogue; discovery has separate runtime tests.
+  writeFileSync(join(ws.configHome, "config.json"), JSON.stringify({ ...TEST_USER_CONFIG, skills: { discovery: { enabled: false } } }));
   return ws;
 }
 const admin = (ws: Workspace, ...args: string[]) => cli(args, ws, { env: productEnv(ws), userConfig: null });

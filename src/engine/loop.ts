@@ -1,3 +1,5 @@
+// Supports: SPEC-MOD-029, SPEC-OUT-034, gap E-161.
+// Supports: SPEC-OBS-021 (CA-03, recorded tariff fingerprints), gap E-160.
 // Implements: SPEC-MOT-001 (§ 5.3 steps 1 to 10, FA-01 to FA-03, EF-01 to EF-10, RG-01 to RG-04, CA-01 to CA-06, CA-10), SPEC-MOD-005 (FA-01 to FA-03, FA-06, EF-02, EF-03, EF-08, EF-10),
 //             SPEC-API-003 (§ 5.1, § 5.3, FA-01, FA-02, EF-01 to EF-06, ERR-01 to ERR-03, RG-01, CA-01 to CA-04), SPEC-API-002 (FA-01, CA-02)
 // Supports: SPEC-MOT-008 (§ 5.3 step 3, EF-02, EF-03: messages typed during the work, at the safe point), SPEC-MOT-007 (reminders before each request), decision D-12 (append-only history), gaps E-021 (retries around the SDK), E-022, E-056 (retry after a partial response), E-072 (empty final response), SPEC-SES-001 (EF-01)
@@ -9,6 +11,7 @@ import type { HookBus } from "../extension-points/hooks";
 import type { ApiEffort, ModelPricing, ResolvedModel } from "../providers/catalog";
 import { ProviderError, type ContentPart, type ModelEvent, type ModelProvider, type ModelRequest, type StopReason, type ThinkingRequest, type ToolCall, type ToolResultPart, type Usage } from "../providers/types";
 import type { TranscriptWriter } from "../session/transcript";
+import { fingerprint } from "../shared/fingerprint";
 import { costOf, requestBound, type Reservation } from "./budget";
 import type { Conversation } from "./conversation";
 import type { EventSink, StopCause, TurnResult } from "./events";
@@ -29,6 +32,7 @@ export interface RetryPolicy {
 }
 
 export interface LoopDeps {
+  readonly publishedMessage?: () => string | undefined;
   readonly tokenTarget?: { readonly enabled: boolean; readonly completionRatio: number };
   readonly maxKeyword?: string;
   /** Implements: SPEC-MOT-019. Projection leaves the raw conversation and transcript intact. */
@@ -400,6 +404,9 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
       toolCalls: assistant.toolCalls,
       stopReason,
       usage: response.usage,
+      model: requestModel.id,
+      ...(response.usageReported !== false && responseCost !== undefined ? { cost: responseCost } : {}),
+      tariff: { version: fingerprint({ model: requestModel.id, pricing: requestPricing ?? null, currency: ledger?.snapshot.currency ?? "unknown" }), pricing: requestPricing ?? null, currency: ledger?.snapshot.currency ?? "unknown" },
       providerRequestId: response.providerRequestId,
     });
     deps.postSampling?.(assistant, deps.agentId);
@@ -459,6 +466,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
 
     // Gap E-072: a final response without text (reasoning only, or nothing) is relaunched once; if it stays empty,
     // the turn ends with a warning instead of a silent empty answer.
+    if (finalText.trim() === "" && deps.publishedMessage?.()) finalText = deps.publishedMessage()!;
     if (finalText.trim() === "") {
       if (!emptyRelaunched) {
         emptyRelaunched = true;

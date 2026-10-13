@@ -1,3 +1,5 @@
+// Supports: SPEC-IHM-038 (CA-01, append-only rendering), gap E-161.
+// Supports: SPEC-OBS-010 (CA-01, measured frame duration histogram), gap E-160.
 // Implements: SPEC-IHM-001 (§ 5.1 render cycle, § 5.4 resize, § 5.5 restoration, EF-01, EF-02, EF-06, FA-03, FA-04, FA-05, ERR-02, RG-02, RG-03, ENF-02, CA-01, CA-04, CA-05), SPEC-IHM-002 (§ 5.4 long stream, EF-01, EF-03, EF-05, RG-01, CA-01, CA-02, CA-04)
 // The screen: a live area at the bottom of the terminal, rewritten by difference, and the finished content written once
 // above it, then left to the native scrollback of the terminal (selectable and copyable like any output). Frames are
@@ -39,6 +41,9 @@ export interface ScreenStats {
   fullRedraws: number;
   /** Invalidations merged into a pending frame (FA-04). */
   coalesced: number;
+  durationMs: number;
+  slowFrames: number;
+  buckets: number[];
 }
 
 const ESC = "\u001b[";
@@ -56,9 +61,11 @@ const BLANK: Cell = { ch: " ", w: 1, key: DEFAULT_KEY };
 const sameCell = (a: Cell | undefined, b: Cell | undefined) => (a ?? BLANK).ch === (b ?? BLANK).ch && (a ?? BLANK).key === (b ?? BLANK).key;
 
 export class Screen {
-  readonly stats: ScreenStats = { frames: 0, lastCells: 0, lastLines: 0, fullRedraws: 0, coalesced: 0 };
+  readonly stats: ScreenStats = { frames: 0, lastCells: 0, lastLines: 0, fullRedraws: 0, coalesced: 0, durationMs: 0, slowFrames: 0, buckets: Array.from({ length: 8 }, () => 0) };
+  readonly #slowFrameMs: number;
   readonly #term: TerminalOutput;
   readonly #caps: Capabilities;
+  readonly #sequential: boolean;
   readonly #interval: number;
   readonly #scheduler: Scheduler;
   readonly #source: (size: { columns: number; rows: number }) => Frame;
@@ -88,8 +95,12 @@ export class Screen {
     source: (size: { columns: number; rows: number }) => Frame;
     scheduler?: Scheduler;
     onBroken?: (error: unknown) => void;
+    slowFrameMs?: number;
+    sequential?: boolean;
   }) {
     this.#term = o.terminal;
+    this.#sequential = o.sequential ?? false;
+    this.#slowFrameMs = o.slowFrameMs ?? 50;
     this.#caps = o.capabilities;
     this.#interval = 1000 / Math.max(1, o.maxFramesPerSecond);
     this.#scheduler = o.scheduler ?? realScheduler;
@@ -112,7 +123,7 @@ export class Screen {
   start(): void {
     if (this.#started) return;
     this.#started = true;
-    if (this.#caps.bracketedPaste) this.#write(`${ESC}?2004h`);
+    if (!this.#sequential && this.#caps.bracketedPaste) this.#write(`${ESC}?2004h`);
   }
 
   /**
@@ -124,6 +135,7 @@ export class Screen {
     this.#stopped = true;
     if (this.#timer !== undefined) this.#scheduler.clearTimeout(this.#timer);
     this.#timer = undefined;
+    if (this.#sequential) return;
     let out = "";
     if (!this.#broken) out += this.#moveTo(0, 0) + `${ESC}J`;
     out += `${ESC}0m${ESC}?25h`;
@@ -175,9 +187,14 @@ export class Screen {
     if (this.#timer !== undefined) this.#scheduler.clearTimeout(this.#timer);
     this.#timer = undefined;
     this.#last = this.#scheduler.now();
+    const started = performance.now();
     const size = this.#size();
     const frame = this.#source(size);
     this.#render(frame, size);
+    const duration = Math.max(0, performance.now() - started);
+    this.stats.durationMs += duration; if (duration > this.#slowFrameMs) this.stats.slowFrames++;
+    const bucket = [1, 5, 10, 20, 50, 100, 500].findIndex(limit => duration <= limit);
+    this.stats.buckets[bucket < 0 ? 7 : bucket]!++;
   }
 
   /**
@@ -191,6 +208,7 @@ export class Screen {
       return;
     }
     const { columns } = this.#size();
+    if (this.#sequential) { this.#write(lines.map(line => line.map(cell => cell.ch).join("").trimEnd()).join("\r\n") + "\r\n"); this.flush(); return; }
     let out = this.#begin() + this.#moveTo(0, 0) + `${ESC}J`;
     let cells = 0;
     for (const line of lines) {
@@ -213,6 +231,7 @@ export class Screen {
    */
   resized(): void {
     if (this.#stopped || this.#broken) return;
+    if (this.#sequential) { this.flush(); return; }
     if (this.#suspended) {
       this.#resizedWhileSuspended = true;
       return;
@@ -272,6 +291,13 @@ export class Screen {
   }
 
   #render(frame: Frame, size: { columns: number; rows: number }): void {
+    if (this.#sequential) {
+      const before = this.#prev.map(line => line.map(cell => cell.ch).join("").trimEnd());
+      const after = frame.lines.map(line => line.map(cell => cell.ch).join("").trimEnd());
+      const changed = after.filter((line, index) => line && line !== before[index]);
+      if (changed.length) this.#write(changed.join("\r\n") + "\r\n");
+      this.#prev = [...frame.lines]; this.stats.frames++; return;
+    }
     // RG-03: never beyond the known dimensions; the fixed zones are at the bottom, so the top lines go first.
     let lines = frame.lines.map((l) => (l.length > size.columns ? l.slice(0, size.columns) : l));
     let cursor = frame.cursor;

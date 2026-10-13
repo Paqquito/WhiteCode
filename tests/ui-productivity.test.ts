@@ -91,10 +91,11 @@ test("SPEC-IHM-016/CA-01 — the existing input filters the history selector and
 
 test("SPEC-IHM-021/CA-01 — the footer command receives model data after a turn and shows its first line", async () => {
   const ws = workspace(), controller = new AbortController(), provider = new ScriptedProvider([{ text: "Done." }]);
-  const command = hook(ws, "footer", 'console.log("Custom model: " + payload.model.id); console.log("ignored second line");');
+  const command = hook(ws, "footer", 'console.log("Custom model: " + payload.model.id + (payload.durationMs > 0 ? " — completed" : " — initial")); console.log("ignored second line");');
   const run = interactive([], ws, { provider, signal: controller.signal, env: productEnv(ws), userConfig: { ui: { footerLine: { command } } } });
   try {
-    await run.idle(); run.type("Work."); run.type(KEY.enter); await run.waitFor(t => t.includes("Custom model: test-medium"));
+    await run.idle(); run.type("Work."); run.type(KEY.enter); await run.waitFor(t => t.includes("Custom model: test-medium — completed"));
+    expect(provider.requests).toHaveLength(1);
     expect(run.screen().join("\n")).toContain("mode : ask"); expect(run.screen().join("\n")).not.toContain("ignored second line");
   } finally { controller.abort(); await run.done; }
-});
+}, 15_000);

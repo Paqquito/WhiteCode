@@ -1,3 +1,4 @@
+// Supports: SPEC-OBS-016, gap E-161.
 // Implements: SPEC-CFG-007 (EF-01 to EF-05, RG-01, RG-02, ERR-01, ERR-02, § 5.3 priority), SPEC-CAD-002 (FA-02 environment overrides)
 // Single entry point to the process environment (P-07): own variables use the identity prefix, public ones keep their names.
 
@@ -28,6 +29,7 @@ export const OWN_VARIABLES: readonly OwnVariableDef[] = [
   { name: "REQUEST_TIMEOUT", type: "duration", owner: "SPEC-API-002" },
   { name: "DEBUG", type: "boolean", owner: "SPEC-OBS-012" },
   { name: "DEBUG_FILE", type: "path", owner: "SPEC-OBS-012" },
+  { name: "SESSION_RECORDING", type: "string", owner: "SPEC-OBS-016" },
   { name: "NO_TELEMETRY", type: "boolean", owner: "SPEC-OBS-001" },
   { name: "NO_ERROR_REPORTS", type: "boolean", owner: "SPEC-OBS-011" },
   { name: "NO_AUTO_UPDATES", type: "boolean", owner: "SPEC-INS-002" },

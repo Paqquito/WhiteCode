@@ -2,6 +2,7 @@
 // Declarative catalogue of global options: the single source of the parser, of the help and of the danger banner.
 
 import { FAMILY_CATALOG } from "./families";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 export type OptionValue = "none" | "required" | "optional";
 export const DEBUG_DOMAINS = ["api", "mcp", "hooks", "permissions", "tools", "config", "render", "remote", "context", "engine", "control", "agents", "startup", "maintenance", "commands", "serve"] as const;
@@ -107,8 +108,8 @@ export const OPTIONS: readonly OptionDef[] = [
   { name: "cwd", value: "required", type: "path", group: "Divers", description: "Dossier de travail.", defaultText: "dossier courant", delivered: true, owner: "SPEC-MOD-011" },
   { name: "debug", value: "optional", type: "list", group: "Divers", description: "Active le journal de débogage (--debug <domaines>, préfixe ! pour exclure).", delivered: true, owner: "SPEC-OBS-012" },
   { name: "debug-output", value: "required", type: "string", group: "Divers", description: "Destination du journal de débogage (chemin, ou stderr).", defaultText: "fichier de la session", delivered: true, owner: "SPEC-OBS-012" },
-  { name: "strict-failure", value: "none", group: "Divers", description: "Arrête le processus à toute erreur journalisée.", hidden: true, delivered: false, owner: "SPEC-OBS-014" },
-  { name: "export-system-instructions", value: "none", group: "Divers", description: "Affiche les instructions système et quitte.", hidden: true, delivered: false, owner: "SPEC-OBS-019" },
+  ...(buildFlag("strict_failure") ? [{ name: "strict-failure", value: "none", group: "Divers", description: "Arrête le processus à toute erreur journalisée.", hidden: true, delivered: true, owner: "SPEC-OBS-014" }] as const : []),
+  ...(buildFlag("system_instructions_export") ? [{ name: "export-system-instructions", value: "none", group: "Divers", description: "Affiche les instructions système et quitte.", hidden: true, delivered: true, owner: "SPEC-OBS-019" }] as const : []),
 
   // Integrations
   { name: "connect-editor", value: "none", group: "Intégrations", description: "Se connecte à l'IDE compatible.", delivered: false, owner: "SPEC-INT-001" },

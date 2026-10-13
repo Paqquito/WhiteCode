@@ -1,3 +1,5 @@
+// Supports: SPEC-BLD-008 (CA-01, versioned extension documentation in the manifest), gap E-161.
+// Supports: SPEC-BLD-006 (identity-specific package manifest), gap E-160.
 // Implements: SPEC-BLD-001 (ordered gates, reproducibility, fingerprints), SPEC-BLD-002 (macro constants and inventory),
 //             SPEC-BLD-003 (mandatory deliverable scan), SPEC-CAD-002 (strict unresolved-variable control).
 // Supports: gap E-144. Usage: bun scripts/build.ts [--target <target> | --all] [--identity <file>] [--models <file>]
@@ -100,6 +102,8 @@ for (const target of targets) {
   record(target ?? "current", file); control();
 }
 publishSettingsSchema(root, outDir, { cli, version: RESOLVED_IDENTITY.version }); record("settings-schema", "config.schema.json");
+writeFileSync(join(outDir, "package.json"), readFileSync(join(root, "src/identity/generated/package.json"))); record("package-manifest", "package.json");
+writeFileSync(join(outDir, "extension-authors.html"), readFileSync(join(root, "src/identity/generated/extension-authors.html"))); record("extension-documentation", "extension-authors.html");
 for (const [name, shell] of [["install.ps1", "powershell"], ["install.sh", "sh"]] as const) {
   writeFileSync(join(outDir, name), bootstrapScript(new Identity(RESOLVED_IDENTITY), shell)); record("installer", name);
 }

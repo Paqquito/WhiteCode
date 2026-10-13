@@ -1,3 +1,5 @@
+// Supports: SPEC-MOD-029, SPEC-OUT-013/034/038/045, SPEC-CMD-007/008/027/036/093/096/098/101/107, SPEC-OBS-012/016, SPEC-IHM-002/023/038, gap E-161.
+// Supports: SPEC-OUT-049, SPEC-OBS-005/007/010/014/019/021, SPEC-IHM-039, SPEC-CMD-108, gap E-160.
 // Implements: SPEC-MOD-002 (§ 5.1, § 5.2, FA-01, FA-02, FA-05, FA-06, EF-01 to EF-08, ERR-01 to ERR-04, CA-01 to CA-06, CA-08), SPEC-MOD-011 (§ 5.4 start-up, EF-03, EF-04, EF-07, ERR-04),
 //             SPEC-MOT-004 (§ 5.3 steps 1 to 4, EF-01, EF-02, ERR-01 to ERR-05, RG-01, RG-02, ENF-01, CA-03, CA-04),
 //             SPEC-SES-002 (§ 5.1, § 5.3 steps 4 to 6, FA-02, EF-01, EF-05, ERR-01, CA-01 to CA-05), SPEC-SES-003 (§ 5.3, EF-01, EF-02, ERR-01, ERR-02, CA-01, CA-02),
@@ -83,6 +85,7 @@ import { ContextMeter } from "../engine/context-meter";
 import { HistoryPruning } from "../engine/history-pruning";
 import { historyPruningTool } from "../tools/prune-history";
 import { overflowTestTool } from "../tools/overflow-test";
+import { permissionTestTool } from "../tools/permission-test";
 import { withRequestLog } from "../providers/request-log";
 import { withCacheDiagnostics } from "../providers/cache-diagnostics";
 import { TOKEN_TARGET_EXPLANATION } from "../engine/token-target";
@@ -91,7 +94,10 @@ import { CONFIGURE_KEYS } from "../config/tool-preferences";
 import { SubmittedResult } from "./submitted-result";
 import { analyseContext, renderContextAnalysis } from "../commands/context-analysis";
 import { withApiRecording, type RecordingMode } from "../providers/api-recording";
+import { searchWeb } from "../tools/search-web";
+import { Asciicast } from "../observability/asciicast";
 import { SessionObserver } from "../observability/session";
+import { collaborationMetadata } from "../observability/collaboration";
 import { buildSnapshot, type HookSnapshot } from "../hooks/config";
 import { habilitate } from "../hooks/habilitation";
 import { HookRuntime } from "../hooks/runtime";
@@ -128,8 +134,9 @@ import { AnthropicProvider } from "../providers/anthropic";
 import { effectiveCapabilities, isDeliveredProvider } from "../providers/adapters";
 import { OpenAICompatibleProvider } from "../providers/openai-compatible";
 import { isResolveFailure, type ApiEffort, type ModelCatalog, type ResolvedModel } from "../providers/catalog";
-import type { ContentPart, HistoryMessage, ImagePart, ModelProvider, ToolCall, ToolResultPart } from "../providers/types";
+import type { ContentPart, HistoryMessage, ImagePart, ModelProvider, ToolCall, ToolResultPart, Usage } from "../providers/types";
 import { maskSecrets } from "../shared/secrets";
+import { fingerprint } from "../shared/fingerprint";
 import { absolute, comparablePath, findExecutable, isWithin, realPathOrSelf, type SystemInfo } from "../platform/system";
 import type { StandardStreams } from "../platform/io";
 import { projectKey, TranscriptWriter, type TranscriptRecord } from "../session/transcript";
@@ -165,6 +172,9 @@ import { recognize } from "../commands/recognize";
 import { framed, loadSkill, splitArguments } from "../skills/invoke";
 import { loadSkills, modelSkills, skillsSection, skillsSignature, type Skill, type SkillLocation } from "../skills/registry";
 import { createUseSkillTool } from "../tools/use-skill";
+import { SkillDiscovery, createDiscoverSkillsTool } from "../tools/discover-skills";
+import { BRIEF_INSTRUCTION, createMessageUserTool } from "../tools/message-user";
+import { createReviewArtifactTool } from "../tools/review-artifact";
 import { createSpawnAgentTool, type SpawnAgentInput } from "../tools/spawn-agent";
 import { loadAgents, READING_TOOLS, BUILT_IN_AGENTS, type AgentDefinition, type AgentLocation } from "../agents/definitions";
 import { restrictedView, type ToolLookup } from "../tools/registry";
@@ -278,6 +288,8 @@ export interface RunDependencies {
   readonly credentialVault?: CredentialVault;
   /** Installation ports for isolated tests; never launch options or configuration overrides. */
   readonly installationFetch?: typeof fetch;
+  readonly feedbackFetch?: typeof fetch;
+  readonly openServiceUrl?: (url: string) => boolean;
   readonly installationExecutable?: string;
   readonly installationMaintenanceDelayMs?: number;
   readonly installationMaintenanceIdleMs?: number;
@@ -377,7 +389,8 @@ async function runOnce(argv: readonly string[], deps: RunDependencies, holder: R
   // Once the interactive interface holds the terminal, the messages of the product go through it (SPEC-IHM-001 RG-03).
   const err = (text: string) => (holder.errSink ? holder.errSink(text) : streams.writeErr(text.endsWith("\n") ? text : `${text}\n`));
   try {
-    return await run(argv, deps, err, holder);
+    const result = await run(argv, deps, err, holder);
+    return holder.loggedFailure ? ExitCode.ExecutionError : result;
   } catch (error) {
     // CA-02 of SPEC-MOD-003: the closing event is written last, even when the run fails.
     if (holder.stream && !holder.stream.closed) {
@@ -393,6 +406,7 @@ async function runOnce(argv: readonly string[], deps: RunDependencies, holder: R
       return error.exitCode;
     }
     holder.reportUnexpected?.(error);
+    if (holder.loggedFailure) return ExitCode.ExecutionError;
     err(`Erreur interne de ${identity.get("PRODUCT")} : ${(error as Error)?.stack ?? String(error)}`);
     return ExitCode.ExecutionError;
   } finally {
@@ -408,6 +422,8 @@ async function runOnce(argv: readonly string[], deps: RunDependencies, holder: R
 }
 
 interface RunHolder {
+  loggedFailure?: boolean;
+  abortOnLoggedError?: () => void;
   reportUnexpected?: (error: unknown) => void;
   stream?: EventStream;
   cleanups: Array<() => void>;
@@ -433,7 +449,8 @@ interface ServeRequest {
 async function run(argv: readonly string[], deps: RunDependencies, err: (text: string) => void, holder: RunHolder, serve?: ServeRequest): Promise<number> {
   // Supports: SPEC-MOD-011 (CA-10, CA-11), SPEC-MOD-012 (CA-11), gap E-140.
   if (!serve && argv[0] === "--orchestrator" && looksLikeSubcommand(argv.slice(1))) argv = [argv[1]!, argv[0], ...argv.slice(2)];
-  const { streams, identity, system } = deps;
+  const { identity, system } = deps;
+  const streams = { ...deps.streams };
   const policyEnv = new EnvironmentView(identity.get("ENV_PREFIX"), deps.environment);
   const policyLocations = computeLocations(identity, policyEnv, deps.cwd, system, deps.managedDir);
   const systemPolicy = managedSystemPolicy(identity, system, deps.registryPolicyReader, deps.profilePolicyReader);
@@ -711,7 +728,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
 
   // SPEC-MOD-002 § 5.1: automated run on request, or when no terminal is attached; otherwise the interactive mode, the
   // default (EF-01 of SPEC-MOD-001).
-  const terminal = streams.terminal;
+  let terminal = streams.terminal;
   let nonInteractive = opt("non-interactive") === true || !streams.stdinIsTTY || !streams.stdoutIsTTY;
   // SPEC-MOD-006 § 5.1: the control channel, with the `jsonl` formats in and out; an automated run (gap E-101).
   // SPEC-MOD-007: over a persistent connection, the channel carries the `jsonl` formats.
@@ -807,7 +824,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
 
   // Requests (EF-06 of SPEC-MOD-002): argument, otherwise standard input; `jsonl`: one message per line (gap E-050).
   let requests: AsyncIterable<InputItem>;
-  if (!nonInteractive || controlled || serve) {
+  if (!nonInteractive || controlled || serve || (buildFlag("system_instructions_export") && opt("export-system-instructions"))) {
     // SPEC-MOD-001: the requests come from the input area; an initial request is the first message (CA-04).
     // SPEC-MOD-006: the control driver reads the input itself, while the turns run.
     requests = (async function* () {})();
@@ -1024,6 +1041,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     if (results.every(r => r.status === "ok")) { try { await updateUserState(locations.userStateFile, current => ({ ...current, preflightCompleted: true }), system.platform, err); } catch { err("Vérification réussie, mais son état n’a pas pu être enregistré ; elle sera répétée au prochain lancement."); } }
   }
   const installation = configuredInstallation({ identity, env, system, configDir: locations.configDir, settings, fetch: deps.installationFetch ?? network, signal: deps.signal, report: err });
+  let downloadedVersion: string | undefined;
   const installMethod = installationMethod(deps.installationExecutable ?? process.execPath, installation);
   try {
     installation.assertCurrent();
@@ -1060,15 +1078,20 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     try { const u = new URL(baseURL), domain = identity.get("SOCIETY_DOMAIN"); return !["localhost", "127.0.0.1", "[::1]"].includes(u.hostname) && u.hostname !== domain && !u.hostname.endsWith("." + domain); } catch { return true; }
   })();
   const productTelemetryEnabled = () => !offlineMinimal && env.ownBoolean("NO_TELEMETRY") !== true && liveSettings.get<boolean>("telemetry.enabled") && (!thirdPartyCloud || liveSettings.origin("telemetry.enabled") !== "default");
+  let manualTracing = false;
   const observer = new SessionObserver({
     slug: identity.get("PRODUCT_SLUG"), eventPrefix: identity.get("TELEMETRY_EVENT_PREFIX"), version: identity.version,
     configDir: locations.configDir, platform: system.platform, persist: !ephemeral, sessionId: () => sessionId,
     entrypoint: controlled ? "control" : nonInteractive ? "non-interactive" : "interactive",
     productEnabled: productTelemetryEnabled,
-    otelEnabled: () => !offlineMinimal && env.ownBoolean("TELEMETRY") === true,
+    otelEnabled: () => !offlineMinimal && env.ownBoolean("NO_TELEMETRY") !== true && (manualTracing || env.ownBoolean("TELEMETRY") === true),
     errorEnabled: () => productTelemetryEnabled() && env.ownBoolean("NO_ERROR_REPORTS") !== true,
     includePrompts: env.ownBoolean("TELEMETRY_INCLUDE_PROMPTS") === true,
+    enhanced: buildFlag("telemetry_enhanced") && env.ownBoolean("DETAILED_TELEMETRY") === true,
+    includeToolContent: buildFlag("telemetry_enhanced") && env.ownBoolean("DETAILED_TELEMETRY") === true && env.ownBoolean("TELEMETRY_INCLUDE_CONTENT") === true,
+    ...(buildFlag("telemetry_orchestrator_role") ? collaborationMetadata(env.own("ORCHESTRATOR_ROLE")) : {}),
     includeSessionId: settings.get<boolean>("telemetry.otel.includeSessionId"),
+    ...(buildFlag("strict_failure") && opt("strict-failure") ? { onLoggedError: (stack: string) => { if (!holder.loggedFailure) err(`STRICT-FAILURE: ${stack}`); holder.loggedFailure = true; holder.abortOnLoggedError?.(); } } : {}),
     environment: name => env.public(name), fetch: deps.observabilityFetch ?? network,
     productUrl: identity.has("SERVICE_TELEMETRY") ? identity.get("SERVICE_TELEMETRY") : undefined,
     errorUrl: identity.has("SERVICE_ERROR_REPORTING") ? identity.get("SERVICE_ERROR_REPORTING") : undefined,
@@ -1076,10 +1099,17 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     secrets: [apiKey, authToken].filter((s): s is string => !!s), warn: message => debug.log("telemetry", message), console: err,
   });
   holder.reportUnexpected = error => observer.reportUnexpected(error);
+  if (buildFlag("telemetry_enhanced") && !offlineMinimal && env.ownBoolean("NO_TELEMETRY") !== true && env.ownBoolean("TELEMETRY") === true && env.ownBoolean("DETAILED_TELEMETRY") === true && env.ownBoolean("TELEMETRY_INCLUDE_CONTENT") === true) err("avertissement : les traces enrichies exportent les entrées et sorties d’outils ; contenus masqués et tronqués à 4 096 caractères par attribut.");
   (holder.finalizers ??= []).push(() => observer.close());
   const loggedProvider = withRequestLog(observer.provider(recordedProvider), providerOptions, (m, d) => debug.log("api", m, d));
   const diagnosedProvider = buildFlag("cache_miss_diagnostics") && settings.get<boolean>("engine.cacheBreakDetection.enabled") ? withCacheDiagnostics(loggedProvider, { maxThreads: settings.get<number>("engine.cacheBreakDetection.maxTrackedThreads"), log: diagnostic => debug.log("cache", "cache break", diagnostic) }) : loggedProvider;
-  const provider: ModelProvider = { id: diagnosedProvider.id, async *stream(request, signal) { assertPolicy(); yield* diagnosedProvider.stream(request, signal); } };
+  const provider: ModelProvider = { id: diagnosedProvider.id, async *stream(request, signal) {
+    assertPolicy(); const price = effectivePricing(request.model, overrides, referenceCurrency, message => err(`avertissement : ${message}`)), currency = ledger.snapshot.currency;
+    for await (const event of diagnosedProvider.stream(request, signal)) {
+      if (event.type === "message_complete") transcript?.append("system", { event: "priced_usage", model: request.model.id, usage: event.usage, ...(event.usageReported !== false && price ? { cost: costOf(price, event.usage) } : {}), tariff: { version: fingerprint({ model: request.model.id, pricing: price ?? null, currency }), distributionVersion: identity.version, pricing: price ?? null, currency } });
+      yield event;
+    }
+  } };
   phase("compatibilité et authentification");
   // CA-03 of SPEC-API-001: thinking requested explicitly from a model without it is announced as unavailable, without error.
   if (settings.get<boolean>("thinking.enabled") && settings.origin("thinking.enabled") !== "default" && resolvedModel.capabilities.thinking === "none") {
@@ -1160,7 +1190,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const toolsetOption = opt("toolset");
   const toolsetNames = typeof toolsetOption === "string" ? (toolsetOption.trim() === "" ? [] : splitList(toolsetOption)) : undefined;
   // `spawn_agent` is a tool of the session, added after the registry is built: it is listed like the others (SPEC-OUT-001).
-  const toolset = toolsetNames?.filter((n) => !["overflow_test", "prune_history", "configure", "submit_result", "spawn_agent", "code_intelligence", "list_connector_resources", "read_connector_resource", "connector_sign_in", "schedule_create", "schedule_list", "schedule_delete"].includes(n));
+  const toolset = toolsetNames?.filter((n) => !["discover_skills", "message_user", "review_artifact", "search_web", "overflow_test", "prune_history", "configure", "submit_result", "spawn_agent", "code_intelligence", "list_connector_resources", "read_connector_resource", "connector_sign_in", "schedule_create", "schedule_list", "schedule_delete"].includes(n));
   const agentsInToolset = toolsetNames === undefined || toolsetNames.includes("spawn_agent") || (toolsetNames.length === 1 && toolsetNames[0] === "default");
   let registry: ToolRegistry;
   try {
@@ -1312,6 +1342,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const skillHookReleases = new Map<Rule[], Array<() => void>>();
   const skillTargets = new Map<Rule[], string>();
   const activateSkill = (skill: Skill, allows: Rule[] = skillAllows) => {
+    if (allows === skillAllows) skillDiscovery?.markKnown(skill.name);
     if (skill.hooks && skill.context === "inline") {
       const releases = skillHookReleases.get(allows) ?? [];
       releases.push(registerHookContext(skillTargets.get(allows) ?? "main", skill.hooks, skill.scope, skill.file, `skill:${skill.name}`));
@@ -1325,6 +1356,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   };
   type AgentPermissionContext = LoopDeps["executor"]["permissionContext"];
   const mainPermissionContext: AgentPermissionContext = () => loopDeps.executor.permissionContext();
+  const skillDiscovery = buildFlag("skill_discovery") && settings.get<boolean>("skills.discovery.enabled") ? new SkillDiscovery(() => skillSet) : undefined;
+  let discoveryTask = "";
   const skillTool = (depth: number, caller: ToolLookup, parentContext: AgentPermissionContext, allows: Rule[], callerMaxIterations?: number) => createUseSkillTool({
     expand: (skill, content) => productSkillContext(skill, content),
     skills: () => skillSet,
@@ -1364,7 +1397,35 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   if (maxAgentDepth >= 1 && agentsInToolset) registry.addStatic(spawnTool(0, registry));
   // SPEC-OUT-020, SPEC-OUT-022: the tools of the work items and of the background tasks, named in --toolset like the others.
   const inToolset = (name: string) => toolsetNames === undefined || toolsetNames.includes(name) || (toolsetNames.length === 1 && toolsetNames[0] === "default");
+  if (buildFlag("skill_discovery") && skillDiscovery && inToolset("discover_skills")) registry.addStatic(createDiscoverSkillsTool(skillDiscovery) as never);
+  let briefMode = buildFlag("mode_brief") && settings.get<boolean>("modes.brief"), briefNote: string | undefined;
+  let publishedMessage: string | undefined;
+  const messageUserTool = buildFlag("mode_brief") ? createMessageUserTool({ enabled: () => briefMode, maxBytes: () => liveSettings.get<number>("ui.shortMessages.maxAttachmentBytes"), publish: addressed => {
+    const message = redactOutput(maskSecrets(addressed.message)); publishedMessage = message;
+    const attachments = addressed.attachments.map(attachment => ({ ...attachment, content: attachment.content.map(part => part.type === "text" ? { ...part, text: redactOutput(part.text) } : part) }));
+    emit({ type: "addressed_message", message, status: addressed.status, attachments });
+    transcript?.append("system", { event: "addressed_message", message, status: addressed.status, attachmentNames: attachments.map(attachment => attachment.name) });
+    if (addressed.status === "proactive" && !app) emit({ type: "notification", message });
+  } }) : undefined;
+  if (buildFlag("mode_brief") && briefMode && messageUserTool && inToolset("message_user")) registry.addStatic(messageUserTool as never);
+  if (buildFlag("review_artifact") && !nonInteractive && inToolset("review_artifact")) registry.addStatic(createReviewArtifactTool(async (artifact, signal) => {
+    if (!app) return artifact.findings.map(finding => ({ id: finding.id, decision: "pending" as const }));
+    const decisions: import("../tools/review-artifact").ReviewDecision[] = [];
+    for (const finding of [...artifact.findings].sort((a, b) => a.severity - b.severity)) {
+      if (signal.aborted) break;
+      const detail = redactOutput(maskSecrets(`${artifact.title}\n${artifact.summary}\n${finding.file}:${finding.start_line}-${finding.end_line}\n${finding.explanation}${finding.proposed_diff ? `\n${finding.proposed_diff}` : ""}`));
+      const answer = await app.choose(`Constat ${finding.id} — ${finding.category}`, [{ label: "accepter" }, { label: "rejeter" }, { label: "commenter" }, { label: "différer" }], { other: false, selected: 3, signal, previewText: () => ({ text: detail, language: "diff" }) });
+      if (answer.kind !== "options") { decisions.push({ id: finding.id, decision: "pending" }); break; }
+      const label = answer.labels[0];
+      if (label === "commenter") { const comment = await app.editText(`Commentaire pour ${finding.id}`, ""); decisions.push({ id: finding.id, decision: comment === undefined ? "pending" : "commented", ...(comment === undefined ? {} : { comment: redactOutput(maskSecrets(comment)) }) }); }
+      else decisions.push({ id: finding.id, decision: label === "accepter" ? "accepted" : label === "rejeter" ? "rejected" : "pending" });
+    }
+    const complete = artifact.findings.map(finding => decisions.find(decision => decision.id === finding.id) ?? { id: finding.id, decision: "pending" as const });
+    transcript?.append("system", { event: "review_artifact", artifact: JSON.parse(redactOutput(maskSecrets(JSON.stringify(artifact)))), decisions: complete });
+    return complete;
+  }) as never);
   if (buildFlag("context_overflow_probe") && buildProfile() === "test" && inToolset("overflow_test")) registry.addStatic(overflowTestTool as never);
+  if (buildFlag("permission_test") && buildProfile() === "test" && inToolset("permission_test")) registry.addStatic(permissionTestTool as never);
   const submittedResult = new SubmittedResult();
   if (outputSchema && inToolset("submit_result")) registry.addStatic(submittedResult.tool(outputSchema) as import("../tools/types").Tool<never>);
   if (inToolset("configure")) registry.addStatic(configureTool({
@@ -1410,6 +1471,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   };
   const fetchTool = createFetchUrlTool(() => webAccess) as never;
   if (!offlineMinimal && inToolset("fetch_url")) registry.addStatic(fetchTool);
+  const searchEndpoint = settings.get<string>("tools.webSearch.endpoint");
+  const search = !offlineMinimal && searchEndpoint && settings.get<boolean>("tools.webSearch.enabled") ? searchWeb({ endpoint: searchEndpoint, fetch: network, enabled: () => liveSettings.get<boolean>("tools.webSearch.enabled"), maxUses: () => liveSettings.get<number>("tools.webSearch.maxUsesPerTurn"), redact: value => redactOutput(maskSecrets(value)) }) : undefined;
+  if (search && inToolset("search_web")) registry.addStatic(search.tool);
   // SPEC-OUT-024, SPEC-OUT-033: planning and questions need someone to answer: the interface (FA-03 of SPEC-OUT-024), or a
   // control host that handles the question (FA-02 of SPEC-OUT-033, added once it has declared it).
   let approvedPlan: string | undefined;
@@ -1583,6 +1647,19 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       })
     : undefined;
   const sessionId = transcript?.sessionId ?? assignedId ?? crypto.randomUUID();
+  const recording = env.own("SESSION_RECORDING");
+  if (recording) {
+    if (recording === "1" && (!transcript || settings.get<boolean>("storage.encryption.enabled"))) throw new RunError("Enregistrement par défaut incompatible avec une session sans persistance ou chiffrée ; indiquez une destination d’export explicite.", ExitCode.UsageOrConfiguration);
+    const path = recording === "1" ? join(transcript!.sessionDir, "terminal.cast") : absolute(recording, cwd);
+    err(`Enregistrement terminal actif : ${path}. Export non chiffré ; il peut contenir des secrets affichés. Relisez-le avant partage.`);
+    try {
+      const cast = new Asciicast(path, terminal?.columns ?? 80, terminal?.rows ?? 24, err);
+      const originalOut = streams.writeOut, originalErr = streams.writeErr;
+      streams.writeOut = value => { cast.output(value); originalOut(value); }; streams.writeErr = value => { cast.output(value); originalErr(value); };
+      if (terminal) terminal = cast.terminal(terminal);
+      (holder.finalizers ??= []).push(async () => { cast.close(); err(`Enregistrement terminal fermé : ${path}.`); });
+    } catch { err("Enregistrement indisponible : fichier existant, chemin protégé ou destination inscriptible requise."); }
+  }
   observer.start();
   const others = presence.sameFolder(projectReal, sessionId);
   if (others.length > 0) {
@@ -1741,8 +1818,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     const domains = typeof debugOption === "string" ? splitList(debugOption) : [];
     const output = opt("debug-output") ?? env.own("DEBUG_FILE");
     debugPath = output === "stderr" ? undefined : typeof output === "string" ? absolute(output, cwd) : join(transcript?.sessionDir ?? locations.configDir, "debug.log");
-    debug = debugPath === undefined ? createDebugLog({ kind: "stderr", write: (t) => streams.writeErr(t) }, domains) : createDebugLog({ kind: "file", path: debugPath, write: (t) => streams.writeErr(t) }, domains);
+    const destination = debugPath === undefined ? createDebugLog({ kind: "stderr", write: (t) => streams.writeErr(t) }, domains) : createDebugLog({ kind: "file", path: debugPath, write: (t) => streams.writeErr(t) }, domains);
+    const metadataOnly = settings.get<boolean>("storage.encryption.enabled") && output === undefined;
+    debug = metadataOnly ? { enabled: destination.enabled, get path() { return destination.path; }, log: (domain, _message, _data) => destination.log(domain, "metadata", { code: "debug_event" }) } : destination;
     debugPath = debug.path;
+    if (settings.get<boolean>("storage.encryption.enabled") && output !== undefined) err("Export de débogage explicite non chiffré : ne le partagez qu’après relecture.");
     err(`Journal de débogage : ${debugPath ?? "sortie d'erreur"}.`);
   }
   for (const [domain, message, data] of earlyDebug) debug.log(domain, message, data);
@@ -1803,7 +1883,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       repositoryAbsent: !minimal && repositoryAbsent,
       identity,
       variant: "main",
-      mechanisms: buildFlag("context_token_target") ? TOKEN_TARGET_EXPLANATION : undefined,
+      mechanisms: [buildFlag("context_token_target") ? TOKEN_TARGET_EXPLANATION : "", buildFlag("mode_brief") && briefMode ? BRIEF_INSTRUCTION : ""].filter(Boolean).join("\n") || undefined,
       nonInteractive,
       model: resolvedModel,
       cwd,
@@ -1812,7 +1892,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       arch: system.arch,
       osRelease: system.release,
       shellTool: shellToolLine(registry, toolEnv),
-      skills: skillsSection(modelSkills(skillSet), Math.min(settings.get<number>("skills.maxDescriptionsTokens"), Math.floor(resolvedModel.contextWindow * settings.get<number>("skills.listingBudgetRatio"))), estimateTokens, settings.get<number>("skills.maxDescriptionChars")),
+      skills: skillDiscovery ? "# Skills\nRelevant local skills are suggested in system reminders. Before a pivot, use discover_skills to find additional skills; use_skill loads their instructions." : skillsSection(modelSkills(skillSet), Math.min(settings.get<number>("skills.maxDescriptionsTokens"), Math.floor(resolvedModel.contextWindow * settings.get<number>("skills.listingBudgetRatio"))), estimateTokens, settings.get<number>("skills.maxDescriptionChars")),
       date: now(),
       promptFamily: settings.get<string>("context.promptFamily"),
       budgetTokens: settings.get<number>("context.systemInstructionsBudget"),
@@ -1825,6 +1905,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     throw e;
   }
   for (const w of built.warnings) err(`avertissement : ${w}`);
+  if (buildFlag("system_instructions_export") && opt("export-system-instructions")) {
+    err("Export non masqué des instructions système : elles peuvent contenir des données sensibles. Aucun appel de modèle.");
+    streams.writeOut(built.blocks.map(block => block.text).join("\n\n") + "\n"); return ExitCode.Success;
+  }
   const conversation = new Conversation(
     built.blocks,
     registry.list().map((t) => ({ name: t.name, description: t.description(toolEnv), inputSchema: t.inputSchema })),
@@ -1876,6 +1960,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
 
   // Engine.
   const controller = new AbortController();
+  holder.abortOnLoggedError = () => controller.abort();
   const external = deps.signal;
   let bySignal = false;
   if (external) {
@@ -1897,8 +1982,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // SPEC-AGT-016: the background tasks of the session, their output in its work folder.
   const background = new BackgroundTasks({ dir: join(sessionWork, "tasks"), maxOutputBytes: settings.get<number>("tasks.maxOutputBytes"), monitorMaxLinesPerMinute: 2_000, monitorWindowMs: 500 });
   const traceOption = env.own("PERF_TRACE"), profileOption = env.own("PROFILE"), slowMs = env.ownInteger("SLOW_OP_WARN_MS");
-  if (traceOption || profileOption || slowMs !== undefined) {
-    diagnostics = new PerformanceRecorder({ directory: transcript?.sessionDir ?? join(locations.configDir, "performance", sessionId), trace: traceOption === "1" ? "1" : traceOption ? absolute(traceOption, cwd) : undefined, profile: profileOption, slowMs, now: performanceNow, originMs: performanceOrigin, warn: message => err(`avertissement : ${message}`), log: (name, durationMs, sizeBytes) => {
+  if (traceOption || profileOption || slowMs !== undefined || buildFlag("ui_dev_bar")) {
+    diagnostics = new PerformanceRecorder({ directory: transcript?.sessionDir ?? join(locations.configDir, "performance", sessionId), trace: traceOption === "1" ? "1" : traceOption ? absolute(traceOption, cwd) : undefined, profile: profileOption, slowMs: slowMs ?? (buildFlag("ui_dev_bar") ? 50 : undefined), now: performanceNow, originMs: performanceOrigin, warn: message => err(`avertissement : ${message}`), log: (name, durationMs, sizeBytes) => {
       debug.log("engine", "slow operation", { name, durationMs, sizeBytes }); err(`Opération lente : ${name}, ${durationMs.toFixed(2)} ms, ${sizeBytes} octets.`);
     } });
     holder.cleanups.push(() => { diagnostics?.close(); for (const path of diagnostics?.paths ?? []) err(`Diagnostic de performance : ${path}.`); });
@@ -2337,6 +2422,14 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const interruptionNotes: Reminder[] = [];
   // SPEC-CMD-016: the consumption by model, sub-agents and side requests included.
   const usageByModel = new Map<string, { requests: number; input: number; output: number; cost: number; costKnown: boolean }>();
+  for (const record of reopened?.records ?? []) {
+    if (!(record.type === "system" && record.data["event"] === "priced_usage") && !(record.type === "assistant" && !record.data["tariff"])) continue;
+    const usage = record.data["usage"] as Partial<Usage> | undefined, model = typeof record.data["model"] === "string" ? record.data["model"] : reopened?.model;
+    if (!model || !usage || ![usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheWriteTokens].every(value => typeof value === "number" && Number.isFinite(value) && value >= 0)) continue;
+    const cost = record.data["cost"], previous = usageByModel.get(model) ?? { requests: 0, input: 0, output: 0, cost: 0, costKnown: true };
+    const known = typeof cost === "number" && Number.isFinite(cost) && cost >= 0;
+    usageByModel.set(model, { requests: previous.requests + 1, input: previous.input + usage.inputTokens! + usage.cacheReadTokens! + usage.cacheWriteTokens!, output: previous.output + usage.outputTokens!, cost: previous.cost + (known ? cost : 0), costKnown: previous.costKnown && known });
+  }
   // SPEC-MOT-006 step 5: the files changed outside the agent since they were read.
   const changeNotes: Reminder[] = [];
   const changeNotified = new Map<string, string>();
@@ -2382,6 +2475,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const reminders = new ReminderCenter(
     [
       dateChangeProducer(now),
+      { type: "skill_discovery", produce: () => { const selected = skillDiscovery?.select(discoveryTask, settings.get<number>("skills.discovery.perTurn")) ?? []; return selected.length ? [{ type: "skill_discovery", priority: 40, text: `Relevant local skills (metadata only; load with use_skill):\n${selected.map(skill => `- ${skill.name}: ${skill.description.slice(0, settings.get<number>("skills.maxDescriptionChars"))}`).join("\n")}` }] : []; } },
       { type: "history_growth", produce: () => pruning?.notices(meter.occupation(conversation.system, conversation.tools, pruning.history(), conversation.segment).tokens) ?? [] },
       languages.reminders(() => ({ cwd, allowedDirectories, platform: system.platform, readDenied })),
       permissionDenials,
@@ -2562,6 +2656,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       try { if (controller.signal.aborted) abort(); return await child.exited; } finally { controller.signal.removeEventListener("abort", abort); }
     };
     app = new InteractiveApp({
+      brief: () => briefMode,
+      developmentBar: buildFlag("ui_dev_bar") ? () => { const operations = diagnostics?.recent.slice(-3) ?? []; return operations.length ? `Développement · ${operations.map(operation => `${operation.name} ${Math.round(operation.durationMs)} ms`).join(" · ")}` : undefined; } : undefined,
       footer: () => footer?.value ? { spans: footer.value, padding: liveSettings.get<number>("ui.footerLine.padding") } : undefined,
       historyBrowser: buildFlag("ui_history_browser"),
       fileBrowser: buildFlag("ui_fast_find") ? { debounceMs: settings.get<number>("ui.search.debounceMs"), matches: (query, global) => {
@@ -2580,6 +2676,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       capabilities,
       settings: {
         maxFramesPerSecond: settings.get<number>("ui.maxFramesPerSecond"),
+        slowFrameMs: settings.get<number>("ui.render.slowFrameMs"),
         minColumns: settings.get<number>("ui.minColumns"),
         retainedLines: settings.get<number>("ui.retainedLines"),
         inputMinHeight: settings.get<number>("ui.inputMinHeight"),
@@ -2595,6 +2692,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       },
       status: () => ({ mode: modeState.mode, model: minimal ? `${currentModel.id} · session minimale` : currentModel.id, ...(schedule?.list().length ? { scheduled: schedule.list().sort((a, b) => a.nextAt - b.nextAt)[0]!.nextLocal } : {}) }),
       reducedMotion: settings.get<boolean>("ui.reducedMotion"),
+      screenReader: settings.get<boolean>("ui.screenReaderMode"),
+      tips: settings.get<boolean>("ui.hints.enabled"),
       // SPEC-PER-003 EF-03, SPEC-PER-017 § 5.3 step 3: `unrestricted` is entered the first time only after its warning is accepted.
       cycleMode: () =>
         void (async () => {
@@ -2688,7 +2787,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     usage: (model, event, cost) => emit({ type: "usage", model, usage: event.usage, cost }),
   }) : undefined;
   const approvalRules = (input: readonly Rule[], mode: PermissionMode = modeState.mode) => autoApproveRules(input, mode, { cwd, allowedDirectories, platform: system.platform });
-  const postSampling = new PostSampling(deps.samplingProcessors ?? [], (name, error) => debug.log("hooks", "post-sampling failure", { name, error: redactOutput(error) }));
+  const postSampling = new PostSampling(deps.samplingProcessors ?? [], (name, error) => { debug.log("hooks", "post-sampling failure", { name, error: redactOutput(error) }); observer.reportUnexpected(new Error(redactOutput(error))); });
   holder.cleanups.push(() => postSampling.close());
   const loopDeps: LoopDeps = {
     maxKeyword: buildFlag("thinking_max_keyword") ? settings.get<string>("thinking.maxKeyword") : undefined,
@@ -2698,6 +2797,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     postSampling: (assistant, agent) => postSampling.dispatch({ assistant, agent, minimal, ephemeral: transcript === undefined }),
     beforeRequest: () => {
       assertPolicy();
+      if (pruneRequested && pruning) { pruneRequested = false; const result = pruning.pruneOldLargeResults(); emit({ type: "warning", message: `Élagage : environ ${result.freedTokens} jetons libérés ; messages utilisateur conservés.` }); }
       applySettingsChanges();
       if (!allowedByList(currentModel, currentModel.id)) throw new Error(`Le modèle courant ${currentModel.id} n'est plus autorisé ; utilisez /switch-model ou redémarrez la session.`);
       const imposed = managedModelId();
@@ -2741,7 +2841,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     maxOutputContinuations: settings.get<number>("engine.maxOutputContinuations"),
     maxStopHookContinuations: settings.get<number>("engine.maxStopHookContinuations"),
     emit,
-    pendingNote: () => modeState.takeNote(),
+    pendingNote: () => { const note = [modeState.takeNote(), briefNote, pruneNote].filter(Boolean).join("\n"); briefNote = undefined; pruneNote = undefined; return note || undefined; },
+    publishedMessage: () => publishedMessage,
     context,
     executor: {
       redactOutput,
@@ -2901,6 +3002,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       // below the maximal depth; a planning agent only reads (EF-06 of SPEC-OUT-016).
       const replaced = new Map<string, never>();
       const allowed = (name: string) =>
+        !["message_user", "review_artifact", "discover_skills"].includes(name) &&
+        !(def.webHosts && name === "search_web") &&
         name !== "prune_history" &&
         name !== "submit_result" &&
         caller.get(name) !== undefined &&
@@ -3059,7 +3162,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // SPEC-CMD-001: the catalogue of the commands, built again for each request (skills reread, connectors connected).
   const commandCatalog = () =>
     new CommandCatalog({
-      internal: INTERNAL_COMMANDS,
+      internal: INTERNAL_COMMANDS.filter(command => command.name === "browser" ? identity.has("SERVICE_BROWSER_EXTENSION") : command.name === "install-chat-app" ? identity.has("TEAM_CHAT_APP") : true),
       skills: skillSet,
       connectors: connectors?.prompts() ?? [],
       // SPEC-CMD-020 § 11: the variable hides the diagnosis.
@@ -3306,6 +3409,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     try {
       submittedResult.reset();
       result = await observer.interaction(content, signal, () => runTurn(loopDeps, content, signal));
+      if (holder.loggedFailure) throw new RunError("Arrêt après une erreur journalisée.", ExitCode.ExecutionError);
       assertPolicy();
     } catch (error) {
       if ((app || control) && error instanceof RunError && error.exitCode === ExitCode.BlockedByPolicy) return { refused: error.message };
@@ -3377,6 +3481,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   };
   // The internal commands of this version (SPEC-CMD-001 rank 1): help, exit, key bindings.
   const processRequest = async (original: string | readonly ContentPart[], signal: AbortSignal, literal = false, pasted: readonly string[] = []): Promise<RequestOutcome> => {
+    publishedMessage = undefined;
+    search?.reset();
+    discoveryTask = typeof original === "string" ? original : original.filter(part => part.type === "text").map(part => part.text).join("\n");
     hookParentSignal = signal;
     processingRequests++;
     const ended = diagnostics?.start("query", nonInteractive ? "headless" : "query");
@@ -3388,6 +3495,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     }
   };
 
+  let pruneRequested = false;
+  let pruneNote: string | undefined;
   const runInternalCommand = async (command: InternalCommand, args: string, signal: AbortSignal): Promise<RequestOutcome> => {
     if (offlineMinimal && ((command.name === "extensions" && args.trim() !== "" && args.trim() !== "installées") || (command.name === "connectors" && args.trim() !== "") || (command.name === "shortcuts" && args.trim() === "edit"))) {
       return { refused: "Opération indisponible en mode minimal hors ligne." };
@@ -3399,6 +3508,74 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       if (command.name !== "quit" && command.name !== "exit") return { refused: policyGuard.check(policyCapability).map((i) => i.message).join("\n") };
     }
     switch (command.name) {
+      case "browser": {
+        if (args.trim()) return { refused: "Usage : /browser." };
+        const note = `Extension navigateur non connectée.\nInstallez l’extension depuis ${identity.get("SERVICE_BROWSER_EXTENSION")}, activez-la dans votre navigateur, puis suivez ses instructions de connexion. La connexion au navigateur n’est pas encore livrée dans cette version.`;
+        return { shown: text(note), note };
+      }
+      case "install-chat-app": {
+        if (args.trim()) return { refused: "Usage : /install-chat-app." };
+        if (offlineMinimal) return { refused: "Ouverture indisponible en mode minimal hors ligne." };
+        const base = identity.get("SERVICE_DOCS"), url = new URL("integrations/team-chat/install", base.endsWith("/") ? base : `${base}/`);
+        url.searchParams.set("app", identity.get("TEAM_CHAT_APP")); if (url.protocol !== "https:" || url.username || url.password) return { refused: "Page d’installation HTTPS requise." };
+        const opened = deps.openServiceUrl?.(url.href) ?? openAuthorizationUrl(url.href, system.platform, cwd, env.childEnvironment({}), powerShell?.path);
+        return { shown: text(`${opened ? "Page d’installation ouverte" : "Ouvrez la page d’installation"} : ${url.href}\nInstallez l’application dans votre outil de messagerie et vérifiez son apparition dans la liste des applications. Aucune conversation ni clé n’est transmise par cette commande.`) };
+      }
+      case "prune-history": {
+        if (args.trim()) return { refused: "Usage : /prune-history." }; if (!pruning) return { refused: "Élagage indisponible dans cette session." };
+        pruneRequested = true; pruneNote = "History pruning was requested by the user. Old large tool results may already have been pruned as a fallback; use prune_history for additional obsolete tool results, preserving user and assistant messages.";
+        const note = "Élagage demandé pour le prochain tour ; les archives originales sont conservées."; return { shown: text(note), note };
+      }
+      case "getting-started": {
+        if (args.trim() || !app) return { refused: "Usage interactif : /getting-started." };
+        for (const [name, title, current] of [["appearance", "Thème", liveSettings.get<string>("ui.theme")], ["switch-model", "Modèle", currentModel.id]] as const) {
+          const answer = await app.choose(`${title} actuel : ${current} — conserver les réglages existants`, [{ label: "conserver" }, { label: "modifier" }], { other: false, signal });
+          if (answer.kind !== "options") return { shown: text("Parcours arrêté ; paramètres existants conservés.") };
+          if (answer.labels[0] === "modifier") { const target = INTERNAL_COMMANDS.find(command => command.name === name)!; const changed = await runInternalCommand(target, "", signal); if (changed.refused) app.notice("warning", changed.refused); }
+        }
+        return { shown: text("Parcours terminé ; aucun paramètre existant effacé.") };
+      }
+      case "trace": {
+        const mode = args.trim(); if (mode && mode !== "on" && mode !== "off") return { refused: "Usage : /trace [on|off]." };
+        if (mode === "on") { if (offlineMinimal || env.ownBoolean("NO_TELEMETRY") === true) return { refused: "Traçage désactivé par le mode minimal ou NO_TELEMETRY." }; manualTracing = true; observer.beginTrace(); }
+        if (mode === "off") { await observer.flush(); manualTracing = false; observer.stopTrace(); }
+        const note = observer.traceId ? `Traçage actif · identifiant : ${observer.traceId}` : "Traçage manuel inactif."; return { shown: text(note), note };
+      }
+      case "send-feedback":
+      case "report-issue":
+      case "perf-report": {
+        if (!app) return { refused: "Relecture interactive nécessaire." };
+        if (command.name !== "send-feedback" && args.trim()) return { refused: `/${command.name} n’accepte aucun argument.` };
+        const kind = command.name === "send-feedback" ? "feedback" : command.name === "report-issue" ? "issue" : "performance";
+        const description = args.trim() || await app.editText(kind === "performance" ? "Décrire le problème de performances" : "Décrire le retour ou le problème", "");
+        if (!description?.trim()) return { note: "Signalement annulé." };
+        const payload = { kind, description: redactOutput(maskSecrets(description.slice(0, 16000))), version: identity.version, platform: system.platform, ...(kind === "performance" ? { performance: { memory: { rssBytes: process.memoryUsage().rss, heapUsedBytes: process.memoryUsage().heapUsed }, render: app.renderStats, operations: diagnostics?.recent.slice(-20) ?? [] } } : {}) };
+        const preview = JSON.stringify(payload, null, 2);
+        const answer = await app.choose("Relire le signalement — aucune transcription jointe", [{ label: "envoyer" }, { label: "annuler" }], { selected: 1, other: false, signal, previewText: () => ({ text: preview, language: "json" }) });
+        if (answer.kind !== "options" || answer.labels[0] !== "envoyer") return { note: "Signalement annulé ; aucun envoi." };
+        if (!identity.has("SERVICE_FEEDBACK") || offlineMinimal) return { shown: text(`Service de retours indisponible. Texte à conserver :\n${preview}`) };
+        try {
+          assertPolicy(); const url = new URL(identity.get("SERVICE_FEEDBACK")); if (url.protocol !== "https:" || url.username || url.password) throw new Error("Service invalide");
+          const response = await (deps.feedbackFetch ?? network)(url, { method: "POST", redirect: "error", headers: { "content-type": "application/json" }, body: preview, signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]) });
+          if (!response.ok) throw new Error("Échec d’envoi"); const length = Number(response.headers.get("content-length")); if (length > 16384) throw new Error("Réponse invalide");
+          const reader = response.body?.getReader(); let bytes = 0; const chunks: Uint8Array[] = [];
+          try { if (reader) for (;;) { const part = await reader.read(); if (part.done) break; bytes += part.value.byteLength; if (bytes > 16384) throw new Error("Réponse invalide"); chunks.push(part.value); } } finally { await reader?.cancel().catch(() => {}); }
+          const result: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8")); const id = result && typeof result === "object" && "id" in result && typeof result.id === "string" ? result.id : undefined;
+          if (!id || id.length > 256) throw new Error("Réponse invalide"); return { note: `Signalement envoyé : ${redactOutput(maskSecrets(id))}.` };
+        } catch { return { refused: "Envoi du signalement impossible ; aucun nouvel envoi automatique." }; }
+      }
+      case "concise-replies": {
+        if (!buildFlag("mode_brief") || args.trim()) return { refused: "Usage : /concise-replies." };
+        applySettingsChanges(); if (liveSettings.isManaged("modes.brief")) return { refused: "Le mode messages courts est imposé par votre organisation." };
+        briefMode = !briefMode; briefNote = briefMode ? BRIEF_INSTRUCTION : "Brief mode is inactive: ordinary prose and tools are visible again.";
+        if (briefMode && messageUserTool && inToolset("message_user") && !registry.get("message_user")) { registry.addStatic(messageUserTool as never); conversation.extendTools([{ name: messageUserTool.name, description: messageUserTool.description(toolEnv), inputSchema: messageUserTool.inputSchema }]); }
+        return { shown: text(briefMode ? "Messages courts activés ; le détail reste consultable dans la vue de transcription." : "Messages courts désactivés.") };
+      }
+      case "version": {
+        if (args.trim()) return { refused: "Usage : /version." };
+        const note = `Version en cours : ${identity.get("PRODUCT")} ${identity.version}.${downloadedVersion ? `\nMise à jour téléchargée : ${downloadedVersion}, prête au prochain lancement.` : ""}`;
+        return { shown: text(note), note };
+      }
       case "context-files": {
         if (args.trim()) return { refused: "Usage : /context-files" };
         const rows = contextFiles(conversation.messages);
@@ -4117,6 +4294,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           `Confiance du projet : ${trust.trusted ? "accordée" : "non accordée"}`,
           `Options dynamiques : ${featureFlags.lastRefresh ?? "valeurs embarquées ou cache, aucun rafraîchissement"}`,
           "Connecteurs :",
+          ...(buildFlag("telemetry_enhanced") && !offlineMinimal && env.ownBoolean("NO_TELEMETRY") !== true && env.ownBoolean("TELEMETRY") === true && env.ownBoolean("DETAILED_TELEMETRY") === true ? ["Traces enrichies actives (bêta)."] : []),
           ...(buildProfile() === "internal" ? [`Options de build : ${JSON.stringify(buildInventory())}`] : []),
           ...languages.status().map((s) => `Serveur de langage ${s.name} : ${s.state}`),
           ...((connectors?.status() ?? []).length === 0
@@ -4353,6 +4531,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       interactiveApp.refresh();
     }
     holder.cleanups.push(() => interactiveApp.stop());
+    (holder.finalizers ??= []).push(async () => { if (interactiveApp.renderStats) observer.render(interactiveApp.renderStats); });
     // Startup consent precedes this optional state write, even while another process holds the state lock.
     if (!controller.signal.aborted) {
       assertPolicy();
@@ -4367,7 +4546,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     // SPEC-MOD-010 § 5.4, EF-04, CA-04: the deferred maintenance starts after the display.
     setTimeout(deferredMaintenance, 0);
     if (!offlineMinimal && installMethod === "native") {
-      const maintenance = new InstallationMaintenance({ store: installation, enabled: env.ownBoolean("NO_AUTO_UPDATES") !== true && settings.get<boolean>("updates.automatic.enabled"), channel: settings.get<string>("updates.channel"), keep: settings.get<number>("maintenance.keepVersions"), lastInteraction: () => interactiveApp.lastInteractionAt, delayMs: deps.installationMaintenanceDelayMs, idleMs: deps.installationMaintenanceIdleMs, report: message => interactiveApp.notice("info", message), log: (event, count) => debug.log("installation", event, { count }) });
+      const maintenance = new InstallationMaintenance({ store: installation, enabled: env.ownBoolean("NO_AUTO_UPDATES") !== true && settings.get<boolean>("updates.automatic.enabled"), channel: settings.get<string>("updates.channel"), keep: settings.get<number>("maintenance.keepVersions"), lastInteraction: () => interactiveApp.lastInteractionAt, delayMs: deps.installationMaintenanceDelayMs, idleMs: deps.installationMaintenanceIdleMs, report: message => interactiveApp.notice("info", message), log: (event, count) => debug.log("installation", event, { count }), onUpdated: version => { downloadedVersion = version; } });
       maintenance.start(); (holder.finalizers ??= []).push(() => maintenance.close());
     } else if (!offlineMinimal && packageAdvice(installMethod, identity.get("PRODUCT_CLI"))) interactiveApp.notice("info", `Mise à jour par gestionnaire : ${packageAdvice(installMethod, identity.get("PRODUCT_CLI"))}`);
     holder.errSink = (text) => interactiveApp.writeLine(text);
@@ -4444,6 +4623,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           interactiveApp.commit(outcome.shown);
           return { kind: "shown" };
         }
+        if (outcome.note !== undefined) { interactiveApp.notice("info", outcome.note); return { kind: "shown" }; }
         return { kind: "turn", result: outcome.result! };
       },
     });

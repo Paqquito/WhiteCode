@@ -1,9 +1,13 @@
+// Supports: SPEC-BLD-008 (CA-01, identity-specific extension documentation), gap E-161.
 // Implements: SPEC-BLD-001 (steps 1-2: identity validation and constant generation), SPEC-CAD-002 (§ 5.3 steps 1-4)
 // Resolves the identity file and the model catalogue, then writes the build-time constants module.
+// Supports: SPEC-BLD-006 (identity-derived package manifest and strict compiler configuration), E-160.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { extensionAuthorDocumentation } from "./publish-extension-docs";
 import { dirname, join, resolve } from "node:path";
 import { resolveIdentityText, runtimeIdentity } from "../src/identity/resolver";
+import { Identity } from "../src/identity/identity";
 import { ModelCatalog } from "../src/providers/catalog";
 import { resolveBuildOptions } from "../src/extension-points/build-options";
 
@@ -18,7 +22,9 @@ const identityPath = resolve(root, arg("--identity", "identity/dev.identity.json
 const modelsPath = resolve(root, arg("--models", "identity/dev.models.json"));
 const outPath = join(root, "src/identity/generated/build-data.ts");
 
-const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string };
+const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string; private?: boolean; license?: string };
+const compiler = JSON.parse(readFileSync(join(root, "tsconfig.json"), "utf8")).compilerOptions;
+if (!compiler || ["strict", "noUncheckedIndexedAccess", "noImplicitOverride", "noFallthroughCasesInSwitch", "forceConsistentCasingInFileNames", "verbatimModuleSyntax", "noEmit"].some(key => compiler[key] !== true) || compiler.target !== "ESNext" || compiler.module !== "ESNext" || compiler.moduleResolution !== "bundler") throw new Error("Configuration TypeScript non conforme : les contrôles stricts et la résolution de modules sont obligatoires.");
 const profile = arg("--profile", "public"), optionsFile = arg("--build-options", "");
 const options = resolveBuildOptions(profile, optionsFile ? JSON.parse(readFileSync(resolve(root, optionsFile), "utf8")) : {});
 const result = resolveIdentityText(readFileSync(identityPath, "utf8"), { version: pkg.version, strict: true });
@@ -29,6 +35,10 @@ const catalogData: unknown = JSON.parse(readFileSync(modelsPath, "utf8"));
 new ModelCatalog(catalogData); // throws on an invalid catalogue
 
 mkdirSync(dirname(outPath), { recursive: true });
+const manifestIdentity = new Identity(runtimeIdentity(result.identity));
+const identityValue = (name: string) => manifestIdentity.get(name);
+writeFileSync(join(dirname(outPath), "extension-authors.html"), extensionAuthorDocumentation(manifestIdentity));
+writeFileSync(join(dirname(outPath), "package.json"), JSON.stringify({ name: identityValue("PRODUCT_SLUG"), version: result.identity.version, description: `${identityValue("PRODUCT")} — agent de programmation en ligne de commande`, author: identityValue("SOCIETY"), private: pkg.private ?? true, license: pkg.license ?? "UNLICENSED", type: "module", bin: { [identityValue("PRODUCT_SLUG")]: `${identityValue("PRODUCT_CLI")}.js` }, engines: { bun: ">=1.4.2" }, files: [`${identityValue("PRODUCT_CLI")}.js`, "config.schema.json", "install.ps1", "install.sh", "build-options.json"] }, null, 2) + "\n");
 writeFileSync(join(dirname(outPath), "build-flags.ts"), `// Supports: SPEC-BLD-002 (generated constants; do not edit or commit).\nexport const BUILD_PROFILE = ${JSON.stringify(profile)};\nexport const BUILD_VALUES = ${JSON.stringify(options)} as const;\n`);
 writeFileSync(
   outPath,

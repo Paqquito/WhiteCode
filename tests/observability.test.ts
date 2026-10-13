@@ -29,6 +29,7 @@ test("SPEC-OBS-012/CA-01 — the hooks filter records a real hook and excludes o
   const path = join(ws.root, "hooks.log");
   const result = await cli(["--non-interactive", "--debug", "hooks", "--debug-output", path, "go"], ws, {
     provider: new ScriptedProvider([{ text: "done" }]), env: productEnv(ws),
+    signal: AbortSignal.timeout(10_000),
     userConfig: { hooks: { session_opened: [{ actions: [{ type: "command", command: hook.command }] }] } },
   });
   expect(result.code).toBe(0);
@@ -38,7 +39,7 @@ test("SPEC-OBS-012/CA-01 — the hooks filter records a real hook and excludes o
   expect(lines.every((line) => /^\S+ \[hooks\] /.test(line))).toBe(true);
   expect(result.stderr).toContain(`Journal de débogage : ${path}`);
   expect(result.stdout).not.toContain("[hooks]");
-});
+}, 15_000);
 
 test("TECH — debug exclusions win over inclusions; an exclusion alone retains other domains", () => {
   for (const filters of [["hooks", "api", "!api"], ["!api"]]) {

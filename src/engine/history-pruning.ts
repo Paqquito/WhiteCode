@@ -1,3 +1,4 @@
+// Supports: SPEC-CMD-101, gap E-161.
 // Implements: SPEC-MOT-019, SPEC-OUT-043 (stable identifiers, projection, growth notices, persisted decisions).
 // Supports: SPEC-SES-002, decision D-12, E-158.
 import type { Conversation } from "./conversation";
@@ -37,6 +38,10 @@ export class HistoryPruning {
     this.#sync(); if (this.#growth === undefined) { this.#growth = tokens; return []; }
     if (tokens - this.#growth < this.step) return []; this.#growth = tokens;
     return [{ type: "history_growth", text: "The context has grown. prune_history is available for tool results that are no longer useful; pruning is optional. Message identifiers appear as [mN].", priority: 1, repeatable: true }];
+  }
+  pruneOldLargeResults(): { pruned: string[]; ignored: string[]; freedTokens: number } {
+    const candidates = this.history().slice(0, -2).flatMap((message, index) => message.role === "user" && message.parts.length > 0 && message.parts.every(part => part.type === "tool_result") && JSON.stringify(message.parts).length > 2048 ? [`m${index + 1}`] : []);
+    return this.prune(candidates);
   }
   history(): readonly HistoryMessage[] {
     this.#sync(); const calls = new Map(this.conversation.messages.flatMap(m => m.role === "assistant" ? m.toolCalls.map(c => [c.callId, c] as const) : []));

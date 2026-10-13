@@ -16,7 +16,8 @@ function extension(ws: Workspace, folder: string, files: Record<string, unknown>
 const manifest = (name: string, extra: Record<string, unknown> = {}) => ({ name, version: "1.0.0", description: `The ${name} extension.`, ...extra });
 const skill = (description: string, body = "body") => `---\ndescription: ${JSON.stringify(description)}\n---\n${body}\n`;
 const validate = (ws: Workspace, path: string, json = false) => cli(["extension", "validate", path, ...(json ? ["--json"] : [])], ws, { env: productEnv(ws) });
-const run = (ws: Workspace, provider: ScriptedProvider, args: string[], userConfig: Record<string, unknown> = {}) => cli(["--non-interactive", ...args], ws, { provider, userConfig, env: productEnv(ws) });
+// These loading tests inspect the static catalogue; discovery has separate runtime tests.
+const run = (ws: Workspace, provider: ScriptedProvider, args: string[], userConfig: Record<string, unknown> = {}) => cli(["--non-interactive", ...args], ws, { provider, userConfig: { skills: { discovery: { enabled: false } }, ...userConfig }, env: productEnv(ws) });
 const system = (p: ScriptedProvider) => JSON.stringify(p.requests[0]?.system ?? []);
 
 test("SPEC-MOD-012/CA-09 — an extension declaring a product family is refused without loading its other contributions", async () => {
