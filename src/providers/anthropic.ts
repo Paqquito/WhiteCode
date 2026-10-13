@@ -30,16 +30,18 @@ export interface AnthropicProviderOptions {
 export function toMessageParams(history: readonly HistoryMessage[], systemMessages: boolean): Anthropic.MessageParam[] {
   const out: Anthropic.MessageParam[] = [];
   for (const m of history) {
+    const label = m.contextId ? `[${m.contextId}]\n` : "";
     if (m.role === "assistant") {
       // Verbatim (D-12), empty text blocks included: a translating gateway needs them to give the message a content (gap E-073).
-      out.push({ role: "assistant", content: m.native.content as Anthropic.ContentBlockParam[] });
+      const native = m.native.content as Anthropic.ContentBlockParam[];
+      out.push({ role: "assistant", content: native });
       continue;
     }
     if (m.role === "system_note") {
       const last = out[out.length - 1];
-      if (systemMessages) out.push({ role: "system", content: m.text });
-      else if (last && last.role === "user" && Array.isArray(last.content)) (last.content as Anthropic.ContentBlockParam[]).push({ type: "text", text: m.text });
-      else out.push({ role: "user", content: [{ type: "text", text: m.text }] });
+      if (systemMessages) out.push({ role: "system", content: label + m.text });
+      else if (last && last.role === "user" && Array.isArray(last.content)) (last.content as Anthropic.ContentBlockParam[]).push({ type: "text", text: label + m.text });
+      else out.push({ role: "user", content: [{ type: "text", text: label + m.text }] });
       continue;
     }
     const content: Anthropic.ContentBlockParam[] = m.parts.map((p): Anthropic.ContentBlockParam => {
@@ -53,12 +55,13 @@ export function toMessageParams(history: readonly HistoryMessage[], systemMessag
             type: "tool_result",
             tool_use_id: p.callId,
             is_error: p.isError,
-            content: p.content.map((c): Anthropic.TextBlockParam | Anthropic.ImageBlockParam =>
+            content: [...(label ? [{ type: "text" as const, text: label }] : []), ...p.content.map((c): Anthropic.TextBlockParam | Anthropic.ImageBlockParam =>
               c.type === "text" ? { type: "text", text: c.text } : { type: "image", source: { type: "base64", media_type: c.mediaType, data: c.dataBase64 } },
-            ),
+            )],
           };
       }
     });
+    if (label && m.parts.some(p => p.type !== "tool_result")) content.push({ type: "text", text: label });
     out.push({ role: "user", content });
   }
   return out;

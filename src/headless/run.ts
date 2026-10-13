@@ -5,6 +5,7 @@
 //             SPEC-SES-004 (ERR-03, CA-01, CA-02), SPEC-SES-008 (FA-01, EF-03), SPEC-SES-012 (§ 5.3, EF-01, EF-03, ERR-01, ERR-02, CA-01, CA-02), SPEC-SES-015 (steps 2 to 4, FA-01),
 //             SPEC-MOD-001 (§ 5.1, EF-01, EF-04, ERR-01, FA-04 summary at exit, FA-06, CA-05), SPEC-MOD-006 (§ 5.1, § 5.4 steps 1 and 7, FA-03, § 11), SPEC-MOD-007 (§ 5.1, § 6, EF-01, EF-02, EF-08, ERR-02, ERR-03, CA-04, CA-06), SPEC-MOD-008 (§ 5.1, § 6, § 10, FA-02, FA-05, EF-02 to EF-07, RG-01 to RG-03, CA-01 to CA-06), SPEC-CMD-002 (§ 5.3, FA-01, ERR-01, CA-01)
 // Supports: SPEC-MOT-005 (loading per segment, files touched), SPEC-MOT-007 (reminder producers), SPEC-CFG-001, SPEC-CFG-007 (RG-02, FA-01), SPEC-OUT-008, SPEC-OUT-009 (EF-07), SPEC-PER-001 (CA-05), SPEC-PER-003, SPEC-PER-010, SPEC-MOD-003 (CA-02, CA-04, CA-05), SPEC-SES-001, SPEC-API-006, decisions D-03, D-05, D-09, D-10, D-13, gaps E-013, E-017, E-018, E-045, E-050, E-094
+// Supports: SPEC-MOT-016/018/019/022/024/034, SPEC-OUT-043/048 (context continuity and test profile), E-158.
 // Supports: SPEC-CFG-003 (FA-02, CA-05, CA-06, CA-08, file, enrolment, cache and native authority checks before composition and every action), gaps E-124 to E-127.
 // Supports: SPEC-PER-001 (CA-09, CA-11, CA-18, CA-20 to CA-23, CA-33), SPEC-PER-028 (CA-03), gap E-131.
 // Supports: SPEC-SES-015 (CA-02), SPEC-OUT-037 (CA-01), SPEC-HOK-001 (CA-04), SPEC-CFG-007 (CA-04), gap E-132.
@@ -79,7 +80,12 @@ import { captureGitState } from "../engine/repository-state";
 import type { CompactionOutcome } from "../engine/compaction";
 import { ContextManager } from "../engine/context-manager";
 import { ContextMeter } from "../engine/context-meter";
+import { HistoryPruning } from "../engine/history-pruning";
+import { historyPruningTool } from "../tools/prune-history";
+import { overflowTestTool } from "../tools/overflow-test";
 import { withRequestLog } from "../providers/request-log";
+import { withCacheDiagnostics } from "../providers/cache-diagnostics";
+import { TOKEN_TARGET_EXPLANATION } from "../engine/token-target";
 import { configureTool } from "../tools/configure";
 import { CONFIGURE_KEYS } from "../config/tool-preferences";
 import { SubmittedResult } from "./submitted-result";
@@ -1066,7 +1072,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   holder.reportUnexpected = error => observer.reportUnexpected(error);
   (holder.finalizers ??= []).push(() => observer.close());
   const loggedProvider = withRequestLog(observer.provider(recordedProvider), providerOptions, (m, d) => debug.log("api", m, d));
-  const provider: ModelProvider = { id: loggedProvider.id, async *stream(request, signal) { assertPolicy(); yield* loggedProvider.stream(request, signal); } };
+  const diagnosedProvider = buildFlag("cache_miss_diagnostics") && settings.get<boolean>("engine.cacheBreakDetection.enabled") ? withCacheDiagnostics(loggedProvider, { maxThreads: settings.get<number>("engine.cacheBreakDetection.maxTrackedThreads"), log: diagnostic => debug.log("cache", "cache break", diagnostic) }) : loggedProvider;
+  const provider: ModelProvider = { id: diagnosedProvider.id, async *stream(request, signal) { assertPolicy(); yield* diagnosedProvider.stream(request, signal); } };
   phase("compatibilité et authentification");
   // CA-03 of SPEC-API-001: thinking requested explicitly from a model without it is announced as unavailable, without error.
   if (settings.get<boolean>("thinking.enabled") && settings.origin("thinking.enabled") !== "default" && resolvedModel.capabilities.thinking === "none") {
@@ -1147,7 +1154,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const toolsetOption = opt("toolset");
   const toolsetNames = typeof toolsetOption === "string" ? (toolsetOption.trim() === "" ? [] : splitList(toolsetOption)) : undefined;
   // `spawn_agent` is a tool of the session, added after the registry is built: it is listed like the others (SPEC-OUT-001).
-  const toolset = toolsetNames?.filter((n) => !["configure", "submit_result", "spawn_agent", "code_intelligence", "list_connector_resources", "read_connector_resource", "connector_sign_in", "schedule_create", "schedule_list", "schedule_delete"].includes(n));
+  const toolset = toolsetNames?.filter((n) => !["overflow_test", "prune_history", "configure", "submit_result", "spawn_agent", "code_intelligence", "list_connector_resources", "read_connector_resource", "connector_sign_in", "schedule_create", "schedule_list", "schedule_delete"].includes(n));
   const agentsInToolset = toolsetNames === undefined || toolsetNames.includes("spawn_agent") || (toolsetNames.length === 1 && toolsetNames[0] === "default");
   let registry: ToolRegistry;
   try {
@@ -1351,6 +1358,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   if (maxAgentDepth >= 1 && agentsInToolset) registry.addStatic(spawnTool(0, registry));
   // SPEC-OUT-020, SPEC-OUT-022: the tools of the work items and of the background tasks, named in --toolset like the others.
   const inToolset = (name: string) => toolsetNames === undefined || toolsetNames.includes(name) || (toolsetNames.length === 1 && toolsetNames[0] === "default");
+  if (buildFlag("context_overflow_probe") && buildProfile() === "test" && inToolset("overflow_test")) registry.addStatic(overflowTestTool as never);
   const submittedResult = new SubmittedResult();
   if (outputSchema && inToolset("submit_result")) registry.addStatic(submittedResult.tool(outputSchema) as import("../tools/types").Tool<never>);
   if (inToolset("configure")) registry.addStatic(configureTool({
@@ -1786,6 +1794,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       repositoryAbsent: !minimal && repositoryAbsent,
       identity,
       variant: "main",
+      mechanisms: buildFlag("context_token_target") ? TOKEN_TARGET_EXPLANATION : undefined,
       nonInteractive,
       model: resolvedModel,
       cwd,
@@ -2225,6 +2234,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       });
     }
     if (event.type === "warning" && !app) err(`avertissement : ${event.message}`);
+    if (event.type === "token_goal" && !app) err(`Objectif de jetons : ${event.consumed} / ${event.goal}`);
     if (progress && event.type === "tool_call" && !app) err(`… ${event.name}`);
     if (event.type === "permission" && event.decision === "deny") debug.log("permissions", "denied", { callId: event.callId, step: event.step });
     // EF-04 of SPEC-API-003: the wait is visible.
@@ -2245,9 +2255,14 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const coefficients = settings.get<Record<string, Record<string, number>>>("context.tokenEstimation")[resolvedModel.family];
   const meter = new ContextMeter({ model: resolvedModel, outputReserveTokens: settings.get<number>("engine.outputReserveTokens"), coefficients, warn: (m) => debug.log("context", m) });
   const recentFiles: string[] = [];
+  const pruning = buildFlag("history_pruning") && settings.get<boolean>("context.pruning.enabled") && inToolset("prune_history")
+    ? new HistoryPruning(conversation, settings.get<number>("context.pruning.nudgeEveryTokens"), ids => { meter.invalidate(); transcript?.append("system", { event: "history_pruned", ids }); transcript?.flush(); }, reopened?.chain) : undefined;
+  if (pruning) { const tool = historyPruningTool(pruning); registry.addStatic(tool as never); conversation.extendTools([{ name: tool.name, description: tool.description({ platform: system.platform, home: system.home }), inputSchema: tool.inputSchema }]); }
   const context = new ContextManager(
     meter,
     {
+      reactiveCompact: { enabled: buildFlag("compaction_on_overflow") && settings.get<boolean>("context.reactiveCompact.enabled") },
+      notices: buildFlag("context_compaction_notices") && settings.get<boolean>("context.reminders.compaction"),
       autoCompact: {
         // SPEC-CMD-013 CA-01: applied at once when the user changes it.
         get enabled() {
@@ -2271,6 +2286,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     },
     {
       provider,
+      projectedHistory: pruning ? () => pruning.history() : undefined,
       get model() {
         return currentModel;
       },
@@ -2356,6 +2372,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const reminders = new ReminderCenter(
     [
       dateChangeProducer(now),
+      { type: "history_growth", produce: () => pruning?.notices(meter.occupation(conversation.system, conversation.tools, pruning.history(), conversation.segment).tokens) ?? [] },
       languages.reminders(() => ({ cwd, allowedDirectories, platform: system.platform, readDenied })),
       permissionDenials,
       { type: "instructions", produce: () => instructionReminders.splice(0) },
@@ -2528,6 +2545,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       return ok;
     };
     app = new InteractiveApp({
+      maxKeyword: buildFlag("thinking_max_keyword") ? () => ({ keyword: liveSettings.get<string>("thinking.maxKeyword"), supported: currentModel.capabilities.thinking !== "none" }) : undefined,
       onApprovalWaiting: waiting => setTerminalTitle(waiting),
       terminal: terminal!,
       capabilities,
@@ -2620,6 +2638,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const postSampling = new PostSampling(deps.samplingProcessors ?? [], (name, error) => debug.log("hooks", "post-sampling failure", { name, error: redactOutput(error) }));
   holder.cleanups.push(() => postSampling.close());
   const loopDeps: LoopDeps = {
+    maxKeyword: buildFlag("thinking_max_keyword") ? settings.get<string>("thinking.maxKeyword") : undefined,
+    tokenTarget: { enabled: buildFlag("context_token_target") && settings.get<boolean>("context.tokenBudget.enabled"), completionRatio: settings.get<number>("context.tokenBudget.completionRatio") },
+    projectHistory: pruning ? request => request.agent ? request : pruning.decorate(request) : undefined,
     takeSubmittedResult: () => submittedResult.take(),
     postSampling: (assistant, agent) => postSampling.dispatch({ assistant, agent, minimal, ephemeral: transcript === undefined }),
     beforeRequest: () => {
@@ -2827,6 +2848,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       // below the maximal depth; a planning agent only reads (EF-06 of SPEC-OUT-016).
       const replaced = new Map<string, never>();
       const allowed = (name: string) =>
+        name !== "prune_history" &&
         name !== "submit_result" &&
         caller.get(name) !== undefined &&
         (!def.tools || def.tools.includes(name)) &&

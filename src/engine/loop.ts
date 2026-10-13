@@ -17,6 +17,8 @@ import type { ContextManager } from "./context-manager";
 import { RunLimits } from "./limits";
 import { formatReminder, type ReminderCenter } from "./reminders";
 import type { FallbackPolicy } from "./fallback";
+import { tokenTarget } from "./token-target";
+import { keywordRanges } from "./max-keyword";
 
 export interface RetryPolicy {
   /** `api.maxRetries`: number of new attempts after the first one (EF-03). */
@@ -27,6 +29,10 @@ export interface RetryPolicy {
 }
 
 export interface LoopDeps {
+  readonly tokenTarget?: { readonly enabled: boolean; readonly completionRatio: number };
+  readonly maxKeyword?: string;
+  /** Implements: SPEC-MOT-019. Projection leaves the raw conversation and transcript intact. */
+  readonly projectHistory?: (request: ModelRequest) => ModelRequest;
   /** SPEC-HOK-009: non-blocking internal processors, after persistence of a complete assistant response. */
   readonly postSampling?: (assistant: Extract<import("../providers/types").HistoryMessage, { role: "assistant" }>, agent?: string) => void;
   readonly provider: ModelProvider;
@@ -138,6 +144,8 @@ function finalMessage(e: ProviderError, attempts: number, forModel = false): str
 export async function runTurn(deps: LoopDeps, request: string | readonly ContentPart[], signal: AbortSignal): Promise<TurnResult> {
   const content: ContentPart[] = typeof request === "string" ? [{ type: "text", text: request }] : [...request];
   const prompt = content.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
+  const target = deps.tokenTarget?.enabled && !deps.agentId ? tokenTarget(content.find(p => p.type === "text")?.text ?? "") : undefined;
+  const maximal = !deps.agentId && deps.maxKeyword && keywordRanges(content.find(p => p.type === "text")?.text ?? "", deps.maxKeyword).length > 0;
   const now = deps.clock ?? Date.now;
   const started = now();
   const conv = deps.conversation;
@@ -243,6 +251,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
       ...(mode ? [{ type: "mode_change", text: mode }] : []),
       ...limits.approaching((m) => deps.emit({ type: "warning", message: m })).map((text) => ({ type: "limit_approaching", text })),
       ...(deps.reminders?.collect() ?? []),
+      ...(deps.context?.notices() ?? []),
     ];
     for (const note of notes) {
       const text = formatReminder(note.text);
@@ -256,6 +265,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
     let reservation: Reservation | undefined;
     let requestModel = deps.model;
     let requestPricing = pricing;
+    let overflowRecovered = false;
     for (let attempt = 0; ; attempt++) {
       const stop = requestStop();
       if (stop) return finish(stop.cause, stop.message);
@@ -269,13 +279,14 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
         tools,
         history: conv.messages,
         maxOutputTokens: Math.min(deps.maxOutputTokens, requestModel.maxOutputTokens),
-        thinking: deps.thinking,
-        effort: deps.effort,
+        thinking: maximal && requestModel.capabilities.thinking !== "none" ? { ...deps.thinking, enabled: true, budgetTokens: Math.max(0, Math.min(deps.maxOutputTokens, requestModel.maxOutputTokens) - 1024) } : deps.thinking,
+        effort: maximal ? (["max", "high", "medium", "low"] as const).find(level => requestModel.capabilities.effort.includes(level)) : deps.effort,
         segment: conv.segment,
         ...(deps.agentId ? { purpose: "subagent" as const, agent: deps.agentId } : {}),
         ...(deps.conversationId ? { conversationId: deps.conversationId } : {}),
       };
-      const modelRequest = deps.context ? deps.context.decorate(base) : base;
+      const decorated = deps.context ? deps.context.decorate(base) : base;
+      const modelRequest = deps.projectHistory ? deps.projectHistory(decorated) : decorated;
       if (ledger) {
         const admission = ledger.admit(requestBound(modelRequest, requestPricing), "main");
         if (!admission.admitted) return finish(admission.reason, admission.message); // FA-02, FA-08: not sent
@@ -323,6 +334,13 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
         // FA-01 of SPEC-MOT-001: an incomplete response is not added to the history; it stays in the transcript.
         persist("system", { event: e.kind === "aborted" ? "response_interrupted" : "provider_error", kind: e.kind, partialText: text, attempt: attempt + 1 });
         if (e.kind === "aborted" || turnSignal.aborted) return interrupted();
+        if (e.kind === "context_too_long" && !overflowRecovered) {
+          overflowRecovered = true;
+          const recovery = await deps.context?.recoverOverflow(turnSignal);
+          if (turnSignal.aborted) return interrupted();
+          if (recovery?.kind === "budget") return finish(recovery.cause, recovery.message);
+          if (recovery?.kind === "compacted") { if (text !== "") deps.emit({ type: "response_restarted" }); continue; }
+        }
         const maxRetries = deps.retry?.maxRetries ?? 0;
         // SPEC-API-005 CA-01, EF-01: at the threshold, the next attempt goes to the backup model, and the user is told.
         if (e.kind === "overloaded" && deps.fallback?.overloaded(requestModel)) {
@@ -366,6 +384,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
     }
     if (response.usageReported === false) usageUnknown = true;
     deps.emit({ type: "usage", model: requestModel.id, usage: response.usage, ...(response.usageReported !== false && responseCost !== undefined ? { cost: responseCost } : {}) });
+    if (target) deps.emit({ type: "token_goal", consumed: usage.outputTokens, goal: target });
     const assistant = response.assistant;
     conv.appendAssistant(assistant); // verbatim, thinking blocks included (D-12)
     if (deps.context) {
@@ -449,6 +468,12 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
         continue;
       }
       deps.emit({ type: "warning", message: "Le modèle n'a produit aucune réponse." });
+    }
+
+    if (target && usage.outputTokens < target * deps.tokenTarget!.completionRatio) {
+      if (usageUnknown) return finish("error", "Objectif de jetons invérifiable : le fournisseur ne rapporte pas la consommation.");
+      const note = formatReminder(`Output-token objective: ${usage.outputTokens} of ${target} reported output tokens. The requested work should continue until the objective is approached; all cost, time and iteration limits still apply.`);
+      conv.appendNote(note); persist("system", { event: "note", type: "token_goal", text: note }); continue;
     }
 
     // Step 9: `turn_completed` hook, bounded by RG-06.

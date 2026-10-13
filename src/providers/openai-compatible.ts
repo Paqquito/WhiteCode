@@ -42,12 +42,15 @@ export function toChatMessages(system: readonly SystemBlock[], history: readonly
   const systemText = system.map((b) => b.text).join("\n\n");
   if (systemText !== "") out.push({ role: "system", content: systemText });
   for (const m of history) {
+    const label = m.contextId ? `[${m.contextId}]\n` : "";
     if (m.role === "assistant") {
-      out.push(m.native.content as ChatMessage);
+      const native = m.native.content as OpenAI.Chat.ChatCompletionAssistantMessageParam;
+      // Native assistant messages remain verbatim (D-12); only tool results can be pruned.
+      out.push(native);
       continue;
     }
     if (m.role === "system_note") {
-      out.push(caps.systemMessages ? { role: "system", content: m.text } : { role: "user", content: m.text });
+      out.push(caps.systemMessages ? { role: "system", content: label + m.text } : { role: "user", content: label + m.text });
       continue;
     }
     // Tool results become `tool` messages, in call order; other parts form a user message after them.
@@ -56,13 +59,13 @@ export function toChatMessages(system: readonly SystemBlock[], history: readonly
     for (const p of m.parts) {
       if (p.type === "tool_result") {
         const text = p.content.map((c) => (c.type === "text" ? c.text : "[image attached below]")).join("\n");
-        out.push({ role: "tool", tool_call_id: p.callId, content: p.isError ? `Error: ${text}` : text });
+        out.push({ role: "tool", tool_call_id: p.callId, content: label + (p.isError ? `Error: ${text}` : text) });
         // A `tool` message carries text only: images of a result follow in a user message.
         for (const c of p.content) if (c.type === "image") toolImages.push(c);
       } else rest.push(p);
     }
     if (toolImages.length > 0) rest.unshift({ type: "text", text: "Images returned by the tool calls above:" }, ...toolImages);
-    if (rest.length > 0) out.push({ role: "user", content: partsToContent(rest, caps.images) } as ChatMessage);
+    if (rest.length > 0) out.push({ role: "user", content: partsToContent(label ? [{ type: "text", text: label }, ...rest] : rest, caps.images) } as ChatMessage);
   }
   return out;
 }

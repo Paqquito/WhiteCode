@@ -16,6 +16,7 @@ export type StopCause =
   | "error";
 
 export type EngineEvent =
+  | { readonly type: "token_goal"; readonly consumed: number; readonly goal: number }
   | { readonly type: "turn_started"; readonly sessionId: string }
   | { readonly type: "text_delta"; readonly text: string }
   | { readonly type: "thinking_delta"; readonly text: string }

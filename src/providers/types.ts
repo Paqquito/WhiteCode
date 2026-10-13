@@ -29,7 +29,7 @@ export interface ToolCall {
   readonly input: unknown;
 }
 
-export type HistoryMessage =
+export type HistoryMessage = (
   | { readonly role: "user"; readonly parts: ReadonlyArray<ContentPart | ToolResultPart> }
   /** Operator note appended to the history (reminder, mode change): never removed (decision D-12). */
   | { readonly role: "system_note"; readonly text: string }
@@ -39,7 +39,7 @@ export type HistoryMessage =
       readonly toolCalls: readonly ToolCall[];
       /** Provider-native content, echoed back verbatim so that thinking blocks stay valid (D-12). */
       readonly native: { readonly provider: string; readonly content: unknown };
-    };
+    }) & { readonly contextId?: string };
 
 export interface SystemBlock {
   readonly text: string;

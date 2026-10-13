@@ -13,6 +13,8 @@ import type { Conversation } from "./conversation";
 import type { EventSink } from "./events";
 
 export interface CompactionDeps {
+  /** Implements: SPEC-MOT-019. A projection changes the request context, never its recorded original. */
+  readonly projectedHistory?: () => readonly HistoryMessage[];
   readonly provider: ModelProvider;
   readonly model: ResolvedModel;
   readonly conversation: Conversation;
@@ -52,8 +54,9 @@ const startsCleanly = (m: HistoryMessage) => m.role === "user" && m.parts.every(
  */
 export async function compactConversation(deps: CompactionDeps, userInstructions: string | undefined, automatic: boolean, signal: AbortSignal): Promise<CompactionOutcome> {
   const conv = deps.conversation;
-  if (!hasExchange(conv.messages)) return { kind: "empty", message: "Rien à compacter." }; // ERR-01
-  const before = deps.meter.occupation(conv.system, conv.tools, conv.messages, conv.segment).tokens;
+  const source = deps.projectedHistory?.() ?? conv.messages;
+  if (!hasExchange(source)) return { kind: "empty", message: "Rien à compacter." }; // ERR-01
+  const before = deps.meter.occupation(conv.system, conv.tools, source, conv.segment).tokens;
 
   // Step 1: instructions of the user and of the hooks orient the summary (EF-05).
   const fromHooks = (await deps.hooks.beforeCompaction(userInstructions)).additionalInstructions;
@@ -61,13 +64,13 @@ export async function compactConversation(deps: CompactionDeps, userInstructions
   const instruction = focus.length > 0 ? `${summaryInstruction.trim()}\n\nFocus of this summary, as requested: ${focus.join(" ")}` : summaryInstruction.trim();
 
   // FA-02: a conversation too long to be summarised loses its oldest exchanges first.
-  let history: HistoryMessage[] = [...conv.messages, { role: "user", parts: [{ type: "text", text: instruction }] }];
+  let history: HistoryMessage[] = [...source, { role: "user", parts: [{ type: "text", text: instruction }] }];
   const fits = (h: readonly HistoryMessage[]) => deps.meter.occupation(conv.system, conv.tools, h, -1).tokens + deps.summaryMaxTokens <= deps.model.contextWindow;
   if (!fits(history)) {
     let start = 1;
-    while (start < conv.messages.length && !(startsCleanly(conv.messages[start]!) && fits([...conv.messages.slice(start), history[history.length - 1]!]))) start++;
-    if (start >= conv.messages.length) return { kind: "failed", message: "La compaction a échoué : la conversation est trop longue pour être résumée." };
-    history = [...conv.messages.slice(start), history[history.length - 1]!];
+    while (start < source.length && !(startsCleanly(source[start]!) && fits([...source.slice(start), history[history.length - 1]!]))) start++;
+    if (start >= source.length) return { kind: "failed", message: "La compaction a échoué : la conversation est trop longue pour être résumée." };
+    history = [...source.slice(start), history[history.length - 1]!];
   }
 
   const request: ModelRequest = {

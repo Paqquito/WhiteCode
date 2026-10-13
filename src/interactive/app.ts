@@ -11,6 +11,7 @@
 import type { Terminal } from "../platform/terminal";
 import type { ApprovalRequest, HumanAnswer, HumanApprovalChannel } from "../permissions/resolver";
 import type { EngineEvent } from "../engine/events";
+import { keywordRanges } from "../engine/max-keyword";
 import type { Capabilities } from "../ui/capabilities";
 import { Editor } from "../ui/editor";
 import { composeFrame } from "../ui/frame";
@@ -124,6 +125,7 @@ export const EXIT_COMMAND = /^\s*\/(exit|quit)\s*$/;
 const SCOPE_LABEL: Readonly<Record<(typeof RULE_SCOPES)[number], string>> = { session: "session", local: "projet (local)", project: "projet (partagé)", user: "utilisateur" };
 
 export interface AppOptions {
+  readonly maxKeyword?: () => { keyword: string; supported: boolean } | undefined;
   // Supports: SPEC-IHM-036 (CA-01, pending decision), gap E-150.
   readonly onApprovalWaiting?: (waiting: boolean) => void;
   readonly reducedMotion?: boolean;
@@ -206,6 +208,7 @@ export class InteractiveApp {
   #turn: AbortController | undefined;
   #turnStarted = 0;
   #activity = "Réflexion…";
+  #tokenGoal = "";
   #spinner = 0;
   #animation: ReturnType<typeof setInterval> | undefined;
   #stream = "";
@@ -468,6 +471,7 @@ export class InteractiveApp {
 
   /** A turn starts: the input area stays usable (EF-07 of SPEC-IHM-007); an interruption aborts `controller`. */
   beginTurn(controller: AbortController): void {
+    this.#tokenGoal = "";
     this.#turn = controller;
     this.#turnStarted = this.#now;
     this.#activity = "Réflexion…";
@@ -497,6 +501,9 @@ export class InteractiveApp {
   /** Engine events of the turn, displayed as they arrive (ENF-01: the first character as soon as it is received). */
   onEngineEvent(e: EngineEvent): void {
     switch (e.type) {
+      case "token_goal":
+        this.#tokenGoal = ` · ${e.consumed} / ${e.goal} jetons`;
+        this.#redraw(); break;
       case "user_message": {
         if (e.synthetic) break;
         const texts = e.content.flatMap((p) => (p.type === "text" ? [p.text] : []));
@@ -1400,7 +1407,7 @@ export class InteractiveApp {
       if (this.#render && !this.#streamRenderer) this.#streamRenderer = new MarkdownRenderer(this.#render.markdown, this.#view.unicode);
       stream.push(modelView(this.#streamRenderer ? this.#streamRenderer.render(this.#stream) : this.#stream, this.#view));
     }
-    if (this.running) stream.push(activityView(tasks.find(task => task.status === "in_progress")?.progressLabel ?? this.#activity, this.#now - this.#turnStarted, this.#spinner, this.#view));
+    if (this.running) stream.push(activityView((tasks.find(task => task.status === "in_progress")?.progressLabel ?? this.#activity) + this.#tokenGoal, this.#now - this.#turnStarted, this.#spinner, this.#view));
     const background = this.#o.backgroundActivity?.() ?? [];
     if (background.length > 0) panels.push(box(background.slice(-3).map((task) => text(`Agent ${task.id} · ${task.activity ?? "En attente…"} · ${task.toolCalls ?? 0} outil${task.toolCalls === 1 ? "" : "s"} · ${task.tokens ?? 0} jetons`, { overflow: "clip" })), { padding: { left: 2 } }));
     const frame = composeFrame(
@@ -1416,7 +1423,12 @@ export class InteractiveApp {
     const ed = this.#editor;
     const inner = Math.max(1, (ctx.narrow ? columns : columns - 4) - 2);
     const placeholder = ed.isEmpty;
-    const spans: Span[] = placeholder ? [{ text: this.running ? "Message à mettre en file…" : "Votre message (Entrée pour envoyer, Alt+Entrée pour un saut de ligne)", style: { dim: true } }] : [{ text: ed.text }];
+    const keyword = this.shellLine ? undefined : this.#o.maxKeyword?.();
+    const ranges = keyword ? keywordRanges(ed.text, keyword.keyword) : [];
+    const highlighted: Span[] = []; let offset = 0;
+    for (const range of ranges) { highlighted.push({ text: ed.text.slice(offset, range.start) }, { text: ed.text.slice(range.start, range.end), style: { bold: true, underline: true } }); offset = range.end; }
+    highlighted.push({ text: ed.text.slice(offset) });
+    const spans: Span[] = placeholder ? [{ text: this.running ? "Message à mettre en file…" : "Votre message (Entrée pour envoyer, Alt+Entrée pour un saut de ligne)", style: { dim: true } }] : highlighted;
     const laid = layoutNode(text(spans, { caret: placeholder ? 0 : ed.caretGrapheme }), inner, ctx);
     let lines = laid.lines;
     let cursor = laid.cursor;
@@ -1437,6 +1449,7 @@ export class InteractiveApp {
     const indent: Cell[] = spansToLines([{ text: "  " }])[0]!;
     const rows = lines.map((l, i) => [...(i === 0 ? prompt : indent), ...l]);
     const extra: string[] = [];
+    if (ranges.length) extra.push(keyword?.supported ? "Réflexion maximale pour ce tour." : "Ce modèle ne prend pas en charge la réflexion : mot-clé sans effet.");
     if (this.#modal) extra.push(this.#modal.label()); // EF-01: always visible, as a text
     if (shell) extra.push(`Mode shell : la ligne est exécutée par ${this.#o.shell!.label} ; elle n'est pas envoyée au modèle.`);
     if (this.#literalLead === "certain") extra.push("Texte collé : il sera envoyé comme texte (Ctrl+O : l'interpréter comme commande).");

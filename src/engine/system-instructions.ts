@@ -28,6 +28,7 @@ export interface InstructionsContext {
   readonly repositoryAbsent?: boolean;
   /** Section 8: the skills the model may invoke, already rendered (SPEC-EXT-019 EF-01). */
   readonly skills?: string;
+  readonly mechanisms?: string;
   /** Section 12: the project instructions files, already rendered (SPEC-MOT-005). */
   readonly projectInstructions?: string;
   /** SPEC-MOT-004: replacement of the default sections and text added at the end. */
@@ -99,6 +100,7 @@ export function defaultSectionProviders(contract: () => ContractText = CURRENT_C
           `- Model: ${ctx.model.label} (${ctx.model.id})`,
           ctx.nonInteractive ? "- Run mode: non-interactive; nobody can answer questions or confirm actions during this run." : "- Run mode: interactive.",
           `- ${REMINDER_EXPLANATION}`,
+          ...(ctx.mechanisms ? [`- ${ctx.mechanisms}`] : []),
         ].join("\n"),
     },
     {

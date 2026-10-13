@@ -1,13 +1,18 @@
 // Implements: SPEC-MOT-012 (§ 5.1 to 5.4, FA-01, FA-02, EF-01 to EF-05, ERR-01, RG-01, CA-01 to CA-04), SPEC-MOT-013 (§ 5.2 triggers, EF-04),
 //             SPEC-MOT-014 (§ 5.3 points 1 to 3, FA-01, EF-01, EF-02, CA-01)
+// Implements: SPEC-MOT-016 (one reactive compaction), SPEC-MOT-018 (crossing and completion notices).
+// Supports: SPEC-MOT-019 (occupation of the projection), E-158.
 // Supports: decision D-12 and architecture § 7.2 (choice of the mechanism by the catalogue capabilities), gap E-061
 
 import type { ContextEditingStrategy, ModelRequest } from "../providers/types";
 import { compactConversation, type CompactionDeps, type CompactionOutcome } from "./compaction";
 import type { ContextMeter } from "./context-meter";
 import { microCompact } from "./micro-compaction";
+import type { Reminder } from "./reminders";
 
 export interface ContextSettings {
+  readonly reactiveCompact?: { readonly enabled: boolean };
+  readonly notices?: boolean;
   readonly autoCompact: { readonly enabled: boolean; readonly warnRatio: number; readonly urgentRatio: number; readonly triggerRatio: number; readonly maxFailures: number };
   readonly microCompact: { readonly enabled: boolean; readonly triggerRatio: number; readonly keepRecent: number; readonly idleMinutes: number };
   readonly providerContextManagement: { readonly enabled: boolean; readonly targetTokens: number };
@@ -25,6 +30,8 @@ export class ContextManager {
   #lastResponseAt: number | undefined;
   /** Disabled for the session after a rejection by the service (ERR-01 of SPEC-MOT-014). */
   #serviceClearingRejected = false;
+  #compactedNotice = false;
+  #approachNotice = false;
 
   constructor(
     readonly meter: ContextMeter,
@@ -65,15 +72,40 @@ export class ContextManager {
   }
 
   /** Manual compaction through the engine API (the `/condense` command is out of lot 1). */
-  compactNow(instructions: string | undefined, signal: AbortSignal): Promise<CompactionOutcome> {
-    return compactConversation({ ...this.compaction, meter: this.meter }, instructions, false, signal);
+  async compactNow(instructions: string | undefined, signal: AbortSignal): Promise<CompactionOutcome> {
+    const outcome = await compactConversation({ ...this.compaction, meter: this.meter }, instructions, false, signal);
+    if (outcome.kind === "compacted") { this.#compactedNotice = true; this.#warned = "none"; }
+    return outcome;
+  }
+
+  /** Implements: SPEC-MOT-016. One recovery is allowed by the loop for each outstanding request. */
+  async recoverOverflow(signal: AbortSignal): Promise<CompactionOutcome | undefined> {
+    if (!this.settings.reactiveCompact?.enabled) return undefined;
+    this.compaction.emit({ type: "warning", message: "Contexte trop volumineux : compaction puis nouvelle tentative." });
+    const messages = this.compaction.conversation.messages;
+    // A complete compaction summarizes prior work; the outstanding human request is replayed verbatim.
+    const pending = [...messages].reverse().find(m => m.role === "user" && m.parts.every(p => p.type !== "tool_result"));
+    const outcome = await this.compactNow(undefined, signal);
+    if (outcome.kind === "compacted" && pending?.role === "user") {
+      this.compaction.conversation.appendUser(pending.parts);
+      this.compaction.transcript?.append("user", { content: pending.parts, reactiveReplay: true });
+    }
+    return outcome;
+  }
+
+  /** Implements: SPEC-MOT-018. Product notes are invisible in the displayed human history. */
+  notices(): Reminder[] {
+    if (!this.settings.notices) return [];
+    if (this.#compactedNotice) { this.#compactedNotice = false; this.#approachNotice = false; return [{ type: "compaction_completed", text: "Compaction has completed. Older details were summarized; the current context contains the retained summary and recent exchanges.", priority: 2, repeatable: true }]; }
+    if (this.#approachNotice) { this.#approachNotice = false; return [{ type: "compaction_approaching", text: "Compaction is approaching. The context is near its warning threshold; details may soon be summarized.", priority: 2, repeatable: true }]; }
+    return [];
   }
 
   /** Evaluation before each request of the main loop (§ 5.2 of SPEC-MOT-012), between two iterations only (RG-01). */
   async beforeRequest(signal: AbortSignal): Promise<BeforeRequest> {
     const conv = this.compaction.conversation;
     const emit = this.compaction.emit;
-    const measure = () => this.meter.occupation(conv.system, conv.tools, conv.messages, conv.segment);
+    const measure = () => this.meter.occupation(conv.system, conv.tools, this.compaction.projectedHistory?.() ?? conv.messages, conv.segment);
 
     // SPEC-MOT-013: by threshold, or after an idle period since the last response (main loop only, EF-04).
     if (this.localMicroCompaction) {
@@ -89,6 +121,8 @@ export class ContextManager {
 
     const o = measure();
     const a = this.settings.autoCompact;
+    if (o.ratio < a.warnRatio) this.#warned = "none";
+    if (o.ratio >= a.warnRatio && this.#warned === "none") this.#approachNotice = true;
     const pct = `${Math.round(o.ratio * 100)} %`;
     if (o.ratio >= a.urgentRatio && this.#warned !== "urgent") {
       this.#warned = "urgent";
@@ -103,6 +137,7 @@ export class ContextManager {
     emit({ type: "warning", message: `Contexte occupé à ${pct} : compaction automatique.` }); // EF-02
     const outcome = await compactConversation({ ...this.compaction, meter: this.meter }, undefined, true, signal);
     if (outcome.kind === "compacted") {
+      this.#compactedNotice = true;
       this.#failures = 0;
       this.#warned = "none";
       return {};
