@@ -9,6 +9,7 @@ import { runToCompletion, startChild, type Child } from "../platform/process";
 import { comparablePath, findExecutable, isWithin, realPathOrSelf, type PlatformName } from "../platform/system";
 import type { ResultStore } from "../session/result-store";
 import { boundText, cleanOutput } from "./output-bounds";
+import { stripShellHints, ShellHintStream } from "./shell-hints";
 
 export interface PosixShell {
   readonly path: string;
@@ -105,6 +106,8 @@ const BEGIN = "#--snapshot-begin--";
 const END = "#--snapshot-end--";
 
 export interface ShellRuntimeOptions {
+  readonly hintTag?: string;
+  readonly recommend?: (ref: string, command: string) => void;
   readonly platform: PlatformName;
   readonly projectCwd: string;
   readonly allowedDirectories: readonly string[];
@@ -219,7 +222,7 @@ export class ShellRuntime {
         }
       : undefined;
     try {
-      return await this.#run(shell.path, ["-c", lines.filter((l) => l !== "").join("\n")], cwdFile, timeoutMs, signal, stopDescendants, onOutput);
+      return await this.#run(shell.path, ["-c", lines.filter((l) => l !== "").join("\n")], cwdFile, timeoutMs, signal, stopDescendants, onOutput, command);
     } finally {
       if (groupFile) rmSync(groupFile, { force: true });
     }
@@ -249,7 +252,7 @@ export class ShellRuntime {
       "exit $__code",
     ].join("\n");
     const args = ["-NoLogo", "-NonInteractive", ...(this.options.settings.powershellLoadProfile ? [] : ["-NoProfile"]), "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")];
-    const result = await this.#run(ps.path, args, cwdFile, timeoutMs, signal, undefined, onOutput);
+    const result = await this.#run(ps.path, args, cwdFile, timeoutMs, signal, undefined, onOutput, command);
     // ERR-02: a script blocked by the execution policy of the machine is stated explicitly.
     if (/PSSecurityException|UnauthorizedAccess|running scripts is disabled/i.test(result.output)) {
       return { ...result, output: `${result.output}\n[Script execution is blocked by the execution policy of this machine.]` };
@@ -257,14 +260,15 @@ export class ShellRuntime {
     return result;
   }
 
-  async #run(file: string, args: string[], cwdFile: string, timeoutMs: number, signal: AbortSignal, stopDescendants?: () => void, onOutput?: (chunk: string) => void): Promise<ShellResult> {
+  async #run(file: string, args: string[], cwdFile: string, timeoutMs: number, signal: AbortSignal, stopDescendants?: () => void, onOutput?: (chunk: string) => void, command = ""): Promise<ShellResult> {
     const started = Date.now();
     const chunks: Buffer[] = [];
     // The output as it comes, for the shell mode of the interface (SPEC-IHM-012 EF-04).
     const decoder = new TextDecoder();
+    const hints = this.options.hintTag ? new ShellHintStream(this.options.hintTag) : undefined;
     const onData = (c: Buffer) => {
       chunks.push(c);
-      if (onOutput) onOutput(decoder.decode(c, { stream: true }));
+      if (onOutput) { const decoded = decoder.decode(c, { stream: true }); const safe = hints ? hints.push(decoded) : decoded; if (safe) onOutput(safe); }
     };
     const child = startChild(file, args, { cwd: existsSync(this.#cwd) ? this.#cwd : this.options.projectCwd, env: this.options.childEnv, onData, stopDescendants });
     this.#running.add(child);
@@ -283,6 +287,7 @@ export class ShellRuntime {
     if (signal.aborted) onAbort();
     else signal.addEventListener("abort", onAbort, { once: true });
     const exitCode = await child.exited;
+    if (onOutput) { const decoded = decoder.decode(), safe = hints ? hints.push(decoded, true) : decoded; if (safe) onOutput(safe); }
     clearTimeout(timer);
     signal.removeEventListener("abort", onAbort);
     // The group can outlive its leader: wait for cancellation before returning a stopped result.
@@ -310,7 +315,8 @@ export class ShellRuntime {
     }
 
     // Bounded output (§ 5.3 point 7); the complete output is stored apart.
-    const full = cleanOutput(Buffer.concat(chunks));
+    const raw = cleanOutput(Buffer.concat(chunks));
+    const full = this.options.hintTag ? stripShellHints(raw, this.options.hintTag, ref => this.options.recommend?.(ref, command)) : raw;
     const bounded = boundText(full, this.options.settings.outputLimit);
     const fullOutputPath = bounded.truncated && this.options.store ? this.options.store.store(`shell-${started}-${this.#counter}`, full) : undefined;
     return { output: bounded.text, exitCode, timedOut, interrupted, durationMs: Date.now() - started, cwdNotice, fullOutputPath, truncated: bounded.truncated };

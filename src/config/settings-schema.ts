@@ -6,6 +6,7 @@
 
 import { Type, type TSchema } from "@sinclair/typebox";
 import { OVERRIDABLE_SERVICE_URLS } from "../identity/runtime-catalog";
+import { CONFIGURE_KEYS } from "./tool-preferences";
 
 export const SCOPES = ["managed", "cli", "local", "project", "user"] as const;
 export type Scope = (typeof SCOPES)[number];
@@ -52,6 +53,10 @@ const enumOf = (values: readonly string[]) => Type.Union(values.map((v) => Type.
 const mode = () => enumOf(PERMISSION_MODES);
 
 export const SETTINGS: readonly SettingDef[] = [
+  { key: "telemetry.enabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-OBS-001", hot: true },
+  { key: "telemetry.otel.includeSessionId", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-OBS-002" },
+  { key: "debug.diagnosticLogs.retentionDays", schema: int(1, 3650), default: 7, scopes: [U], owner: "SPEC-OBS-020" },
+  { key: "config.toolAllowlist", schema: Type.Array(enumOf(CONFIGURE_KEYS)), default: [...CONFIGURE_KEYS], scopes: [G], owner: "SPEC-OUT-039", hot: true },
   { key: "config.migrationBackupRetention", schema: int(1, 3650), default: 30, scopes: [U], owner: "SPEC-CFG-009" },
   { key: "config.featureFlagsRefreshInterval", schema: int(1000, 86400_000), default: 3600_000, scopes: [U, G], owner: "SPEC-CFG-014" },
   { key: "config.featureFlagsEnabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-CFG-014", restrictiveValues: [false] },
@@ -218,6 +223,7 @@ export const SETTINGS: readonly SettingDef[] = [
   // SPEC-EXT-009, SPEC-EXT-015: extensions (lot 4).
   // Hot: taken into account by /reload-extensions within the session (SPEC-CMD-054).
   { key: "extensions.options", schema: Type.Record(Type.String(), Type.Unknown()), default: {}, scopes: [U, P, L, G], owner: "SPEC-EXT-015", hot: true },
+  { key: "extensions.recommendations", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-EXT-017", hot: true },
   { key: "extensions.managedOnly", schema: bool(), default: false, scopes: [G], owner: "SPEC-EXT-009" },
   // Activations and catalogues merge key by key, the strongest scope last (SPEC-EXT-003 § 5.1: managed > local > project > user).
   { key: "extensions.enabled", schema: Type.Record(Type.String(), Type.Boolean()), default: {}, scopes: [U, P, L, G], owner: "SPEC-EXT-002", hot: true },

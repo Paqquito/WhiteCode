@@ -72,6 +72,8 @@ export interface LoopDeps {
   readonly reminders?: ReminderCenter;
   /** Calls of a response and their results, once executed: feeds the reminders that depend on the files touched (SPEC-MOT-005 FA-01, FA-02). */
   readonly afterToolResults?: (calls: readonly ToolCall[], results: readonly ToolResultPart[]) => void;
+  /** SPEC-OUT-041: validated results belong to this agent, consumed at the safe point. */
+  readonly takeSubmittedResult?: () => { readonly value: unknown } | undefined;
   /** Context of the main agent: occupation, micro-compaction, automatic compaction, service-side clearing (SPEC-MOT-010 to 014). */
   readonly context?: ContextManager;
 }
@@ -406,7 +408,9 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
     if (execution.stopTurnRequested) return finish("interrupted", "Tour arrêté par l'utilisateur.");
     // FA-01 of SPEC-MOT-046, CA-10 of SPEC-MOT-001: a second loop without interface stops the turn.
     if (execution.unproductiveLoop) return finish("unproductive_loop", "Boucle improductive : le modèle répète le même appel malgré le rappel.");
-    if (assistant.toolCalls.length > 0) {
+    const submitted = deps.takeSubmittedResult?.();
+    if (submitted) finalText = JSON.stringify(submitted.value);
+    if (assistant.toolCalls.length > 0 && !submitted) {
       // SPEC-MOT-008 step 3: the safe point. The messages typed during the work follow the results of the tools, never
       // between a call and its result (EF-03), in the order they were typed (EF-02), with a reminder (SPEC-MOT-007).
       const queued = turnSignal.aborted ? [] : (deps.takeQueued?.() ?? []);

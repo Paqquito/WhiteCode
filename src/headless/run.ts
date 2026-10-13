@@ -80,6 +80,12 @@ import type { CompactionOutcome } from "../engine/compaction";
 import { ContextManager } from "../engine/context-manager";
 import { ContextMeter } from "../engine/context-meter";
 import { withRequestLog } from "../providers/request-log";
+import { configureTool } from "../tools/configure";
+import { CONFIGURE_KEYS } from "../config/tool-preferences";
+import { SubmittedResult } from "./submitted-result";
+import { analyseContext, renderContextAnalysis } from "../commands/context-analysis";
+import { withApiRecording, type RecordingMode } from "../providers/api-recording";
+import { SessionObserver } from "../observability/session";
 import { buildSnapshot, type HookSnapshot } from "../hooks/config";
 import { habilitate } from "../hooks/habilitation";
 import { HookRuntime } from "../hooks/runtime";
@@ -143,7 +149,11 @@ import { connectorSources, projectChoice, projectStateKey, type ProjectState } f
 import { createDiscoverToolsTool } from "../tools/discover-tools";
 import { loadExtensions } from "../extensions/load";
 import { activeInstalled } from "../extensions/active";
-import { catalogList, extensionAdd, extensionList, scopeOf, type ExtensionAdminContext } from "../extensions/admin";
+import { catalogList, catalogRefused, extensionAdd, extensionList, scopeOf, type ExtensionAdminContext } from "../extensions/admin";
+import { blockedReason } from "../extensions/policy";
+import { listInstalled } from "../extensions/store";
+import { cachedCatalog } from "../extensions/catalog";
+import { flagOf } from "../extensions/policy";
 import { recognize } from "../commands/recognize";
 import { framed, loadSkill, splitArguments } from "../skills/invoke";
 import { loadSkills, modelSkills, skillsSection, skillsSignature, type Skill, type SkillLocation } from "../skills/registry";
@@ -260,6 +270,10 @@ export interface RunDependencies {
   readonly installationMaintenanceDelayMs?: number;
   readonly installationMaintenanceIdleMs?: number;
   readonly preflightFetch?: typeof fetch;
+  /** Development recording port; never a public setting or launch argument. */
+  readonly allowApiRecording?: boolean;
+  /** Collector port for isolated tests, never a product option. */
+  readonly observabilityFetch?: typeof fetch;
   readonly streams: StandardStreams;
   readonly environment: Readonly<Record<string, string>>;
   readonly cwd: string;
@@ -366,6 +380,7 @@ async function runOnce(argv: readonly string[], deps: RunDependencies, holder: R
       err(error.message);
       return error.exitCode;
     }
+    holder.reportUnexpected?.(error);
     err(`Erreur interne de ${identity.get("PRODUCT")} : ${(error as Error)?.stack ?? String(error)}`);
     return ExitCode.ExecutionError;
   } finally {
@@ -381,6 +396,7 @@ async function runOnce(argv: readonly string[], deps: RunDependencies, holder: R
 }
 
 interface RunHolder {
+  reportUnexpected?: (error: unknown) => void;
   stream?: EventStream;
   cleanups: Array<() => void>;
   /** Awaited before the other clean-ups, in reverse order (a connection that ends normally, SPEC-MOD-007 § 5.2 step 7). */
@@ -1022,7 +1038,34 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     headers: { "User-Agent": identity.get("USER_AGENT"), [`${prefix}version`]: identity.version, [`${prefix}entrypoint`]: nonInteractive ? "non-interactive" : "interactive" },
   };
   assertPolicy();
-  const loggedProvider = withRequestLog((deps.providerFactory ?? createProvider)(providerOptions), providerOptions, (m, d) => debug.log("api", m, d));
+  const recordingMode = env.own("API_RECORDING");
+  if (recordingMode && (!["record", "replay", "auto"].includes(recordingMode) || !(deps.allowApiRecording || ["internal", "development"].includes(buildProfile())))) throw new RunError("Enregistrement API réservé au développement : mode record, replay ou auto attendu dans un profil interne.", ExitCode.UsageOrConfiguration);
+  if (ephemeral && recordingMode && recordingMode !== "replay") throw new RunError("Enregistrement API incompatible avec une session éphémère : utilisez replay ou retirez l’enregistrement.", ExitCode.UsageOrConfiguration);
+  if (recordingMode) err(`Enregistrement API : ${recordingMode}. Les références contiennent des réponses non chiffrées ; utilisez uniquement des données de test.`);
+  const recordedProvider = withApiRecording((deps.providerFactory ?? createProvider)(providerOptions), { mode: recordingMode as RecordingMode | undefined, directory: env.own("API_RECORDING_DIR") ?? join(locations.configDir, "api-references"), secrets: [apiKey, authToken, ...Object.values(providerOptions.headers)].filter((s): s is string => !!s) });
+  const thirdPartyCloud = (() => {
+    if (!baseURL) return true;
+    try { const u = new URL(baseURL), domain = identity.get("SOCIETY_DOMAIN"); return !["localhost", "127.0.0.1", "[::1]"].includes(u.hostname) && u.hostname !== domain && !u.hostname.endsWith("." + domain); } catch { return true; }
+  })();
+  const productTelemetryEnabled = () => !offlineMinimal && env.ownBoolean("NO_TELEMETRY") !== true && liveSettings.get<boolean>("telemetry.enabled") && (!thirdPartyCloud || liveSettings.origin("telemetry.enabled") !== "default");
+  const observer = new SessionObserver({
+    slug: identity.get("PRODUCT_SLUG"), eventPrefix: identity.get("TELEMETRY_EVENT_PREFIX"), version: identity.version,
+    configDir: locations.configDir, platform: system.platform, persist: !ephemeral, sessionId: () => sessionId,
+    entrypoint: controlled ? "control" : nonInteractive ? "non-interactive" : "interactive",
+    productEnabled: productTelemetryEnabled,
+    otelEnabled: () => !offlineMinimal && env.ownBoolean("TELEMETRY") === true,
+    errorEnabled: () => productTelemetryEnabled() && env.ownBoolean("NO_ERROR_REPORTS") !== true,
+    includePrompts: env.ownBoolean("TELEMETRY_INCLUDE_PROMPTS") === true,
+    includeSessionId: settings.get<boolean>("telemetry.otel.includeSessionId"),
+    environment: name => env.public(name), fetch: deps.observabilityFetch ?? network,
+    productUrl: identity.has("SERVICE_TELEMETRY") ? identity.get("SERVICE_TELEMETRY") : undefined,
+    errorUrl: identity.has("SERVICE_ERROR_REPORTING") ? identity.get("SERVICE_ERROR_REPORTING") : undefined,
+    diagnosticRetentionDays: settings.get<number>("debug.diagnosticLogs.retentionDays"),
+    secrets: [apiKey, authToken].filter((s): s is string => !!s), warn: message => debug.log("telemetry", message), console: err,
+  });
+  holder.reportUnexpected = error => observer.reportUnexpected(error);
+  (holder.finalizers ??= []).push(() => observer.close());
+  const loggedProvider = withRequestLog(observer.provider(recordedProvider), providerOptions, (m, d) => debug.log("api", m, d));
   const provider: ModelProvider = { id: loggedProvider.id, async *stream(request, signal) { assertPolicy(); yield* loggedProvider.stream(request, signal); } };
   phase("compatibilité et authentification");
   // CA-03 of SPEC-API-001: thinking requested explicitly from a model without it is announced as unavailable, without error.
@@ -1104,7 +1147,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const toolsetOption = opt("toolset");
   const toolsetNames = typeof toolsetOption === "string" ? (toolsetOption.trim() === "" ? [] : splitList(toolsetOption)) : undefined;
   // `spawn_agent` is a tool of the session, added after the registry is built: it is listed like the others (SPEC-OUT-001).
-  const toolset = toolsetNames?.filter((n) => !["spawn_agent", "code_intelligence", "list_connector_resources", "read_connector_resource", "connector_sign_in", "schedule_create", "schedule_list", "schedule_delete"].includes(n));
+  const toolset = toolsetNames?.filter((n) => !["configure", "submit_result", "spawn_agent", "code_intelligence", "list_connector_resources", "read_connector_resource", "connector_sign_in", "schedule_create", "schedule_list", "schedule_delete"].includes(n));
   const agentsInToolset = toolsetNames === undefined || toolsetNames.includes("spawn_agent") || (toolsetNames.length === 1 && toolsetNames[0] === "default");
   let registry: ToolRegistry;
   try {
@@ -1308,6 +1351,23 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   if (maxAgentDepth >= 1 && agentsInToolset) registry.addStatic(spawnTool(0, registry));
   // SPEC-OUT-020, SPEC-OUT-022: the tools of the work items and of the background tasks, named in --toolset like the others.
   const inToolset = (name: string) => toolsetNames === undefined || toolsetNames.includes(name) || (toolsetNames.length === 1 && toolsetNames[0] === "default");
+  const submittedResult = new SubmittedResult();
+  if (outputSchema && inToolset("submit_result")) registry.addStatic(submittedResult.tool(outputSchema) as import("../tools/types").Tool<never>);
+  if (inToolset("configure")) registry.addStatic(configureTool({
+    allowed: () => liveSettings.get<string[]>("config.toolAllowlist"),
+    read: key => { applySettingsChanges(); return { value: liveSettings.get(key), source: liveSettings.origin(key), managed: liveSettings.isManaged(key) }; },
+    validate: (key, value) => {
+      if (!CONFIGURE_KEYS.includes(key as typeof CONFIGURE_KEYS[number]) || !SETTING_BY_KEY.get(key)?.scopes.includes("user")) return "This preference is not accessible.";
+      return validateSettingValue(key, value) ? "Invalid value for this preference." : undefined;
+    },
+    confirm: async (key, before, after, signal) => { assertPolicy(); return app ? app.confirm(`Modifier ${key} ?\nValeur actuelle : ${JSON.stringify(before)}\nNouvelle valeur : ${JSON.stringify(after)}`, "confirmer", "refuser", false, signal) : false; },
+    write: async (key, value, signal) => {
+      signal.throwIfAborted(); assertPolicy();
+      setValueInSettingsFile(locations.userSettingsFile, key.split("."), value, system.platform);
+      applySettingsChanges();
+      return { value, source: "user", applied: isHotKey(key) ? "now" : "next-session", masked: !["user", "default"].includes(liveSettings.origin(key)) };
+    },
+  }) as import("../tools/types").Tool<never>);
   const taskTools = [...createWorkItemTools({ fire: (event, fields) => void hooks.fire(event, fields) }), backgroundOutputTool as never, backgroundStopTool as never, ...(posixShell || powerShell ? [monitorProcessTool as never] : [])];
   for (const tool of taskTools) if (inToolset(tool.name)) registry.addStatic(tool);
   // SPEC-OUT-012: reading web pages, the analysis by a light model; the documentation service of the distribution is
@@ -1509,6 +1569,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       })
     : undefined;
   const sessionId = transcript?.sessionId ?? assignedId ?? crypto.randomUUID();
+  observer.start();
   const others = presence.sameFolder(projectReal, sessionId);
   if (others.length > 0) {
     err(`avertissement : une autre session est active dans ce dossier (${others.map((o) => o.sessionId).join(", ")}) : pour travailler en parallèle sans vous gêner, utilisez une copie de travail isolée du dépôt.`); // CA-01
@@ -1594,6 +1655,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       return null;
     } } : {}),
     group: (event, payload, outcomes, durationMs) => {
+      observer.hook(durationMs);
       const detail = { event, payload, outcomes, durationMs };
       transcript?.append("system", { event: "hook_group", detail });
       if (opt("emit-hook-events") === true) stream?.emit("hook_event", detail);
@@ -1635,7 +1697,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     cwd: projectReal,
     platform: system.platform,
     approvalMode: () => modeState.mode,
-    environment: (extra) => env.childEnvironment({ ...settings.get<Record<string, string>>("environment.variables"), ...extra }),
+    environment: (extra) => env.childEnvironment({ ...settings.get<Record<string, string>>("environment.variables"), ...extra, ...Object.fromEntries(Object.entries(imposed).filter(([name]) => !name.startsWith(env.prefix) && !PUBLIC_SECRET_VARIABLES.includes(name))) }),
     envPrefix: env.prefix,
     shells: { posix: posixShell ? { path: posixShell.path, kind: "posix" } : undefined, powershell: powerShell ? { path: powerShell.path, kind: "powershell" } : undefined },
     commandTimeoutMs: settings.get<number>("hooksConfig.commandTimeout"),
@@ -1984,20 +2046,34 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     },
   };
   const extraVariables = settings.get<Record<string, string>>("environment.variables"); // user and managed scopes only (FA-01 of SPEC-CFG-007)
+  // Implements: SPEC-SES-018/CA-02; hook variables cannot replace an administrator's imposed values.
   const childProcessVariable = `${env.prefix}CHILD_PROCESS`;
   await hooks.fire("session_opened", { source: reopened && !reopenAsCopy ? "reopen" : "launch" });
+  const sessionVariables = { ...extraVariables, ...hooks.sessionEnv, ...Object.fromEntries(Object.entries(imposed).filter(([name]) => !name.startsWith(env.prefix) && !PUBLIC_SECRET_VARIABLES.includes(name))) };
   // The working folder as given and its real path (a symbolic link, such as /var on macOS, or a short Windows name):
   // the model may use either form, and both designate the same folder (SPEC-PER-010). Shared by the tools and the
   // shells, so that a folder added by `/allow-dir` is reachable by both (SPEC-CMD-002).
   const allowedDirectories = [...new Set([cwd, projectReal])];
+  let recommendedExtension = false;
   const shellRuntime =
     posixShell || powerShell
       ? new ShellRuntime({
+          hintTag: identity.get("HINT_TAG"),
+          recommend: (ref, command) => {
+            if (!app || recommendedExtension || !liveSettings.get<boolean>("extensions.recommendations")) return;
+            const [name, catalog] = ref.split("@") as [string, string];
+            const registration = liveSettings.get<Record<string, { source?: string }>>("extensions.catalogs")[catalog];
+            if (!registration || typeof registration.source !== "string" || catalogRefused(liveSettings, catalog, registration.source) || blockedReason(liveSettings, name, catalog) || listInstalled(locations.configDir).some(e => e.name === name && e.catalog === catalog)) return;
+            const entry = cachedCatalog(locations.configDir, catalog)?.extensions.find(e => e.name === name);
+            if (!entry || flagOf(liveSettings, locations.configDir, name, catalog, entry.version ?? "0.0.0")?.severity === "critical") return;
+            recommendedExtension = true;
+            app.notice("info", `Extension suggérée : ${ref}. Commande émettrice : ${redactOutput(command).slice(0, 500)}. Consultez /extensions découvrir ; /extensions install ${ref} demandera votre accord.`);
+          },
           platform: system.platform,
           projectCwd: projectReal,
           allowedDirectories,
-          childEnv: env.childEnvironment({ ...extraVariables, ...hooks.sessionEnv }),
-          forcedVariables: { ...extraVariables, ...hooks.sessionEnv, [childProcessVariable]: "1" },
+          childEnv: env.childEnvironment(sessionVariables),
+          forcedVariables: { ...sessionVariables, [childProcessVariable]: "1" },
           excluded: (name) => name.startsWith(env.prefix) || PUBLIC_SECRET_VARIABLES.includes(name),
           posix: posixShell,
           powershell: powerShell,
@@ -2125,6 +2201,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const permissionDenials = new PermissionDenials(() => ({ consecutive: liveSettings.get<number>("permissions.denials.maxConsecutive"), total: liveSettings.get<number>("permissions.denials.maxTotal") }));
   const toolDecisions = new Map<string, Extract<EngineEvent, { type: "permission" }>>();
   const emit = (event: EngineEvent) => {
+    observer.event(event);
     if (event.type === "permission") {
       toolDecisions.set(event.callId, { ...event, reason: maskSecrets(event.reason) });
       transcript?.append("system", { event: "tool_decision", callId: event.callId, decision: event.decision, reason: maskSecrets(event.reason), step: event.step });
@@ -2322,6 +2399,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     const reload = reloader.check();
     if (!reload) return;
     liveSettings = reload.settings;
+    observer.recheck();
     featureFlags.recheck();
     if (reload.changed.includes("ui.theme") && !themePreviewActive) {
       activeTheme = liveSettings.get<ThemeId>("ui.theme");
@@ -2542,6 +2620,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const postSampling = new PostSampling(deps.samplingProcessors ?? [], (name, error) => debug.log("hooks", "post-sampling failure", { name, error: redactOutput(error) }));
   holder.cleanups.push(() => postSampling.close());
   const loopDeps: LoopDeps = {
+    takeSubmittedResult: () => submittedResult.take(),
     postSampling: (assistant, agent) => postSampling.dispatch({ assistant, agent, minimal, ephemeral: transcript === undefined }),
     beforeRequest: () => {
       assertPolicy();
@@ -2748,6 +2827,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       // below the maximal depth; a planning agent only reads (EF-06 of SPEC-OUT-016).
       const replaced = new Map<string, never>();
       const allowed = (name: string) =>
+        name !== "submit_result" &&
         caller.get(name) !== undefined &&
         (!def.tools || def.tools.includes(name)) &&
         !def.excludedTools.includes(name) &&
@@ -2816,6 +2896,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         skillAllows: agentSkillAllows,
         deps: {
           ...loopDeps,
+          takeSubmittedResult: undefined,
           model,
           pricing: pricingOf(model),
           maxOutputTokens: outputLimitOf(model),
@@ -3148,7 +3229,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     }
     let result: TurnResult;
     try {
-      result = await runTurn(loopDeps, content, signal);
+      submittedResult.reset();
+      result = await observer.interaction(content, signal, () => runTurn(loopDeps, content, signal));
       assertPolicy();
     } catch (error) {
       if ((app || control) && error instanceof RunError && error.exitCode === ExitCode.BlockedByPolicy) return { refused: error.message };
@@ -4010,14 +4092,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         return { shown: box(summary.split("\n").map(line => text(line))), note: summary };
       }
       case "context-usage": {
-        // SPEC-CMD-014, SPEC-MOT-010 CA-03: the categories, whose sum is the total shown.
-        const parts = meter.breakdown(conversation.system, conversation.tools, conversation.messages);
-        const names: Record<string, string> = { system: "Instructions système", tools: "Outils", messages: "Messages", attachments: "Pièces jointes" };
-        const total = Object.values(parts).reduce((a, b) => a + b, 0);
-        const window = meter.effectiveWindow;
-        const row = (label: string, n: number) => `${label.padEnd(22)} ${String(n).padStart(9)}  ${((100 * n) / window).toFixed(1).padStart(5)} %`;
-        const lines = ["Catégorie                  Jetons  Fenêtre", ...Object.entries(parts).map(([k, n]) => row(names[k] ?? k, n)), row("Total", total), `Fenêtre effective : ${window} jetons (estimation locale).`];
-        return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
+        if (args.trim() && args.trim() !== "--json") return { refused: "Usage : /context-usage [--json]." };
+        const report = analyseContext(conversation, meter, liveSettings.get<boolean>("context.autoCompact.enabled"));
+        const rendered = args.trim() === "--json" ? JSON.stringify(report) : renderContextAnalysis(report);
+        return { shown: box(rendered.split("\n").map(l => text(l))), note: rendered };
       }
       case "context-debug": {
         const report = redactOutput(contextReport(conversation));

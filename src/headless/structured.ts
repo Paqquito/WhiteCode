@@ -58,6 +58,7 @@ export function loadOutputSchema(value: string, cwd: string, maxDepth: number): 
 export function schemaInstruction(schema: Record<string, unknown>): string {
   return [
     "This run must end with a structured result. Use the tools as usual while you work.",
+    "When submit_result is available, call it with the validated final object. Otherwise provide the JSON document as your final answer.",
     "When the work is done, your final answer must be a single JSON document that conforms to the JSON Schema below: include every required field, nothing the schema does not allow, and no text outside the JSON document.",
     "<output-schema>",
     JSON.stringify(schema, null, 2),

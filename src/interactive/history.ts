@@ -5,6 +5,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { containsSecret } from "../shared/secrets";
+// Implements: SPEC-SES-016 (shared project history and leading-space exclusion).
 
 export interface HistoryEntry {
   readonly text: string;
@@ -84,7 +85,7 @@ export class InputHistory {
 
   /** § 5.1, EF-01: a message sent is recorded, except an empty one, a repetition of the previous one, or a secret (RG-04). */
   add(text: string): void {
-    if (!this.#o.enabled || text.trim() === "" || containsSecret(text)) return;
+    if (!this.#o.enabled || text.startsWith(" ") || text.trim() === "" || containsSecret(text)) return;
     this.#reload();
     const previous = this.#visible()[0];
     if (previous?.text === text) return; // CA-04

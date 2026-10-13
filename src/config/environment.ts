@@ -62,7 +62,7 @@ export const OWN_VARIABLES: readonly OwnVariableDef[] = [
   { name: "PROFILE", type: "string", owner: "SPEC-OBS-009" },
   { name: "SLOW_OP_WARN_MS", type: "integer", owner: "SPEC-OBS-013" },
   { name: "SESSION_RECORDING", type: "string", owner: "SPEC-OBS-016" },
-  { name: "API_RECORDING", type: "boolean", owner: "SPEC-OBS-018" },
+  { name: "API_RECORDING", type: "string", owner: "SPEC-OBS-018" },
   { name: "API_RECORDING_DIR", type: "path", owner: "SPEC-OBS-018" },
   { name: "SESSION_MIRROR", type: "boolean", owner: "SPEC-MOD-017" },
   { name: "SERVER_TOKEN", type: "string", owner: "SPEC-MOD-018", secret: true },
