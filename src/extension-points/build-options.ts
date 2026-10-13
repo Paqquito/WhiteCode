@@ -4,6 +4,9 @@ export const BUILD_PROFILES = ["public", "internal", "development", "test"] as c
 export type BuildProfile = (typeof BUILD_PROFILES)[number];
 const option = (value: boolean, description: string, specs: string[], absentMarkers: string[] = []) => ({ description, specs, implemented: value, values: { public: value, internal: value, development: value, test: value }, absentMarkers });
 export const BUILD_OPTIONS = {
+  ui_fast_find: option(true, "Navigation par fichier et recherche locale au clavier.", ["SPEC-IHM-015", "SPEC-IHM-018"], ["Ouverture rapide", "Recherche globale"]),
+  ui_history_browser: option(true, "Sélecteur filtrable de l’historique des saisies.", ["SPEC-IHM-016"], ["Filtrer mes saisies"]),
+  ui_message_menu: option(true, "Copie et reprise des messages en vue plein écran.", ["SPEC-IHM-017", "SPEC-IHM-034"], ["Copier le bloc"]),
   hook_questions: option(true, "Questions humaines posées par les crochets synchrones.", ["SPEC-HOK-011"], ["Question du crochet"]),
   scheduled_triggers: option(true, "Déclencheurs locaux et outils de planification.", ["SPEC-PLA-001", "SPEC-PLA-005", "SPEC-OUT-031"], ["Create a local scheduled prompt", "List the local scheduled prompts"]),
   agent_explorer_planner: option(true, "Agents intégrés d’exploration et de planification en lecture seule.", ["SPEC-AGT-003"], ["You are the repository explorer", "You are the implementation planner"]),

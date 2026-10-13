@@ -6,8 +6,10 @@
 // Supports: SPEC-CMD-069, SPEC-SES-009 (persistent labels), gap E-149.
 
 import type { InternalCommand } from "./catalog";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
+  ...(buildFlag("ui_fast_find") ? [{ name: "quick-open", description: "Ouvre le sélecteur local des fichiers du projet.", kind: "action", widening: false, interactiveOnly: true }, { name: "global-search", description: "Recherche un texte dans les fichiers autorisés du projet.", kind: "action", widening: false, interactiveOnly: true }] as readonly InternalCommand[] : []),
   { name: "native-install", description: "Installe une version native vérifiée dans le profil utilisateur.", kind: "action", widening: false, usage: "[stable|latest|version] [--force]" },
   { name: "context-files", description: "Liste les fichiers présents dans le contexte, leurs plages et les jetons estimés.", kind: "display", widening: false },
   { name: "heap-dump", description: "Enregistre localement un instantané de mémoire après avertissement et confirmation.", kind: "action", widening: false, interactiveOnly: true, hidden: true },

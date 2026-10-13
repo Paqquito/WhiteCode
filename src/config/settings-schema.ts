@@ -66,6 +66,14 @@ export const SETTINGS: readonly SettingDef[] = [
   // Supports: SPEC-CAD-002 (CA-13, EF-42), gap E-145; administration-only startup URL overrides.
   { key: "identity.services", schema: Type.Object(Object.fromEntries(OVERRIDABLE_SERVICE_URLS.map((name) => [name, Type.Optional(str())])), { additionalProperties: false }), default: {}, scopes: [G], owner: "SPEC-CAD-002" },
   { key: "ui.reducedMotion", schema: bool(), default: false, scopes: [U], owner: "SPEC-IHM-038" },
+  { key: "ui.announcements", schema: strList(), default: [], scopes: [G], owner: "SPEC-CFG-011" },
+  { key: "ui.search.maxMatches", schema: int(1, 5000), default: 500, scopes: [U], owner: "SPEC-IHM-018" },
+  { key: "ui.search.debounceMs", schema: int(0, 2000), default: 150, scopes: [U], owner: "SPEC-IHM-018" },
+  { key: "ui.messageActions.enabled", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-017" },
+  { key: "ui.footerLine.command", schema: str(), scopes: [U, G], widening: true, owner: "SPEC-IHM-021" },
+  { key: "ui.footerLine.padding", schema: int(0, 8), default: 0, scopes: [U, P], owner: "SPEC-IHM-021" },
+  { key: "ui.footerLine.timeoutMs", schema: int(1, 60_000), default: 1500, scopes: [U], owner: "SPEC-IHM-021" },
+  { key: "ui.externalEditor", schema: str(), scopes: [U], widening: true, owner: "SPEC-INT-019" },
   // Models, thinking and effort
   { key: "models.selected", schema: str(), scopes: [U, P, G, C], owner: "SPEC-MOT-001" },
   // Tier alias → model identifier (SPEC-API-007); how each developer maps the neutral tiers (gap E-040).

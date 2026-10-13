@@ -7,6 +7,7 @@
 // Supports: SPEC-IHM-020 (semantic colours of the active theme), gap E-142.
 
 import type { Terminal } from "../platform/terminal";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 import type { Capabilities } from "../ui/capabilities";
 import type { InputEvent } from "../ui/keys";
 import { layoutNode, text, type LayoutContext, type Node } from "../ui/layout";
@@ -16,6 +17,9 @@ import { blank, spansToLines, type Cell, type Span } from "../ui/text";
 export type ItemKind = "user" | "model" | "tool" | "result" | "notice" | "permission" | "shell" | "thinking" | "marker";
 
 export interface TranscriptItem {
+  readonly primary?: string;
+  readonly recordId?: string;
+  readonly selectable?: boolean;
   readonly id: number;
   readonly kind: ItemKind;
   readonly title: string;
@@ -42,6 +46,7 @@ export interface ViewState {
 }
 
 export const newViewState = (): ViewState => ({ top: 0, scrollX: 0, atBottom: true, folded: new Map() });
+export interface MessageActions { readonly enabled: boolean; readonly copy: (text: string) => Promise<boolean>; readonly edit?: (item: TranscriptItem) => Promise<void> }
 
 const AUTHOR: Readonly<Record<ItemKind, string>> = {
   user: "Vous",
@@ -76,6 +81,10 @@ export class TranscriptView {
   #rows: Row[] = [];
   #search: { term: string; editing: boolean; index: number } | undefined;
   #jump: string | undefined;
+  #selected: number | undefined;
+  #menu: Array<{ label: string; content: string }> | undefined;
+  #message = "";
+  readonly #actions?: MessageActions;
 
   constructor(o: {
     readonly terminal: Terminal;
@@ -87,6 +96,7 @@ export class TranscriptView {
     readonly markdown?: (content: string) => Node;
     readonly theme?: (lines: readonly Cell[][], width: number) => Cell[][];
     readonly onClose: () => void;
+    readonly actions?: MessageActions;
   }) {
     this.#term = o.terminal;
     this.#items = o.items;
@@ -96,6 +106,7 @@ export class TranscriptView {
     this.#ctx = { unicode: o.capabilities.unicode, narrow: false };
     this.#onClose = o.onClose;
     this.#title = o.title;
+    this.#actions = o.actions;
     this.#screen = new Screen({ terminal: o.terminal, capabilities: o.capabilities, maxFramesPerSecond: 60, source: (size) => { const lines = this.#frame(size); return { lines: o.theme?.(lines, size.columns) ?? lines }; } });
   }
 
@@ -112,6 +123,8 @@ export class TranscriptView {
   }
 
   /** New items (FA-01) or a change of dimensions (FA-05). */
+  get modalActive(): boolean { return !!this.#search?.editing || this.#jump !== undefined || this.#menu !== undefined; }
+
   refresh(): void {
     this.#screen?.invalidate();
   }
@@ -222,7 +235,8 @@ export class TranscriptView {
     const lines: Cell[][] = [this.#line(header, size.columns, true)];
     if (items.length === 0) lines.push(spansToLines([{ text: "Aucun échange à afficher." }])[0]!); // ERR-03
     for (const r of this.#rows.slice(this.#state.top, this.#state.top + bodyHeight)) {
-      const shifted = this.#highlight(r.cells).slice(this.#state.scrollX);
+      const selected = this.#selected === items[r.item]?.id;
+      const shifted = this.#highlight(r.cells).map(cell => selected ? { ...cell, style: { ...cell.style, inverse: true }, key: `${cell.key}/selected` } : cell).slice(this.#state.scrollX);
       lines.push(shifted.slice(0, size.columns));
     }
     while (lines.length < size.rows - 1 - (this.#search || this.#jump !== undefined ? 1 : 0)) lines.push([]);
@@ -231,7 +245,8 @@ export class TranscriptView {
       lines.push(this.#line([{ text: " Recherche : ", style: { bold: true } }, { text: this.#search.term }, { text: `  ${n > 0 ? this.#search.index + 1 : 0}/${n} élément${n > 1 ? "s" : ""}`, style: { dim: true } }], size.columns));
     } else if (this.#jump !== undefined) lines.push(this.#line([{ text: " Aller au tour : ", style: { bold: true } }, { text: this.#jump }], size.columns));
     // EF-07: the keys of the navigation, always shown.
-    lines.push(this.#line([{ text: " ↑↓ ligne · PgPréc/PgSuiv page · Début/Fin · Tab élément · Entrée replier · e/c tout · / chercher · n/N · : tour · ←→ défiler · Échap fermer ", style: { inverse: true } }], size.columns, true));
+    const actionHelp = this.#menu ? this.#menu.map((item, index) => `${index + 1}. ${item.label}`).join(" · ") : this.#selected !== undefined ? "↑↓ message · y copier · a actions · m modifier · Échap quitter la sélection" : `↑↓ ligne · Tab élément · Entrée replier · / chercher · Échap fermer${this.#actions?.enabled ? " · s sélectionner" : ""}`;
+    lines.push(this.#line([{ text: ` ${this.#message || actionHelp} `, style: { inverse: true } }], size.columns, true));
     return lines;
   }
 
@@ -294,6 +309,7 @@ export class TranscriptView {
       this.#screen.flush();
       return;
     }
+    if (buildFlag("ui_message_menu") && this.#actions?.enabled && this.#actionKey(e)) { this.#screen?.flush(); return; }
     switch (e.text !== undefined && !e.ctrl && !e.alt ? e.text : e.name) {
       case "escape":
       case "q":
@@ -365,6 +381,34 @@ export class TranscriptView {
       default:
         return; // FA-04 of SPEC-IHM-014: a key without action in this context is ignored
     }
+    this.#screen?.flush();
+  }
+
+  #actionKey(e: Extract<InputEvent, { kind: "key" }>): boolean {
+    if (!buildFlag("ui_message_menu")) return false;
+    const items = this.#items().filter(item => item.selectable !== false && (item.kind === "user" || item.kind === "model" || item.kind === "tool" && item.primary !== undefined) && item.body.trim());
+    const key = e.text ?? e.name;
+    if (this.#selected === undefined) {
+      if (key !== "s" || !items.length) return false;
+      this.#selected = items.at(-1)!.id; this.#toItem(this.#items().findIndex(item => item.id === this.#selected)); return true;
+    }
+    this.#message = "";
+    if (key === "escape") { if (this.#menu) this.#menu = undefined; else this.#selected = undefined; return true; }
+    const at = items.findIndex(item => item.id === this.#selected), item = items[at];
+    if (!item) { this.#selected = undefined; return true; }
+    if (this.#menu) {
+      const choice = /^[1-9]$/.test(key) ? this.#menu[Number(key) - 1] : undefined;
+      if (choice) { this.#menu = undefined; void this.#copy(choice.content); } return true;
+    }
+    if (key === "up" || key === "down") { this.#selected = items[Math.max(0, Math.min(items.length - 1, at + (key === "up" ? -1 : 1)))]!.id; this.#toItem(this.#items().findIndex(item => item.id === this.#selected)); }
+    else if (key === "y") void this.#copy(item.primary ?? item.body);
+    else if (key === "a") this.#menu = [{ label: "Copier le texte", content: item.primary ?? item.body }, ...Array.from(item.body.matchAll(/^```[^\n]*\n([\s\S]*?)^```\s*$/gm), (match, index) => ({ label: `Copier le bloc ${index + 1}`, content: match[1]! }))].slice(0, 9);
+    else if (key === "m" && item.kind === "user" && this.#actions?.edit) { this.close(); void this.#actions.edit(item).catch(() => {}); }
+    return true;
+  }
+  async #copy(content: string): Promise<void> {
+    try { this.#message = await this.#actions!.copy(content) ? "Copié." : `Copie indisponible : ${content}`; }
+    catch { this.#message = `Copie indisponible : ${content}`; }
     this.#screen?.flush();
   }
 }

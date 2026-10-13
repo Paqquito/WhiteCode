@@ -3,7 +3,7 @@
 // the model, a few lines each) or full (calls of tools and their results as well).
 
 import type { TranscriptRecord } from "../session/transcript";
-import type { InteractiveApp } from "./app";
+import { principalElement, type InteractiveApp } from "./app";
 import { interruptionView, modelView, toolCallView, toolResultView, userView } from "./views";
 
 const CONDENSED_LINES = 4;
@@ -22,11 +22,12 @@ export function replayHistory(app: InteractiveApp, chain: readonly TranscriptRec
   let shown = 0;
   for (const r of chain) {
     const d = r.data;
+    if (r.type === "compaction") app.markCompacted();
     if (r.type === "user" && !d["synthetic"] && !d["fromHook"]) {
       const text = textOf(d["content"]);
       if (text) {
         app.commit(userView(condense(text, full), view));
-        app.record("user", "", text);
+        app.record("user", "", text, { recordId: r.id });
         shown++;
       }
     } else if (r.type === "assistant") {
@@ -37,7 +38,7 @@ export function replayHistory(app: InteractiveApp, chain: readonly TranscriptRec
       }
       for (const c of (d["toolCalls"] as Array<{ name: string; input: unknown }> | undefined) ?? []) {
         if (full) app.commit(toolCallView(c.name, describe(c.name, c.input), view));
-        app.record("tool", `${c.name}  ${describe(c.name, c.input)}`, JSON.stringify(c.input ?? {}, null, 2));
+        app.record("tool", `${c.name}  ${describe(c.name, c.input)}`, JSON.stringify(c.input ?? {}, null, 2), { primary: principalElement(c.input) });
       }
     } else if (r.type === "tool_result") {
       // The view holds the whole transcript, the flow only what the replay mode shows.

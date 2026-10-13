@@ -10,6 +10,7 @@ export interface KeyEvent {
   readonly ctrl: boolean;
   readonly alt: boolean;
   readonly shift: boolean;
+  readonly super?: boolean;
   /** Text to insert, for a printable key without control or alternate modifier. */
   readonly text?: string;
 }
@@ -21,12 +22,13 @@ export interface PasteEvent {
 
 export type InputEvent = KeyEvent | PasteEvent;
 
-const key = (name: string, mods: { ctrl?: boolean; alt?: boolean; shift?: boolean } = {}, text?: string): KeyEvent => ({
+const key = (name: string, mods: { ctrl?: boolean; alt?: boolean; shift?: boolean; super?: boolean } = {}, text?: string): KeyEvent => ({
   kind: "key",
   name,
   ctrl: mods.ctrl ?? false,
   alt: mods.alt ?? false,
   shift: mods.shift ?? false,
+  ...(mods.super ? { super: true } : {}),
   ...(text !== undefined ? { text } : {}),
 });
 
@@ -38,7 +40,7 @@ const PASTE_END = "\u001b[201~";
 /** Modifiers of a CSI parameter: 1 + shift(1) + alt(2) + ctrl(4). */
 function modifiers(param: string | undefined) {
   const m = Math.max(0, (Number(param) || 1) - 1);
-  return { shift: (m & 1) !== 0, alt: (m & 2) !== 0, ctrl: (m & 4) !== 0 };
+  return { shift: (m & 1) !== 0, alt: (m & 2) !== 0, ctrl: (m & 4) !== 0, super: (m & 8) !== 0 };
 }
 
 function controlKey(c: string, alt: boolean): KeyEvent {
@@ -154,7 +156,7 @@ export class KeyParser {
         const code = Number(parts[0]);
         const mods = modifiers(parts[1]);
         const name = code === 13 ? "enter" : code === 9 ? "tab" : code === 27 ? "escape" : code === 127 ? "backspace" : String.fromCodePoint(code).toLowerCase();
-        const printable = code >= 0x20 && code !== 127 && !mods.ctrl && !mods.alt;
+        const printable = code >= 0x20 && code !== 127 && !mods.ctrl && !mods.alt && !mods.super;
         return { event: key(name, mods, printable ? String.fromCodePoint(code) : undefined), next };
       }
       if (final === "Z") return { event: key("tab", { shift: true }), next };
@@ -177,5 +179,5 @@ export class KeyParser {
 
 /** Canonical text of a combination, such as `ctrl+c`, `alt+enter`, `shift+tab`: the form of the key bindings. */
 export function comboOf(k: KeyEvent): string {
-  return `${k.ctrl ? "ctrl+" : ""}${k.alt ? "alt+" : ""}${k.shift && k.text === undefined ? "shift+" : ""}${k.name}`;
+  return `${k.ctrl ? "ctrl+" : ""}${k.alt ? "alt+" : ""}${k.super ? "super+" : ""}${k.shift && k.text === undefined ? "shift+" : ""}${k.name}`;
 }

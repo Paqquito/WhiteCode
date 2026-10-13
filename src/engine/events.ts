@@ -20,7 +20,7 @@ export type EngineEvent =
   | { readonly type: "turn_started"; readonly sessionId: string }
   | { readonly type: "text_delta"; readonly text: string }
   | { readonly type: "thinking_delta"; readonly text: string }
-  | { readonly type: "user_message"; readonly content: ReadonlyArray<ContentPart | ToolResultPart>; readonly synthetic?: boolean }
+  | { readonly type: "user_message"; readonly content: ReadonlyArray<ContentPart | ToolResultPart>; readonly synthetic?: boolean; readonly recordId?: string }
   | { readonly type: "assistant_message"; readonly text: string; readonly toolCalls: ReadonlyArray<{ readonly callId: string; readonly name: string; readonly input: unknown }> }
   | { readonly type: "tool_call"; readonly callId: string; readonly name: string; readonly input: unknown }
   | { readonly type: "tool_started"; readonly callId: string }

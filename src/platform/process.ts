@@ -8,6 +8,8 @@ import { extname } from "node:path";
 import { currentPlatform } from "./system";
 
 export interface ChildOptions {
+  /** Supports: SPEC-INT-019. The application suspends its terminal while the editor owns these streams. */
+  readonly inheritTerminal?: boolean;
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
   /** Called with each chunk of standard output or error, in arrival order. */
@@ -60,7 +62,7 @@ export function startChild(file: string, args: readonly string[], options: Child
   const child = spawn(file, [...args], {
     cwd: options.cwd,
     env: options.env,
-    stdio: [options.input === undefined && !options.keepInputOpen ? "ignore" : "pipe", "pipe", "pipe"],
+    stdio: options.inheritTerminal ? "inherit" : [options.input === undefined && !options.keepInputOpen ? "ignore" : "pipe", "pipe", "pipe"],
     detached: !windows,
     windowsHide: true,
   });

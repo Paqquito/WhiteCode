@@ -115,6 +115,9 @@ export class TranscriptWriter {
     }
   }
 
+  /** Supports: SPEC-IHM-017 CA-02; the composition validates this parent before branching. */
+  branch(parentId: string | null): void { this.#lastId = parentId; }
+
   close(): void {
     this.flush();
     if (this.#fd !== undefined) closeSync(this.#fd);

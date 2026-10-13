@@ -130,14 +130,15 @@ import { OpenAICompatibleProvider } from "../providers/openai-compatible";
 import { isResolveFailure, type ApiEffort, type ModelCatalog, type ResolvedModel } from "../providers/catalog";
 import type { ContentPart, HistoryMessage, ImagePart, ModelProvider, ToolCall, ToolResultPart } from "../providers/types";
 import { maskSecrets } from "../shared/secrets";
-import { absolute, comparablePath, findExecutable, realPathOrSelf, type SystemInfo } from "../platform/system";
+import { absolute, comparablePath, findExecutable, isWithin, realPathOrSelf, type SystemInfo } from "../platform/system";
 import type { StandardStreams } from "../platform/io";
 import { projectKey, TranscriptWriter, type TranscriptRecord } from "../session/transcript";
 import { activeChain, assistantRecord, designateSession, projectSessions, protocolOf, readTranscript, rebuildHistory, SessionError, sessionTitle, withResults, type RebuiltHistory, type SessionInfo } from "../session/sessions";
 import { PresenceRegistry } from "../session/presence";
 import { BlobStore, FileHistory, observe, type SnapshotRecord } from "../session/file-history";
 import { changesByTurn } from "../session/turn-changes";
-import { launchLine, runToCompletion, startDetached } from "../platform/process";
+import { launchLine, runToCompletion, startDetached, startChild } from "../platform/process";
+import { editExternally } from "../interactive/external-editor";
 import { keybindingsTemplate, readKeybindingsFile } from "../interactive/keybindings-file";
 import { unifiedDiff } from "../shared/diff";
 import { applyPlan, computePlan, renderPlan, RestoreError } from "../session/restore";
@@ -197,6 +198,10 @@ import { Scheduler } from "../schedule/engine";
 import { scheduleTools } from "../tools/schedule";
 // Supports: SPEC-PLA-001/005, SPEC-OUT-031, gap E-152.
 import { replayHistory } from "../interactive/replay";
+import { FileBrowser } from "../interactive/file-browser";
+import { announcement } from "../interactive/announcements";
+import { FooterLine } from "../interactive/footer-line";
+import { runCommandHook } from "../hooks/command";
 import { runInteractiveLoop } from "../interactive/session";
 import { literalTriggers } from "../interactive/triggers";
 import { detectCapabilities } from "../ui/capabilities";
@@ -266,6 +271,7 @@ export interface ProviderFactoryOptions {
 }
 
 export interface RunDependencies {
+  readonly externalEditorRun?: (program: string, args: readonly string[]) => Promise<number | null>;
   /** Internal product registrations, never populated from user configuration or model input. */
   readonly samplingProcessors?: readonly SamplingProcessor[];
   readonly validateCredential?: CredentialValidator;
@@ -1642,6 +1648,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   let fileWatch: HookFileWatch | undefined;
   let refreshFileWatch = () => {};
   let app: InteractiveApp | undefined;
+  let footer: FooterLine | undefined;
+  let turnDuration = (reopened?.records ?? []).reduce((sum, record) => sum + (record.type === "system" && record.data["event"] === "turn_end" && typeof record.data["durationMs"] === "number" ? record.data["durationMs"] : 0), 0);
+  let refreshFooter = () => {};
   const registerHookContext = (target: string, value: unknown, origin: string, file: string, labelScope: string) => {
     const scoped = origin === "product" || origin === "built-in" ? "user" : origin;
     const source = { origin: scoped, value, file, labelScope };
@@ -2210,6 +2219,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const permissionDenials = new PermissionDenials(() => ({ consecutive: liveSettings.get<number>("permissions.denials.maxConsecutive"), total: liveSettings.get<number>("permissions.denials.maxTotal") }));
   const toolDecisions = new Map<string, Extract<EngineEvent, { type: "permission" }>>();
   const emit = (event: EngineEvent) => {
+    if (event.type === "turn_completed") { turnDuration += event.result.durationMs; refreshFooter(); }
     observer.event(event);
     if (event.type === "permission") {
       toolDecisions.set(event.callId, { ...event, reason: maskSecrets(event.reason) });
@@ -2544,7 +2554,26 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       if (ok) await updateUserState(locations.userStateFile, { unrestrictedAccepted: true }, system.platform);
       return ok;
     };
+    const launchExternal = async (program: string, args: readonly string[]) => {
+      assertPolicy(); if (deps.externalEditorRun) return deps.externalEditorRun(program, args);
+      const command = launchLine(program, args, env.childEnvironment());
+      const child = startChild(command.file, command.args, { cwd, env: env.childEnvironment(), inheritTerminal: true, onData: () => {} });
+      const abort = () => { void child.killTree(250); }; controller.signal.addEventListener("abort", abort, { once: true });
+      try { if (controller.signal.aborted) abort(); return await child.exited; } finally { controller.signal.removeEventListener("abort", abort); }
+    };
     app = new InteractiveApp({
+      footer: () => footer?.value ? { spans: footer.value, padding: liveSettings.get<number>("ui.footerLine.padding") } : undefined,
+      historyBrowser: buildFlag("ui_history_browser"),
+      fileBrowser: buildFlag("ui_fast_find") ? { debounceMs: settings.get<number>("ui.search.debounceMs"), matches: (query, global) => {
+        if (policyRefusal()) return [];
+        return new FileBrowser({ root: projectReal, platform: system.platform, readDenied, respectIgnoreFiles: settings.get<boolean>("tools.respectIgnoreFiles"), maxMatches: settings.get<number>("ui.search.maxMatches") }).matches(query, global).filter(match => redactOutput(match.path) === match.path).map(match => ({ ...match, preview: redactOutput(match.preview) }));
+      }, open: async match => {
+        assertPolicy(); const path = realPathOrSelf(join(projectReal, match.path));
+        if (!isWithin(path, projectReal, system.platform) || readDenied(path)) throw new Error("Fichier inaccessible à l’éditeur.");
+        const [program, ...args] = splitArguments(liveSettings.get<string | undefined>("ui.externalEditor") ?? env.public("VISUAL") ?? env.public("EDITOR") ?? "");
+        if (!program) throw new Error("Éditeur externe non configuré.");
+        if (await launchExternal(program, [...args, path]) !== 0) throw new Error("Éditeur interrompu ou en échec.");
+      } } : undefined,
       maxKeyword: buildFlag("thinking_max_keyword") ? () => ({ keyword: liveSettings.get<string>("thinking.maxKeyword"), supported: currentModel.capabilities.thinking !== "none" }) : undefined,
       onApprovalWaiting: waiting => setTerminalTitle(waiting),
       terminal: terminal!,
@@ -2572,7 +2601,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           const next = nextMode(modeState.mode, availability);
           if (next === "unrestricted" && !(await unrestrictedAccepted())) return modeState.set(nextMode(next, availability));
           modeState.set(next);
-          app?.refresh();
+          app?.refresh(); refreshFooter();
         })(),
       tasks: () => taskList.tasks.filter((t) => t.owner === MAIN_AGENT),
       backgroundTasks: () => background.running.length,
@@ -2587,6 +2616,29 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           return "";
         }
       },
+      messageActions: buildFlag("ui_message_menu") ? { enabled: settings.get<boolean>("ui.messageActions.enabled"), copy: async source => {
+        try { return await (deps.copyText ?? copyText)(redactOutput(source)); } catch { return false; }
+      }, edit: async item => {
+        if (!transcript || !item.recordId || app?.running) throw new Error("Ce message ne peut pas être repris.");
+        const records = readTranscript(transcript.path).records, active = activeChain(records);
+        if (active.broken) throw new Error("La chaîne de cette session est incomplète : reprise du message refusée.");
+        const chain = active.chain;
+        const index = chain.findIndex(record => record.id === item.recordId);
+        if (index < 0 || chain[index]!.type !== "user" || chain.slice(index).some(record => record.type === "compaction")) throw new Error("Ce message n’est plus disponible dans le segment courant.");
+        const before = chain.slice(0, index), original = chain[index]!;
+        const content = original.data["content"];
+        const draft = typeof content === "string" ? content : Array.isArray(content) ? content.flatMap(part => part.type === "text" && !part.text.startsWith("<attached-file ") ? [part.text] : []).join("\n") : "";
+        transcript.branch(original.parentId); transcript.append("system", { event: "message_edit", originalId: original.id });
+        transcript.append("system", { event: "budget_state", state: ledger.state }); transcript.flush();
+        if (transcript.warning) { controller.abort(); throw new Error(transcript.warning); }
+        conversation.branch(rebuildHistory(before).messages); meter.invalidate(); app?.restoreUserDraft(item, draft);
+      } } : undefined,
+      externalEditor: async draft => editExternally(draft, {
+        command: liveSettings.get<string | undefined>("ui.externalEditor") ?? env.public("VISUAL") ?? env.public("EDITOR"),
+        encryption: liveSettings.get<boolean>("storage.encryption.enabled") ? liveSettings.isManaged("storage.encryption.enabled") ? "managed" : "user" : "none",
+        maxChars: settings.get<number>("ui.input.maxChars"), notify: message => app?.notice("warning", redactOutput(message)),
+        launch: launchExternal,
+      }),
       restored,
       onInputState: (s) => stateWriter?.update(s),
       keymap,
@@ -2616,6 +2668,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       },
       attachments: (t, pasted) => attachable(t, attachmentOptions(), pasted),
     });
+    app.setStatusNotice("keybindings", built.warnings.length ? `Raccourcis : ${built.warnings.join(" · ")}` : undefined);
   }
 
   const approvalDecisions: string[] = [];
@@ -3307,6 +3360,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     effort = mapEffort(effort ?? (settings.get<string>("models.effort") as ApiEffort), model.capabilities.effort);
     transcript?.append("system", { event: "model_changed", model: model.id });
     debug.log("api", "model changed", { model: model.id });
+    refreshFooter();
     return { model };
   };
   // The options of the session that replaces this one: those of the launch, without the choice of the session, and the
@@ -3399,6 +3453,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       case "transcript":
         app?.openTranscript();
         return { silent: true };
+      case "quick-open":
+      case "global-search":
+        if (args.trim()) return { refused: `Usage : /${command.name}` };
+        await app?.openFiles(command.name === "global-search"); return { silent: true };
       case "switch-model": {
         let [value, flag] = args.trim().split(/\s+/);
         if (!value) {
@@ -4248,6 +4306,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       const built = composeKeymap();
       keymap = built.keymap;
       app?.setKeymap(keymap);
+      app?.setStatusNotice("keybindings", built.warnings.length ? `Raccourcis : ${built.warnings.join(" · ")}` : undefined);
       for (const w of built.warnings) app?.notice("warning", `Raccourcis : ${w}`);
       if (built.warnings.length === 0) app?.notice("info", "Raccourcis rechargés.");
     });
@@ -4273,6 +4332,21 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       interactiveApp.commit(box(report.split("\n").map(line => text(line))));
     };
     showWelcome(false);
+    const organisationMessage = announcement(settings.get<string[]>("ui.announcements"));
+    if (organisationMessage) interactiveApp.commit(box([text(redactOutput(organisationMessage))]));
+    const footerCommand = settings.get<string | undefined>("ui.footerLine.command");
+    if (footerCommand && !offlineMinimal) {
+      const shell = posixShell ? { path: posixShell.path, kind: "posix" as const } : powerShell ? { path: powerShell.path, kind: "powershell" as const } : undefined;
+      if (shell) {
+        footer = new FooterLine({ redact: redactOutput, changed: () => interactiveApp.refresh(), warn: message => interactiveApp.notice("warning", message), run: async (data, signal) => {
+          assertPolicy(); const grant = await transcriptAccess.grant({ event: "footer_line", fields: {} });
+          try { return await runCommandHook({ type: "command", command: footerCommand }, JSON.stringify({ ...data, transcriptRef: grant.reference }), { cwd, env: env.childEnvironment(), shell, platform: system.platform, timeoutMs: settings.get<number>("ui.footerLine.timeoutMs"), outputMaxSize: 16_384, signal: AbortSignal.any([signal, controller.signal]) }); }
+          finally { grant.release(); }
+        } });
+        refreshFooter = () => footer?.update({ sessionId, model: { id: redactOutput(currentModel.id), name: redactOutput(currentModel.label) }, cwd: redactOutput(cwd), projectRoot: redactOutput(projectReal), version: identity.version, permissionMode: modeState.mode, outputStyle: "default", cost: ledger.snapshot, durationMs: turnDuration, context: meter.occupation(conversation.system, conversation.tools, pruning?.history() ?? conversation.messages, conversation.segment) });
+        refreshFooter(); (holder.finalizers ??= []).push(() => footer!.close());
+      } else interactiveApp.notice("warning", "Ligne d’état indisponible : aucun interpréteur disponible.");
+    }
     // SPEC-PER-003 EF-03: a launch in `unrestricted` asks for the warning first; refused, the session starts in `ask`.
     if (modeState.mode === "unrestricted" && !(await unrestrictedAccepted())) {
       modeState.set("ask");

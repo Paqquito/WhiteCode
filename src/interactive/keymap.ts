@@ -5,6 +5,7 @@
 // Supports: SPEC-AGT-017 (CA-02, customizable background transfer action), gap E-147.
 
 import { comboOf, type KeyEvent } from "../ui/keys";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 export type KeyContext = "dialog" | "search" | "list" | "input" | "app";
 
@@ -19,6 +20,11 @@ export interface ActionDef {
 }
 
 export const ACTIONS: readonly ActionDef[] = [
+  ...(buildFlag("ui_history_browser") ? [{ id: "history.browser", context: "input", label: "Ouvrir le sélecteur de l’historique", defaults: ["ctrl+shift+r", "ctrl+alt+r"] }] as readonly ActionDef[] : []),
+  ...(buildFlag("ui_fast_find") ? [
+    { id: "app.quickOpen", context: "app", label: "Ouvrir rapidement un fichier du projet", defaults: ["ctrl+shift+p", "super+shift+p", "ctrl+alt+p"] },
+    { id: "app.globalSearch", context: "app", label: "Rechercher dans les fichiers du projet", defaults: ["ctrl+shift+f", "super+shift+f", "ctrl+alt+f"] },
+  ] as readonly ActionDef[] : []),
   { id: "app.interrupt", context: "app", label: "Interrompre le tour, effacer la saisie, ou quitter (deux fois)", defaults: ["ctrl+c"], essential: true },
   { id: "app.exit", context: "app", label: "Quitter (deux fois, saisie vide)", defaults: ["ctrl+d"], essential: true },
   { id: "app.cancel", context: "app", label: "Interrompre le tour en cours", defaults: ["escape"], essential: true },
@@ -28,6 +34,7 @@ export const ACTIONS: readonly ActionDef[] = [
   { id: "task.background", context: "app", label: "Mettre la commande en cours en arrière-plan", defaults: ["alt+g"] }, // Supports: SPEC-AGT-017 CA-02, E-147.
   { id: "task.panel", context: "app", label: "Ouvrir le panneau des tâches de fond", defaults: ["alt+k"] }, // Supports: SPEC-IHM-028, E-148.
   { id: "input.submit", context: "input", label: "Envoyer le message (en file pendant un tour)", defaults: ["enter"] },
+  { id: "input.externalEditor", context: "input", label: "Modifier le brouillon dans l’éditeur externe", defaults: ["ctrl+g"] },
   { id: "input.newline", context: "input", label: "Insérer un saut de ligne", defaults: ["shift+enter", "alt+enter", "ctrl+j"] },
   { id: "input.left", context: "input", label: "Caractère précédent", defaults: ["left", "ctrl+b"] },
   { id: "input.right", context: "input", label: "Caractère suivant", defaults: ["right", "ctrl+f"] },
@@ -72,11 +79,11 @@ export const ACTIONS: readonly ActionDef[] = [
 const BY_ID: ReadonlyMap<string, ActionDef> = new Map(ACTIONS.map((a) => [a.id, a]));
 
 /** Combinations that some terminals do not send (§ 5.5): another combination of the same action is the fallback. */
-export const UNRELIABLE: ReadonlySet<string> = new Set(["shift+enter", "ctrl+enter", "ctrl+backspace", "ctrl+delete", "ctrl+home", "ctrl+end", "ctrl+_", "alt+left", "alt+right"]);
+export const UNRELIABLE: ReadonlySet<string> = new Set(["ctrl+shift+p", "ctrl+shift+f", "super+shift+p", "super+shift+f", "shift+enter", "ctrl+enter", "ctrl+backspace", "ctrl+delete", "ctrl+home", "ctrl+end", "ctrl+_", "alt+left", "alt+right"]);
 
 const NAMED_KEYS = new Set(["enter", "tab", "backspace", "delete", "escape", "up", "down", "left", "right", "home", "end", "pageup", "pagedown", "insert", "space", ...Array.from({ length: 12 }, (_, i) => `f${i + 1}`)]);
 const KEY_ALIASES: Readonly<Record<string, string>> = { esc: "escape", return: "enter", del: "delete", pgup: "pageup", pgdn: "pagedown" };
-const MODIFIER_ALIASES: Readonly<Record<string, string>> = { ctrl: "ctrl", control: "ctrl", alt: "alt", option: "alt", meta: "alt", shift: "shift" };
+const MODIFIER_ALIASES: Readonly<Record<string, string>> = { ctrl: "ctrl", control: "ctrl", alt: "alt", option: "alt", meta: "alt", shift: "shift", super: "super", cmd: "super", command: "super" };
 
 /** Canonical form of a combination (`ctrl+alt+shift+<key>`), or undefined when it cannot be read (ERR-02). */
 export function parseCombo(value: string): string | undefined {
@@ -96,8 +103,8 @@ export function parseCombo(value: string): string | undefined {
   if (!NAMED_KEYS.has(key) && !printable) return undefined;
   // A printable key with shift alone is the character itself: it cannot be bound apart.
   if (printable && mods.size === 0) return undefined;
-  if (printable && mods.has("shift") && !mods.has("ctrl") && !mods.has("alt")) return undefined;
-  return `${mods.has("ctrl") ? "ctrl+" : ""}${mods.has("alt") ? "alt+" : ""}${mods.has("shift") && !printable ? "shift+" : ""}${key}`;
+  if (printable && mods.has("shift") && !mods.has("ctrl") && !mods.has("alt") && !mods.has("super")) return undefined;
+  return `${mods.has("ctrl") ? "ctrl+" : ""}${mods.has("alt") ? "alt+" : ""}${mods.has("super") ? "super+" : ""}${mods.has("shift") ? "shift+" : ""}${key}`;
 }
 
 export interface Binding {
@@ -212,7 +219,7 @@ export function comboLabel(combo: string): string {
   const parts = combo.split("+");
   if (combo.endsWith("++")) parts.splice(parts.length - 2, 2, "+");
   const key = parts.pop()!;
-  const mods = parts.map((m) => (m === "ctrl" ? "Ctrl" : m === "alt" ? "Alt" : "Maj"));
+  const mods = parts.map((m) => (m === "ctrl" ? "Ctrl" : m === "alt" ? "Alt" : m === "super" ? "Commande" : "Maj"));
   const label = KEY_LABELS[key] ?? (key.length === 1 ? key.toUpperCase() : key.toUpperCase());
   return [...mods, label].join("+");
 }

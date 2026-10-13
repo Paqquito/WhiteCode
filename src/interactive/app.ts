@@ -9,6 +9,11 @@
 // Supports: SPEC-IHM-019 (CA-01/02, choices and preview), SPEC-IHM-020 (CA-02), SPEC-CMD-072 (CA-01), SPEC-IHM-005 (CA-07), SPEC-MOD-001 (CA-06), gap E-142.
 
 import type { Terminal } from "../platform/terminal";
+// Supports: SPEC-IHM-015/016/017/018/021/024/034, SPEC-IHM-005 CA-05, SPEC-INT-019, gap E-159.
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
+import { matchQuality } from "./completion";
+import type { FileMatch } from "./file-browser";
+import { highlight, DEFAULT_CODE_THEME } from "../ui/highlight";
 import type { ApprovalRequest, HumanAnswer, HumanApprovalChannel } from "../permissions/resolver";
 import type { EngineEvent } from "../engine/events";
 import { keywordRanges } from "../engine/max-keyword";
@@ -73,6 +78,7 @@ interface Choice {
 }
 
 interface PendingApproval {
+  deletionConfirmed?: boolean;
   readonly request: ApprovalRequest;
   readonly resolve: (a: HumanAnswer) => void;
   shownAt: number;
@@ -85,6 +91,11 @@ interface PendingApproval {
 export type ChoiceAnswer = { readonly kind: "options"; readonly labels: readonly string[] } | { readonly kind: "other"; readonly text: string } | { readonly kind: "cancelled" };
 
 interface ChoiceDialog {
+  readonly secondary?: (index: number) => Promise<void>;
+  readonly liveFilter?: boolean;
+  readonly filterDelayMs?: number;
+  readonly previewText?: (index: number) => { text: string; language: string } | undefined;
+  filterTimer?: ReturnType<typeof setTimeout>;
   // Supports: SPEC-SES-009 (CA-03, filtering without sending the query to the model), gap E-149.
   readonly interruptible?: boolean;
   readonly title: string;
@@ -122,9 +133,19 @@ interface Confirm {
 const RULE_SCOPES = ["session", "local", "project", "user"] as const;
 /** SPEC-CMD-023: the exit command, effective even during a turn. */
 export const EXIT_COMMAND = /^\s*\/(exit|quit)\s*$/;
+export function principalElement(input: unknown): string | undefined {
+  if (!input || typeof input !== "object") return;
+  for (const key of ["command", "path", "filePath", "pattern", "url", "query"]) { const value = (input as Record<string, unknown>)[key]; if (typeof value === "string") return value; }
+  return;
+}
 const SCOPE_LABEL: Readonly<Record<(typeof RULE_SCOPES)[number], string>> = { session: "session", local: "projet (local)", project: "projet (partagé)", user: "utilisateur" };
 
 export interface AppOptions {
+  readonly externalEditor?: (draft: string) => Promise<string | undefined>;
+  readonly messageActions?: { readonly enabled: boolean; readonly copy: (text: string) => Promise<boolean>; readonly edit?: (item: TranscriptItem) => Promise<void> };
+  readonly footer?: () => { readonly spans: readonly Span[]; readonly padding: number } | undefined;
+  readonly fileBrowser?: { readonly matches: (query: string, global: boolean) => FileMatch[]; readonly debounceMs: number; readonly open?: (match: FileMatch) => Promise<void> };
+  readonly historyBrowser?: boolean;
   readonly maxKeyword?: () => { keyword: string; supported: boolean } | undefined;
   // Supports: SPEC-IHM-036 (CA-01, pending decision), gap E-150.
   readonly onApprovalWaiting?: (waiting: boolean) => void;
@@ -187,6 +208,7 @@ export class InteractiveApp {
   #modal: ModalEngine | undefined;
   /** Items of the transcript, for the full-screen view (SPEC-IHM-006 § 5.2), in time order (RG-02). */
   readonly #items: TranscriptItem[] = [];
+  #nextItemId = 0;
   #turnNumber = 0;
   #thinking = "";
   #transcriptView: TranscriptView | undefined;
@@ -198,6 +220,8 @@ export class InteractiveApp {
   readonly #stash: string[];
   readonly #approvals: PendingApproval[] = [];
   #confirm: Confirm | undefined;
+  #externalEditing = false;
+  readonly #statusNotices = new Map<string, string>();
   #secret: { title: string; value: string; resolve: (value: string | undefined) => void } | undefined;
   #choice: ChoiceDialog | undefined;
   #capture: Capture | undefined;
@@ -290,14 +314,62 @@ export class InteractiveApp {
   }
 
   /** An item of the transcript; its sensitive values are masked as in the flow (EF-06 of SPEC-IHM-006). */
-  record(kind: ItemKind, title: string, body: string): void {
+  record(kind: ItemKind, title: string, body: string, metadata: { primary?: string; recordId?: string; selectable?: boolean } = {}): void {
     if (kind === "user") this.#turnNumber++;
-    this.#items.push({ id: this.#items.length + 1, kind, title: maskSecrets(title), body: maskSecrets(body), at: this.#now, turn: this.#turnNumber });
+    this.#items.push({ id: ++this.#nextItemId, kind, title: maskSecrets(title), body: maskSecrets(body), at: this.#now, turn: this.#turnNumber, ...metadata, primary: metadata.primary === undefined ? undefined : maskSecrets(metadata.primary) });
     this.#transcriptView?.refresh(); // FA-01: the items of the session in progress come at the bottom
   }
 
   get transcriptItems(): readonly TranscriptItem[] {
     return this.#items;
+  }
+  markCompacted(): void { for (let i = 0; i < this.#items.length; i++) this.#items[i] = { ...this.#items[i]!, selectable: false }; }
+
+  /** Supports: SPEC-IHM-017. Called only after the archived branch has been committed. */
+  restoreUserDraft(item: TranscriptItem, draft: string): void {
+    const index = this.#items.findIndex(candidate => candidate.id === item.id);
+    if (index >= 0) this.#items.splice(index);
+    this.#editor.set(draft); this.#saveState(); this.#redraw();
+  }
+  /** Implements: SPEC-IHM-024 CA-01; these notices are removed by resolution, not elapsed time. */
+  setStatusNotice(key: string, message: string | undefined): void { if (message) this.#statusNotices.set(key, maskSecrets(message)); else this.#statusNotices.delete(key); this.#redraw(); }
+
+  async editDraft(): Promise<void> {
+    if (!this.#o.externalEditor || this.humanDialogActive || this.#capture || this.#externalEditing) return;
+    await this.#withEditor(async () => { const value = await this.#o.externalEditor!(this.#editor.text); if (value !== undefined) this.#editor.set(value); });
+  }
+  async #withEditor(action: () => Promise<void>): Promise<void> {
+    if (this.#externalEditing) return;
+    this.#externalEditing = true;
+    this.#session?.screen.suspend(); this.#o.terminal.setRawMode(false);
+    try { await action(); }
+    catch (error) { this.notice("warning", `Éditeur externe : ${(error as Error).message}. Brouillon conservé.`); }
+    finally { this.#externalEditing = false; if (!this.#exiting) { this.#o.terminal.setRawMode(true); this.#session?.screen.resume(); this.#saveState(); this.#redraw(); } }
+  }
+
+  /** Implements: SPEC-IHM-015/018. A local selector never sends its inserted reference. */
+  async openFiles(global = false): Promise<void> {
+    if (!buildFlag("ui_fast_find")) return;
+    const source = this.#o.fileBrowser; if (!source || this.humanDialogActive || this.#capture) return;
+    let matches: FileMatch[] = [];
+    const label = (match: FileMatch) => `${match.path}${match.line ? `:${match.line}` : ""}`;
+    const filter = (query: string) => { matches = source.matches(query, global); return matches.map(match => ({ label: label(match) })); };
+    const selected = await this.choose(global ? "Recherche globale" : "Ouverture rapide", filter(""), { interruptible: true, other: false, liveFilter: true, filter, filterDelayMs: global ? source.debounceMs : 0, previewText: index => matches[index] ? { text: matches[index]!.preview, language: matches[index]!.language } : undefined, secondary: source.open ? async index => { const match = matches[index]; if (match) await this.#withEditor(() => source.open!(match)); } : undefined });
+    if (selected.kind !== "options") return;
+    const match = matches.find(match => label(match) === selected.labels[0]); if (!match) return;
+    const path = /\s/.test(match.path) ? JSON.stringify(match.path) : match.path;
+    this.#editor.insert(`${this.#editor.text && !/\s$/.test(this.#editor.text.slice(0, this.#editor.caret)) ? " " : ""}@${path}${match.line ? `:${match.line}` : ""} `);
+    this.#saveState(); this.#redraw();
+  }
+
+  /** Implements: SPEC-IHM-016. Dates and one-line previews; cancellation preserves the draft. */
+  async openHistory(): Promise<void> {
+    if (!buildFlag("ui_history_browser")) return;
+    const entries = this.#o.history?.entries() ?? [], initial = this.#editor.text.slice(0, 64);
+    const label = (index: number) => `${new Date(entries[index]!.at).toLocaleString("fr-FR")} — ${entries[index]!.text.replace(/\s+/g, " ").slice(0, 100)} [${index + 1}]`;
+    const filter = (query: string) => entries.flatMap((entry, index) => matchQuality(query, entry.text.slice(0, 500), true) === undefined ? [] : [{ label: label(index) }]);
+    const selected = await this.choose("Filtrer mes saisies", filter(initial), { interruptible: true, other: false, liveFilter: true, initialQuery: initial, filter });
+    if (selected.kind === "options") { const index = entries.findIndex((_, index) => label(index) === selected.labels[0]); if (index >= 0) { this.#editor.set(entries[index]!.text); this.#saveState(); this.#redraw(); } }
   }
 
   get transcriptOpen(): boolean {
@@ -316,6 +388,17 @@ export class InteractiveApp {
       settings,
       state: this.#viewState,
       title: settings.title,
+      actions: this.#o.messageActions ? { ...this.#o.messageActions, copy: async source => {
+        let success = false; try { success = await this.#o.messageActions!.copy(source); } catch {}
+        if (!success) { this.#transcriptView?.close(); this.notice("warning", "Copie indisponible : texte à copier ci-dessous."); this.commit(box([text(source)], { padding: { left: 2 } })); }
+        return success;
+      }, edit: async item => {
+        if (this.running || this.humanDialogActive || !this.#o.messageActions?.edit) { this.notice("warning", "Attendez la fin du tour pour reprendre un message."); return; }
+        if (await this.confirm("Reprendre la conversation avant ce message et le modifier ? Les échanges suivants restent dans l’archive.", "reprendre", "annuler")) {
+          try { await this.#o.messageActions.edit(item); }
+          catch (error) { this.notice("warning", (error as Error).message); }
+        }
+      } } : undefined,
       markdown: this.#view.markdown,
       theme: (lines, width) => themeLines(lines, this.#theme, width, this.#o.capabilities.colors),
       onClose: () => {
@@ -401,6 +484,7 @@ export class InteractiveApp {
 
   /** Restores the terminal; idempotent. */
   stop(): void {
+    this.#exiting = true;
     if (this.#cursorShape) {
       this.#o.terminal.write("\u001b[0 q"); // the shape of the cursor found at start
       this.#cursorShape = "";
@@ -510,7 +594,7 @@ export class InteractiveApp {
         const attached = texts.filter((t) => t.startsWith("<attached-file "));
         const content = texts.filter((t) => !t.startsWith("<attached-file ")).join("\n");
         if (content) this.commit(userView(content, this.#view));
-        this.record("user", "", [content, ...attached.map((a) => `[pièce jointe ${/path="([^"]*)"/.exec(a)?.[1] ?? "?"}]`)].filter(Boolean).join("\n"));
+        this.record("user", "", [content, ...attached.map((a) => `[pièce jointe ${/path="([^"]*)"/.exec(a)?.[1] ?? "?"}]`)].filter(Boolean).join("\n"), { recordId: e.recordId });
         // SPEC-IHM-010 § 10: an attachment is shown by a compact line, its content went to the model.
         for (const a of attached) {
           const path = /path="([^"]*)"/.exec(a)?.[1] ?? "?";
@@ -545,7 +629,7 @@ export class InteractiveApp {
         this.#callNames.set(e.callId, e.name);
         this.#activity = `${e.name}…`;
         this.commit(toolCallView(e.name, this.#o.describeCall(e.name, e.input), this.#view));
-        this.record("tool", `${e.name}  ${this.#o.describeCall(e.name, e.input)}`, JSON.stringify(e.input ?? {}, null, 2));
+        this.record("tool", `${e.name}  ${this.#o.describeCall(e.name, e.input)}`, JSON.stringify(e.input ?? {}, null, 2), { primary: principalElement(e.input) });
         break;
       case "tool_result":
         // EF-06 of SPEC-IHM-006: a sensitive value is masked in the flow as in the view.
@@ -561,6 +645,7 @@ export class InteractiveApp {
         this.record("permission", e.decision === "allow" ? "autorisée" : "refusée", e.reason);
         break;
       case "compacted":
+        this.markCompacted();
         this.notice("info", `Contexte compacté : ${e.tokensBefore} → ${e.tokensAfter} jetons.`);
         break;
       case "warning":
@@ -669,6 +754,7 @@ export class InteractiveApp {
   };
 
   #choices(p: PendingApproval): Choice[] {
+    if (p.deletionConfirmed) return [{ label: "Confirmer la suppression", answer: () => ({ answer: "yes" }) }, { label: "Non", answer: () => ({ answer: "no" }) }];
     const rule = p.request.suggestions[0];
     const scope = RULE_SCOPES[p.scope]!;
     return [
@@ -686,6 +772,7 @@ export class InteractiveApp {
     const t = tone(danger ? "error" : "warning", this.#view.unicode);
     const count = this.#approvals.length > 1 ? ` (1/${this.#approvals.length})` : "";
     const rows: Node[] = [text([{ text: r.toolName, style: { bold: true } }, { text: ` : ${r.summary}` }])];
+    if (this.#isDeletion(p)) rows.unshift(text(p.deletionConfirmed ? `Confirmer la suppression : ${r.change!.path}` : `Suppression : ${r.change!.path}`, { overflow: "clip" }));
     if (r.requester) rows.push(text([{ text: `Demandé par : ${r.requester}`, style: { dim: true } }])); // EF-04
     if (r.change && this.#render) {
       // SPEC-IHM-005 EF-01: the change presented as a difference before the decision.
@@ -728,6 +815,7 @@ export class InteractiveApp {
     const pick = (i: number) => {
       const a = choices[i]!.answer();
       if (a === "explain") p.explaining = new Editor(2_000);
+      else if (a.answer.startsWith("yes") && this.#isDeletion(p) && !p.deletionConfirmed) { p.deletionConfirmed = true; p.selected = 1; p.shownAt = this.#now; }
       else p.resolve(a);
     };
     if (k.text && /^[1-9]$/.test(k.text) && Number(k.text) <= choices.length) pick(Number(k.text) - 1); // EF-03: one key
@@ -740,16 +828,20 @@ export class InteractiveApp {
   }
 
   // ---- Confirmations ----------------------------------------------------------------------------------------------
+  #isDeletion(p: PendingApproval): boolean {
+    const change = p.request.change;
+    return !!change && (change.before !== undefined || change.binary?.before !== undefined) && change.after === undefined && change.binary?.after === undefined;
+  }
 
   /** A question with two answers, in a fixed panel (exit with work in progress, queue after an interruption). */
   /**
    * A question with options, entirely usable from the keyboard (EF-04 of SPEC-OUT-033): arrows, numbers, space to mark
    * with several answers, Enter to validate, Échap to give no answer; the last option is a free answer.
    */
-  choose(title: string, options: ReadonlyArray<{ readonly label: string; readonly description?: string; readonly disabledReason?: string }>, o: { readonly multiple?: boolean; readonly header?: string; readonly other?: boolean; readonly selected?: number; readonly preview?: (index: number) => void; readonly interruptible?: boolean; readonly signal?: AbortSignal; readonly filter?: (query: string) => ChoiceDialog["options"] } = {}): Promise<ChoiceAnswer> {
+  choose(title: string, options: ReadonlyArray<{ readonly label: string; readonly description?: string; readonly disabledReason?: string }>, o: { readonly multiple?: boolean; readonly header?: string; readonly other?: boolean; readonly selected?: number; readonly preview?: (index: number) => void; readonly interruptible?: boolean; readonly signal?: AbortSignal; readonly filter?: (query: string) => ChoiceDialog["options"]; readonly liveFilter?: boolean; readonly initialQuery?: string; readonly filterDelayMs?: number; readonly previewText?: ChoiceDialog["previewText"]; readonly secondary?: ChoiceDialog["secondary"] } = {}): Promise<ChoiceAnswer> {
     if (o.interruptible && this.#approvals.length > 0) return Promise.resolve({ kind: "cancelled" });
     if (this.#exiting || o.signal?.aborted) return Promise.resolve({ kind: "cancelled" });
-    if (options.length === 0 && o.other === false) return Promise.resolve({ kind: "cancelled" });
+    if (options.length === 0 && o.other === false && !o.filter) return Promise.resolve({ kind: "cancelled" });
     return new Promise((resolve) => {
       const abort = () => dialog.resolve({ kind: "cancelled" });
       const dialog: ChoiceDialog = {
@@ -758,7 +850,8 @@ export class InteractiveApp {
         ...(o.header ? { header: o.header } : {}),
         options,
         filter: o.filter,
-        query: "",
+        liveFilter: o.liveFilter, filterDelayMs: o.filterDelayMs, previewText: o.previewText, secondary: o.secondary,
+        query: o.initialQuery ?? "",
         filtering: false,
         multiple: o.multiple === true,
         other: o.other !== false,
@@ -767,6 +860,7 @@ export class InteractiveApp {
         marked: new Set(),
         shownAt: this.#now,
         resolve: (answer) => {
+          if (dialog.filterTimer) clearTimeout(dialog.filterTimer);
           o.signal?.removeEventListener("abort", abort);
           if (this.#choice === dialog) this.#choice = undefined;
           if (answer.kind !== "other" || answer.text !== "\u0000") {
@@ -804,6 +898,14 @@ export class InteractiveApp {
 
   #choiceKey(c: ChoiceDialog, e: KeyEvent, action: string | undefined): void {
     if (this.#now - c.shownAt < this.#o.settings.dialogGuardMs) return;
+    if (e.ctrl && e.name === "g" && c.secondary && c.options[c.selected]) { c.resolve({ kind: "cancelled" }); void c.secondary(c.selected); return; }
+    if (c.liveFilter && c.filter && (e.name === "backspace" || !!e.text && !e.ctrl && !e.alt)) {
+      c.query = e.name === "backspace" ? [...c.query].slice(0, -1).join("") : (c.query + e.text).slice(0, 64);
+      if (c.filterTimer) clearTimeout(c.filterTimer);
+      const apply = () => { if (this.#choice !== c) return; c.filterTimer = undefined; c.options = c.filter!(c.query); c.selected = 0; this.#redraw(); };
+      if (c.filterDelayMs) c.filterTimer = setTimeout(apply, c.filterDelayMs); else apply();
+      this.#redraw(); return;
+    }
     if (c.filter && (c.filtering || e.text === "#")) {
       if (!c.filtering && e.text === "#") c.query = "";
       if (e.name === "escape") return c.resolve({ kind: "cancelled" });
@@ -852,17 +954,20 @@ export class InteractiveApp {
       const description = [c.options[i]?.description, c.options[i]?.disabledReason ? `verrouillé : ${c.options[i]!.disabledReason}` : undefined].filter(Boolean).join(" · ");
       return text([{ text: `${i === c.selected ? "❯" : " "} ${i + 1}. ${box}`, style: i === c.selected ? { bold: true } : {} }, { text: label, style: i === c.selected ? { bold: true } : {} }, ...(description ? [{ text: ` — ${description}`, style: { dim: true } }] : [])]);
     });
-    if (labels.length === 0) lines.push(text("Aucune session correspondante."));
+    if (labels.length === 0) lines.push(text(c.liveFilter ? "Aucune correspondance." : "Aucune session correspondante."));
     const hint = c.multiple ? "↑↓ · Espace : cocher · Entrée : valider · Échap : sans réponse" : "↑↓ ou chiffre · Entrée : choisir · Échap : sans réponse";
     return { kind: "render", render: (width, ctx) => {
       // Keep the selected entry visible; descriptions may wrap and consume more than one row.
-      const room = Math.max(1, this.#o.terminal.rows - this.#o.settings.inputMinHeight - 8 - (c.filter ? 1 : 0));
+      const preview = c.previewText?.(c.selected);
+      const previewLines = preview ? layoutNode(text(highlight(maskSecrets(preview.text), preview.language, this.#render?.markdown.highlight ?? { enabled: true, maxBytes: 262_144, timeoutMs: 20, theme: DEFAULT_CODE_THEME }), { overflow: "clip" }), Math.max(1, width - 4), ctx).lines.slice(0, 6) : [];
+      const room = Math.max(1, this.#o.terminal.rows - this.#o.settings.inputMinHeight - 8 - (c.filter ? 1 : 0) - (previewLines.length ? previewLines.length + 1 : 0));
       const heights = lines.map((line) => layoutNode(line, Math.max(1, width - 4), ctx).lines.length);
       let start = c.selected, end = start + 1, used = heights[start] ?? 1;
       while (end < lines.length && used + heights[end]! <= room) used += heights[end++]!;
       while (start > 0 && used + heights[start - 1]! <= room) used += heights[--start]!;
       const range = start > 0 || end < lines.length ? ` · options ${start + 1}–${end}/${lines.length}` : "";
-      return layoutNode(box([text([...(c.header ? [{ text: `[${c.header}] `, style: { dim: true } }] : []), { text: c.title + range, style: { bold: true } }]), ...(c.filter ? [text(`Filtre : ${c.query || "(aucun)"}${c.filtering ? " — Entrée : appliquer" : " — # : étiquette"}`)] : []), ...lines.slice(start, end), text([{ text: hint, style: { dim: true } }])], { border: { style: t.style }, padding: { left: 1, right: 1 } }), width, ctx);
+      const previewNode: Node | undefined = previewLines.length ? { kind: "render", render: () => ({ lines: previewLines }) } : undefined;
+      return layoutNode(box([text([...(c.header ? [{ text: `[${c.header}] `, style: { dim: true } }] : []), { text: c.title + range, style: { bold: true } }]), ...(c.filter ? [text(`Filtre : ${c.query || "(aucun)"}${c.liveFilter ? "" : c.filtering ? " — Entrée : appliquer" : " — # : étiquette"}`)] : []), ...lines.slice(start, end), ...(previewNode ? [text("Aperçu :"), previewNode] : []), text([{ text: hint, style: { dim: true } }])], { border: { style: t.style }, padding: { left: 1, right: 1 } }), width, ctx);
     } };
   }
 
@@ -962,12 +1067,15 @@ export class InteractiveApp {
   // ---- Keys ---------------------------------------------------------------------------------------------------------
 
   #input(data: string): void {
+    if (this.#externalEditing) return;
     this.#lastInteractionAt = Date.now();
     if (this.#transcriptView) {
       // RG-01 of SPEC-IHM-006: the view is read-only; Ctrl+C closes it without interrupting the session.
       const events = this.#keys.feed(data);
       if (data === "\u001b") events.push(...this.#keys.flush());
       for (const e of events) {
+        const global = e.kind === "key" ? this.#keymap.action(e, ["app"]) : undefined;
+        if (!this.#transcriptView.modalActive && (global === "app.quickOpen" || global === "app.globalSearch")) { this.#transcriptView.close(); this.#event(e); continue; }
         if (e.kind === "key" && e.ctrl && e.name === "c") this.#transcriptView?.close();
         else this.#transcriptView?.key(e);
       }
@@ -1176,6 +1284,7 @@ export class InteractiveApp {
   #inputAction(e: KeyEvent, action: string | undefined): void {
     const ed = this.#editor;
     switch (action) {
+      case "input.externalEditor": void this.editDraft(); return;
       case "app.exit":
         if (ed.isEmpty) this.#armedExit("ctrl+d");
         else ed.deleteForward();
@@ -1222,6 +1331,13 @@ export class InteractiveApp {
         return;
       case "history.search":
         this.#assist.startSearch();
+        return;
+      case "history.browser":
+        if (this.#o.historyBrowser) void this.openHistory();
+        return;
+      case "app.quickOpen":
+      case "app.globalSearch":
+        if (!this.humanDialogActive && !this.#capture) void this.openFiles(action === "app.globalSearch");
         return;
       case "view.transcript":
         this.openTranscript();
@@ -1366,6 +1482,8 @@ export class InteractiveApp {
       queueMicrotask(() => this.notice("warning", "Terminal étroit : affichage simplifié.")); // ERR-02 of SPEC-MOD-001
     }
     const panels: Node[] = [];
+    const notices = [...this.#statusNotices.values()];
+    if (notices.length) panels.push(box([text(`Avis : ${notices.slice(0, 3).join(" · ")}${notices.length > 3 ? ` · ${notices.length - 3} autres` : ""}`, { overflow: "clip" })], { padding: { left: 2 } }));
     const approval = this.#approvals[0];
     if (approval) panels.push(this.#dialogView(approval));
     if (this.#confirm) panels.push(this.#confirmView(this.#confirm));
@@ -1479,6 +1597,8 @@ export class InteractiveApp {
 
   #statusNode(): Node {
     const s = this.#o.status();
+    const custom = this.#o.footer?.();
+    if (custom) return text([{ text: `mode : ${s.mode}${this.#queue.length ? ` · ${this.#queue.length} en attente` : ""}${s.scheduled ? ` · planifié : ${s.scheduled}` : ""} · ${" ".repeat(custom.padding)}`, style: { dim: true } }, ...custom.spans, { text: " ".repeat(custom.padding) }], { overflow: "clip" });
     const parts: Span[] = [{ text: `mode : ${s.mode}` }, { text: ` · ${s.model}` }];
     if (s.scheduled) parts.push({ text: ` · planifié : ${s.scheduled}` });
     // EF-05 of SPEC-IHM-011: the number of waiting messages is always visible when not zero.

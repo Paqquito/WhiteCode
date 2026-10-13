@@ -50,6 +50,9 @@ export class Conversation {
     this.#messages.push({ role: "user", parts: [...parts] });
   }
 
+  /** Supports: SPEC-IHM-017 CA-02. A confirmed branch opens a new prefix epoch. */
+  branch(messages: readonly HistoryMessage[]): void { this.#messages.splice(0, this.#messages.length, ...messages); this.#segment++; }
+
   appendAssistant(message: Extract<HistoryMessage, { role: "assistant" }>): void {
     this.#messages.push(message);
   }

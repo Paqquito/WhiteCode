@@ -199,7 +199,7 @@ describe("SPEC-IHM-014 key bindings", () => {
 
   test("SPEC-IHM-014/CA-05 — two actions on the same combination in a context: a warning, and the first declared applies", async () => {
     const both = buildKeymap({ "draft.stash": "ctrl+g", "draft.restore": "ctrl+g" }, { strictConflicts: false });
-    expect(both.warnings).toContain("Deux actions partagent la même combinaison : ctrl+g (draft.stash, draft.restore) ; draft.stash s'applique.");
+    expect(both.warnings).toContain("Deux actions partagent la même combinaison : ctrl+g (draft.stash, draft.restore, input.externalEditor) ; draft.stash s'applique.");
     expect(both.keymap.effective("draft.stash")).toEqual(["ctrl+g"]);
     expect(both.keymap.effective("draft.restore")).toEqual([]);
     const strict = buildKeymap({ "draft.stash": "ctrl+k" }, { strictConflicts: true });

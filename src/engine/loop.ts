@@ -203,7 +203,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
       finalText,
       model: lastModel,
     };
-    persist("system", { event: "turn_end", stopCause, message, iterations, usage: result.usage, cost: result.cost });
+    persist("system", { event: "turn_end", stopCause, message, iterations, usage: result.usage, cost: result.cost, durationMs: result.durationMs });
     deps.transcript?.flush();
     deps.emit({ type: "turn_completed", result });
     return result;
@@ -228,7 +228,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
   conv.appendUser(content);
   const userRecord = persist("user", { content });
   deps.onUserMessage?.(userRecord); // SPEC-SES-006 EF-02: a checkpoint per user message
-  deps.emit({ type: "user_message", content });
+  deps.emit({ type: "user_message", content, ...(userRecord ? { recordId: userRecord } : {}) });
   deps.executor.loopGuard?.newTurn(); // a user message resets the series (SPEC-MOT-046 § 5.1)
 
   for (;;) {
