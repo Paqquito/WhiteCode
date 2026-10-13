@@ -160,7 +160,10 @@ import { purgeExpiredSessions } from "../session/maintenance";
 import { correctionMessage, extractStructured, loadOutputSchema, schemaInstruction } from "./structured";
 import { InteractiveApp } from "../interactive/app";
 import { InputStateWriter, inputStatePath, readInputState, sessionDirOf } from "../interactive/input-state";
-import { openBackgroundPanel } from "../interactive/background-panel";
+import { openTaskPanel } from "../interactive/schedule-panel";
+import { Scheduler } from "../schedule/engine";
+import { scheduleTools } from "../tools/schedule";
+// Supports: SPEC-PLA-001/005, SPEC-OUT-031, gap E-152.
 import { replayHistory } from "../interactive/replay";
 import { runInteractiveLoop } from "../interactive/session";
 import { literalTriggers } from "../interactive/triggers";
@@ -255,6 +258,8 @@ export interface RunDependencies {
   readonly now?: () => Date;
   /** Monotonic clock used by optional local performance diagnostics. */
   readonly performanceNow?: () => number;
+  readonly scheduleNow?: () => number;
+  readonly scheduleRandom?: () => number;
   /** Platform clipboard port; a terminal sequence is used when no local clipboard is available. */
   readonly copyText?: (text: string) => Promise<boolean>;
   readonly onEvent?: (event: EngineEvent) => void;
@@ -1050,7 +1055,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const toolsetOption = opt("toolset");
   const toolsetNames = typeof toolsetOption === "string" ? (toolsetOption.trim() === "" ? [] : splitList(toolsetOption)) : undefined;
   // `spawn_agent` is a tool of the session, added after the registry is built: it is listed like the others (SPEC-OUT-001).
-  const toolset = toolsetNames?.filter((n) => !["spawn_agent", "code_intelligence", "list_connector_resources", "read_connector_resource"].includes(n));
+  const toolset = toolsetNames?.filter((n) => !["spawn_agent", "code_intelligence", "list_connector_resources", "read_connector_resource", "schedule_create", "schedule_list", "schedule_delete"].includes(n));
   const agentsInToolset = toolsetNames === undefined || toolsetNames.includes("spawn_agent") || (toolsetNames.length === 1 && toolsetNames[0] === "default");
   let registry: ToolRegistry;
   try {
@@ -1940,6 +1945,26 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const shellObservations: Reminder[] = [];
   // The interactive application shows the events itself (SPEC-MOD-001 § 5.2 step 5).
   let app: InteractiveApp | undefined;
+  const plannedQueue: string[] = [];
+  const schedule = buildFlag("scheduled_triggers") && settings.get<boolean>("schedule.enabled") && trust.trusted && !serve ? new Scheduler({
+    folder: join(locations.projectRoot, identity.get("PROJECT_DIR")),
+    lock: join(locations.configDir, "schedule-locks", createHash("sha256").update(comparablePath(locations.projectRoot, system.platform)).digest("hex") + ".lock"),
+    now: deps.scheduleNow, random: deps.scheduleRandom,
+    maxActive: () => liveSettings.get<number>("schedule.maxActive"), maxAgeDays: () => liveSettings.get<number>("schedule.maxAgeDays"),
+    warn: message => { if (app) app.notice("info", message); else err(`Planification : ${message}`); }, changed: () => app?.refresh(),
+    missed: async trigger => app && !app.running ? app.confirm(`Consigne planifiée unique manquée : ${redactOutput(trigger.prompt).slice(0, 500)}. L'exécuter maintenant ?`, "exécuter", "abandonner", true) : undefined,
+    submit: trigger => {
+      if (controller.signal.aborted) return false;
+      const content = `[Scheduled prompt ${trigger.id}; ordinary execution permissions apply]\n${trigger.prompt}`;
+      let accepted: boolean;
+      if (app) accepted = app.enqueueScheduled(content);
+      else if (control) accepted = control.enqueueScheduled(content);
+      else { accepted = plannedQueue.length < 50; if (accepted) plannedQueue.push(content); }
+      if (accepted) { transcript?.append("system", { event: "scheduled_prompt", id: trigger.id, due: trigger.nextAt }); if (app) app.notice("info", `Consigne planifiée : ${trigger.id}`); else err(`Consigne planifiée : ${trigger.id}`); }
+      return accepted;
+    },
+  }) : undefined;
+  if (schedule) { for (const tool of scheduleTools(schedule)) if (inToolset(tool.name)) registry.addStatic(tool); holder.cleanups.push(() => schedule.close()); }
   background.onChange(() => app?.refresh());
   const permissionDenials = new PermissionDenials(() => ({ consecutive: liveSettings.get<number>("permissions.denials.maxConsecutive"), total: liveSettings.get<number>("permissions.denials.maxTotal") }));
   const toolDecisions = new Map<string, Extract<EngineEvent, { type: "permission" }>>();
@@ -2282,7 +2307,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         exitDoublePressMs: settings.get<number>("ui.exitDoublePressWindow"),
         dialogGuardMs: DIALOG_GUARD_MS,
       },
-      status: () => ({ mode: modeState.mode, model: minimal ? `${currentModel.id} · session minimale` : currentModel.id }),
+      status: () => ({ mode: modeState.mode, model: minimal ? `${currentModel.id} · session minimale` : currentModel.id, ...(schedule?.list().length ? { scheduled: schedule.list().sort((a, b) => a.nextAt - b.nextAt)[0]!.nextLocal } : {}) }),
       reducedMotion: settings.get<boolean>("ui.reducedMotion"),
       // SPEC-PER-003 EF-03, SPEC-PER-017 § 5.3 step 3: `unrestricted` is entered the first time only after its warning is accepted.
       cycleMode: () =>
@@ -2296,7 +2321,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       backgroundTasks: () => background.running.length,
       canBackground: () => background.hasForeground,
       backgroundCurrent: () => background.detachForeground(),
-      openBackgroundTasks: () => openBackgroundPanel(app!, background),
+      openBackgroundTasks: () => openTaskPanel(app!, background, schedule),
       backgroundActivity: () => background.running.filter((task) => task.kind === "agent"),
       describeCall: (name, input) => {
         try {
@@ -2364,7 +2389,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       refreshConnectorTools();
     },
     fallback,
-    takeQueued: () => (app ? app.takeForSafePoint().flatMap(typedParts) : []),
+    takeQueued: () => app ? app.takeForSafePoint().flatMap(typedParts) : plannedQueue.splice(0).map(text => ({ type: "text" as const, text })),
     conversationId: sessionId,
     onUserMessage: (recordId) => {
       if (recordId !== undefined) fileHistory.checkpoint(recordId);
@@ -2670,6 +2695,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
 
   // SPEC-MOD-010 EF-05, CA-06: the journal of the start-up, shown with `engine.startup.verboseLog`.
   const reportPhases = () => {
+    schedule?.start();
     for (const sample of phaseSamples.splice(0)) diagnostics?.record(sample);
     diagnostics?.flush();
     debug.log("startup", "phases", Object.fromEntries(phases));
@@ -3764,7 +3790,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
       }
       case "background-tasks": {
-        if (app) { await openBackgroundPanel(app, background); return { silent: true }; }
+        if (app) { await openTaskPanel(app, background, schedule); return { silent: true }; }
         // SPEC-CMD-070 CA-01: the active tasks are listed, with their state.
         const tasks = background.tasks;
         const lines = tasks.length === 0 ? ["Aucune tâche de fond."] : tasks.map((t) => `${t.id}  ${t.status === "running" ? "en cours" : t.status}  ${t.description}${t.status === "running" ? ` (${Math.round((Date.now() - t.startedAt) / 1000)} s)` : ""}${t.activity ? ` · ${t.activity} · ${t.toolCalls ?? 0} outils · ${t.tokens ?? 0} jetons` : ""}`);

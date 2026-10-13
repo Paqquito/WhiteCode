@@ -52,6 +52,9 @@ const enumOf = (values: readonly string[]) => Type.Union(values.map((v) => Type.
 const mode = () => enumOf(PERMISSION_MODES);
 
 export const SETTINGS: readonly SettingDef[] = [
+  { key: "schedule.enabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-PLA-001" },
+  { key: "schedule.maxAgeDays", schema: int(1, 3650), default: 7, scopes: [U], owner: "SPEC-PLA-001" },
+  { key: "schedule.maxActive", schema: int(1, 500), default: 50, scopes: [U, G], owner: "SPEC-OUT-031" },
   // Supports: SPEC-CAD-002 (CA-13, EF-42), gap E-145; administration-only startup URL overrides.
   { key: "identity.services", schema: Type.Object(Object.fromEntries(OVERRIDABLE_SERVICE_URLS.map((name) => [name, Type.Optional(str())])), { additionalProperties: false }), default: {}, scopes: [G], owner: "SPEC-CAD-002" },
   { key: "ui.reducedMotion", schema: bool(), default: false, scopes: [U], owner: "SPEC-IHM-038" },

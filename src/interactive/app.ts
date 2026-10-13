@@ -131,7 +131,7 @@ export interface AppOptions {
   readonly capabilities: Capabilities;
   readonly settings: AppSettings;
   /** Mode, model and other facts of the status line. */
-  readonly status: () => { readonly mode: string; readonly model: string };
+  readonly status: () => { readonly mode: string; readonly model: string; readonly scheduled?: string };
   readonly cycleMode?: () => void;
   /** Background tasks still running, stopped by the exit (SPEC-CMD-023 CA-01). */
   readonly backgroundTasks?: () => number;
@@ -448,6 +448,14 @@ export class InteractiveApp {
     const next = this.#queue.shift();
     if (next !== undefined) this.#saveState();
     return next;
+  }
+
+  /** Supports: SPEC-PLA-005 CA-01: automatic input preserves the human draft and ordinary turn permissions. */
+  enqueueScheduled(content: string): boolean {
+    if (this.#queue.length >= this.#o.settings.queueMax) return false;
+    if (!this.running && this.#waiting && !this.#capture) { const resolve = this.#waiting; this.#waiting = undefined; resolve({ kind: "message", text: content, literal: true }); }
+    else this.#queue.push(content);
+    this.#redraw(); return true;
   }
 
   /** Recovery of one interrupted message does not release the saved queue (gap E-132). */
@@ -1444,6 +1452,7 @@ export class InteractiveApp {
   #statusNode(): Node {
     const s = this.#o.status();
     const parts: Span[] = [{ text: `mode : ${s.mode}` }, { text: ` · ${s.model}` }];
+    if (s.scheduled) parts.push({ text: ` · planifié : ${s.scheduled}` });
     // EF-05 of SPEC-IHM-011: the number of waiting messages is always visible when not zero.
     if (this.#queue.length > 0) parts.push({ text: ` · ${this.#queue.length} message${this.#queue.length > 1 ? "s" : ""} en attente`, style: { bold: true } });
     if (this.#stash.length > 0) parts.push({ text: ` · ${this.#stash.length} brouillon${this.#stash.length > 1 ? "s" : ""} de côté` });

@@ -27,6 +27,8 @@ function marked(mark: string, markStyle: Style | undefined, body: readonly Span[
 }
 
 export function userView(content: string, v: ViewContext): Node {
+  // Supports: SPEC-PLA-005 CA-01: the same label is reconstructed when replaying persisted scheduled input.
+  content = content.replace(/^\[Scheduled prompt [a-z0-9-]+; ordinary execution permissions apply\]\n/i, "[planifié]\n");
   return marked(marks(v.unicode).user, { dim: true }, [{ text: content, style: { bold: true } }]);
 }
 
