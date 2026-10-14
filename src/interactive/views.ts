@@ -5,6 +5,8 @@
 import { box, text, type Node } from "../ui/layout";
 import { tone, type Style, type Tone, type UnicodeLevel } from "../ui/style";
 import type { Span } from "../ui/text";
+/** Supports: SPEC-MCP-015 (bounded physical lines, complete raw data in the separate result detail). */
+export function connectorResultView(display: string): Node { return box(display.split("\n").map(line => text(line, { overflow: "clip" }))); }
 
 export interface ViewContext {
   readonly unicode: UnicodeLevel;

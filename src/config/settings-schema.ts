@@ -282,6 +282,8 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "extensions.allowFlagged", schema: strList(), default: [], scopes: [G], owner: "SPEC-EXT-010" },
   { key: "extensions.allowPrerelease", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-EXT-008" },
   { key: "extensions.autoInstallProjectExtensions", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-EXT-003" },
+  { key: "extensions.lspRecommendationThreshold", schema: Type.Integer({ minimum: 1, maximum: 1000 }), default: 5, scopes: [U, G], owner: "SPEC-EXT-018" },
+  { key: "extensions.languageServerRecommendations", schema: Type.Record(Type.String({ pattern: "^\\.[a-z0-9_-]+$" }), Type.Object({ extension: Type.String({ pattern: "^[a-z0-9-]+@[a-z0-9-]+$", maxLength: 97 }), binary: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })), install: Type.Optional(Type.String({ maxLength: 500 })) })), default: {}, scopes: [U, G], owner: "SPEC-EXT-018" },
   // SPEC-EXT-019: skills (lot 4).
   { key: "skills.batch.maxAgents", schema: int(1, 100), default: 20, scopes: [U, G], owner: "SPEC-EXT-021" },
   { key: "skills.maxDescriptionsTokens", schema: int(100, 100_000), default: 4_000, scopes: [U, G], owner: "SPEC-EXT-019" },
@@ -295,6 +297,8 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "mcp.denyList", schema: Type.Array(Type.Unknown()), default: [], scopes: [G], owner: "SPEC-MCP-021" },
   { key: "mcp.managedServersOnly", schema: bool(), default: false, scopes: [G], owner: "SPEC-MCP-021" },
   { key: "mcp.connectTimeout", schema: durationSchema(), kind: "duration", default: 30_000, scopes: [U, G], owner: "SPEC-MCP-002" },
+  { key: "mcp.skillsFromServers", schema: strList(), default: [], scopes: [U, G], owner: "SPEC-MCP-014", hot: true },
+  { key: "mcp.richOutputMaxLines", schema: Type.Integer({ minimum: 3, maximum: 200 }), default: 40, scopes: [U, G], owner: "SPEC-MCP-015" },
   { key: "mcp.toolTimeout", schema: durationSchema(), kind: "duration", default: 600_000, scopes: [U, G], owner: "SPEC-MCP-009" },
   { key: "mcp.toolDescriptionMax", schema: int(100, 100_000), default: 2_000, scopes: [U, G], owner: "SPEC-MCP-009" },
   { key: "mcp.eagerToolsThreshold", schema: int(0, 10_000), default: 15, scopes: [U, G], owner: "SPEC-MCP-009" },

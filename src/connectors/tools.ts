@@ -7,6 +7,8 @@ import type { ContentPart, ImagePart } from "../providers/types";
 import { compileRaw } from "../shared/schema";
 import { textOutcome, type Tool, type ToolOutcome } from "../tools/types";
 import { RequestTimeout, type McpCallResult, type McpToolInfo } from "./stdio-client";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
+import { connectorDisplay, connectorDisplayRaw } from "./display";
 
 const MAX_NAME = 64;
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
@@ -57,6 +59,8 @@ export interface ConnectorToolDeps {
   readonly store: (key: string, text: string) => string;
   /** One more result beyond the threshold (step 3). */
   readonly overflowed: () => void;
+  readonly richOutputMaxLines?: number;
+  readonly redact?: (text: string) => string;
 }
 
 /** ERR-02: the schema of the server must be an object schema that compiles. */
@@ -118,7 +122,14 @@ export function connectorTool(info: McpToolInfo, qualified: string, deps: Connec
       const { parts, text } = convert(result, ctx.modelImages);
       const isError = result.isError === true; // FA-03: an error of the server is a result in error
       const tokens = deps.estimateTokens(text);
-      if (tokens <= deps.outputLimit) return { isError, errorKind: isError ? "execution" : undefined, content: [...(text ? [{ type: "text" as const, text }] : []), ...parts] };
+      const display = buildFlag("connector_structured_display") ? connectorDisplay(result.structuredContent, deps.richOutputMaxLines, deps.redact) : undefined;
+      const displayRaw = display !== undefined ? connectorDisplayRaw(result.structuredContent, deps.redact) : undefined;
+      let displayRawPath: string | undefined;
+      if (displayRaw !== undefined && Buffer.byteLength(displayRaw) > 32768) {
+        try { displayRawPath = deps.store(`${qualified}-structure-${++calls}-${Date.now()}`, displayRaw); } catch { /* The terminal still holds the redacted complete detail. */ }
+      }
+      const presentation = display !== undefined ? { display, displayRaw, ...(displayRawPath !== undefined ? { displayRawPath } : {}) } : {};
+      if (tokens <= deps.outputLimit) return { isError, errorKind: isError ? "execution" : undefined, content: [...(text ? [{ type: "text" as const, text }] : []), ...parts], ...presentation };
       // SPEC-MCP-020 step 2: the full content in a file, a preview to the model.
       deps.overflowed();
       let structure: string | undefined;
@@ -135,11 +146,12 @@ export function connectorTool(info: McpToolInfo, qualified: string, deps: Connec
         path = deps.store(`${qualified}-${++calls}-${Date.now()}`, full);
       } catch {
         // ERR-01: the result is cut, with a mention
-        return { isError, content: [{ type: "text", text: `${text.slice(0, PREVIEW_CHARS * 4)}\n[Result cut: about ${tokens} tokens, more than the limit of ${deps.outputLimit}; it could not be stored.]` }, ...parts] };
+        return { isError, content: [{ type: "text", text: `${text.slice(0, PREVIEW_CHARS * 4)}\n[Result cut: about ${tokens} tokens, more than the limit of ${deps.outputLimit}; it could not be stored.]` }, ...parts], ...presentation };
       }
       const preview = structure ? `Structure:\n${structure}\nBeginning:\n${full.slice(0, PREVIEW_CHARS)}` : `Beginning:\n${text.slice(0, PREVIEW_CHARS)}`;
       return {
         isError,
+        ...presentation,
         content: [
           {
             type: "text",

@@ -61,7 +61,7 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
       op("show", "Affiche la déclaration et les capacités découvertes.", { args: "<nom>", delivered: true, options: ["json"] }),
       op("remove", "Retire un connecteur.", { args: "<nom>", delivered: true, options: ["scope"] }),
       op("validate", "Vérifie le démarrage et la découverte des capacités.", { args: "<nom>", delivered: true, options: ["json"] }),
-      op("search", "Recherche un connecteur dans les annuaires configurés.", { args: "<terme>" }),
+      op("search", "Recherche un connecteur dans le registre configuré.", { args: "<terme>", delivered: true, options: ["json"] }),
       op("import", "Importe des déclarations depuis une source reconnue.", { args: "<source>" }),
       op("reset-choices", "Réinitialise les décisions d'approbation de connecteurs du projet.", { delivered: true }),
     ],

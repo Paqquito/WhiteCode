@@ -27,7 +27,7 @@ export type EngineEvent =
   | { readonly type: "assistant_message"; readonly text: string; readonly toolCalls: ReadonlyArray<{ readonly callId: string; readonly name: string; readonly input: unknown }> }
   | { readonly type: "tool_call"; readonly callId: string; readonly name: string; readonly input: unknown }
   | { readonly type: "tool_started"; readonly callId: string }
-  | { readonly type: "tool_result"; readonly callId: string; readonly isError: boolean; readonly durationMs: number; readonly output: string }
+  | { readonly type: "tool_result"; readonly callId: string; readonly isError: boolean; readonly durationMs: number; readonly output: string; readonly display?: string; readonly displayRaw?: string; readonly displayRawPath?: string }
   | { readonly type: "permission"; readonly callId: string; readonly decision: "allow" | "deny"; readonly reason: string; readonly step: number }
   | { readonly type: "warning"; readonly message: string }
   /** Visible wait before a new attempt (SPEC-API-003 EF-04). */

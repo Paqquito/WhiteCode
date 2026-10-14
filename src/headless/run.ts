@@ -167,10 +167,13 @@ import { catalogList, catalogRefused, extensionAdd, extensionList, scopeOf, type
 import { blockedReason } from "../extensions/policy";
 import { listInstalled } from "../extensions/store";
 import { cachedCatalog } from "../extensions/catalog";
+import { ExtensionRecommendations, type LanguageRecommendation } from "../extensions/recommendations";
 import { flagOf } from "../extensions/policy";
 import { recognize } from "../commands/recognize";
 import { framed, loadSkill, splitArguments } from "../skills/invoke";
 import { loadSkills, modelSkills, skillsSection, skillsSignature, type Skill, type SkillLocation } from "../skills/registry";
+import { PublishedSkills } from "../skills/connector";
+import { registryReport, searchConnectorRegistry } from "../connectors/registry";
 import { createUseSkillTool } from "../tools/use-skill";
 import { SkillDiscovery, createDiscoverSkillsTool } from "../tools/discover-skills";
 import { BRIEF_INSTRUCTION, createMessageUserTool } from "../tools/message-user";
@@ -1268,12 +1271,14 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   phase("extensions et compétences");
 
   // SPEC-INT-006: declarations are loaded now; no process starts until a permitted file operation.
+  let extensionRecommendations: ExtensionRecommendations | undefined;
   const languages = new LanguageManager({
     servers: minimal ? {} : Object.assign({}, ...(!managedOnlyCustomisation ? [{ ...settings.get<Record<string, unknown>>("lsp.servers") }] : []), ...(extensions.languageSources ?? []).map((s) => s.servers)), cwd,
     env: env.childEnvironment(settings.get<Record<string, string>>("environment.variables")),
     maxRestarts: settings.get<number>("lsp.maxRestarts"), passiveDiagnostics: settings.get<boolean>("lsp.passiveDiagnostics"),
     diagnosticsWait: settings.get<number>("tools.edit.diagnosticsWait"), maxPerFile: settings.get<number>("tools.edit.diagnosticsMaxPerFile"),
     maxOtherFiles: settings.get<number>("tools.edit.diagnosticsMaxOtherFiles"), timeout: settings.get<number>("tools.lsp.timeout"), maxLocations: settings.get<number>("tools.lsp.maxLocations"), warn: (message) => err(maskSecrets(message)),
+    unconfiguredFile: path => { if (isWithin(path, projectReal, system.platform)) extensionRecommendations?.touched(path); },
   });
   (holder.finalizers ??= []).push(() => languages.close());
   if (languages.configured && (toolsetNames === undefined || toolsetNames.includes("code_intelligence") || (toolsetNames.length === 1 && toolsetNames[0] === "default"))) registry.addStatic(codeIntelligenceTool as import("../tools/types").Tool<never>);
@@ -1355,7 +1360,13 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   }
   // SPEC-EXT-021 to 032: the skills of the product, replaced by any skill of the same name.
   const productSkills = minimal ? [] : builtinSkills().filter(skill => (skill.name !== "loop" || settings.get<boolean>("schedule.enabled") && trust.trusted && !serve) && (skill.name !== "shortcut-help" || settings.get<boolean>("ui.keybindings.enabled")));
-  let skillSet = loadSkills(skillLocations, productSkills);
+  let localSkillSet = loadSkills(skillLocations, productSkills);
+  let skillSet = localSkillSet;
+  let publishedSkills: PublishedSkills | undefined;
+  const loadSessionSkill = async (name: string, args: string, caller: "user" | "model", signal: AbortSignal) => {
+    const variables = { session: sessionId, expand: productSkillContext };
+    return publishedSkills ? publishedSkills.load(skillSet, name, args, caller, variables, signal) : loadSkill(skillSet, name, args, caller, variables);
+  };
   let skillsStamp = skillsSignature(skillLocations);
   for (const w of skillSet.warnings) err(`avertissement : ${w}`);
   // SPEC-EXT-020 EF-02: the `tools` of an active skill are allowed until the end of the turn, never beyond a deny rule.
@@ -1364,6 +1375,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const skillTargets = new Map<Rule[], string>();
   const activateSkill = (skill: Skill, allows: Rule[] = skillAllows) => {
     if (allows === skillAllows) skillDiscovery?.markKnown(skill.name);
+    if (skill.connector) return; // External tool declarations and hooks never create local permission grants.
     if (skill.hooks && skill.context === "inline") {
       const releases = skillHookReleases.get(allows) ?? [];
       releases.push(registerHookContext(skillTargets.get(allows) ?? "main", skill.hooks, skill.scope, skill.file, `skill:${skill.name}`));
@@ -1384,6 +1396,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     skills: () => skillSet,
     session: () => sessionId,
     activate: (skill) => activateSkill(skill, allows),
+    load: (name, args, signal) => loadSessionSkill(name, args, "model", signal),
     runInAgent: (skill, content, signal) => depth >= maxAgentDepth
       ? Promise.resolve({ text: "This skill cannot start an agent beyond agents.maxDepth.", isError: true })
       : runSubagent({ description: `skill ${skill.name}`, prompt: content }, { ...BUILT_IN_AGENTS.find(agent => agent.name === "general")!, hooks: skill.hooks }, signal, depth, caller, parentContext, callerMaxIterations),
@@ -2066,7 +2079,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const resultStore = new ResultStore(join(sessionWork, "tool-results"));
   // SPEC-MCP-022: connections started in parallel, never awaited but with `--wait-for-mcp` (FA-02).
   const connectorNotes: Reminder[] = [];
+  let publishedSkillsDirty = true;
   const connectorNote = (e: ConnectorEvent) => {
+    if (["connected", "lost", "resources_changed"].includes(e.kind)) publishedSkillsDirty = true;
     if (e.kind === "resources_changed") { connectorNotes.push({ type: "connectors", text: `The published resource list of ${e.name} changed.`, priority: 2 }); return; }
     if (e.kind === "connected") connectorNotes.push({ type: "connectors", text: `The connector ${e.name} is connected.`, priority: 1 });
     else if (e.kind === "tools_changed")
@@ -2121,6 +2136,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           maxParallel: settings.get<number>("mcp.maxParallelConnects"),
           maxReconnects: settings.get<number>("mcp.maxReconnects"),
           descriptionMax: settings.get<number>("mcp.toolDescriptionMax"),
+          richOutputMaxLines: settings.get<number>("mcp.richOutputMaxLines"),
+          redact: redactOutput,
           outputInlineLimit: settings.get<number>("mcp.outputInlineLimit"),
           clientInfo: { name: identity.get("PRODUCT_SLUG"), version: identity.version },
           estimateTokens,
@@ -2152,12 +2169,13 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   };
   // SPEC-EXT-019 EF-04, CA-02: a skill changed during the session is read again and the model is told.
   const skillNotes: Reminder[] = [];
-  const refreshSkills = () => {
+  const refreshSkills = (force = false) => {
     const stamp = skillsSignature(skillLocations);
-    if (stamp === skillsStamp) return;
-    skillsStamp = stamp;
+    if (!force && stamp === skillsStamp) return;
     const before = skillSet;
-    skillSet = loadSkills(skillLocations, productSkills);
+    const local = stamp === skillsStamp ? localSkillSet : loadSkills(skillLocations, productSkills);
+    skillsStamp = stamp; localSkillSet = local;
+    skillSet = publishedSkills?.merge(local) ?? local;
     for (const w of skillSet.warnings) err(`avertissement : ${w}`);
     const now = modelSkills(skillSet);
     const was = new Map(modelSkills(before).map((s) => [s.name, s.description]));
@@ -2174,6 +2192,32 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       ].join("\n"),
       priority: 2,
     });
+  };
+  if (buildFlag("connector_published_skills") && connectors && !minimal) {
+    publishedSkills = new PublishedSkills({
+      port: { resources: () => connectors.cachedResources(), connected: server => connectors.status().some(item => item.name === server && item.state === "connected"), read: (server, uri, signal) => connectors.readResource(server, uri, signal) },
+      allowed: () => liveSettings.get<string[]>("mcp.skillsFromServers"),
+      redact: redactOutput,
+      denied: server => effectiveRules().some(rule => rule.decision !== "allow" && ["read_connector_resource", "list_connector_resources"].some(tool => ruleMatches(rule, tool, { kind: "name", name: server }, matchContext))),
+      report: message => err(`avertissement : ${message}`),
+    });
+  }
+  let publishedAllowStamp = "";
+  const refreshPublishedSkills = async (signal: AbortSignal) => {
+    if (!publishedSkills || !connectors) return;
+    if (policyGuard.check(policyCapability).length) return;
+    applySettingsChanges();
+    const allowedStamp = JSON.stringify({ allowed: [...liveSettings.get<string[]>("mcp.skillsFromServers")].sort(), rules: effectiveRules().filter(rule => ["read_connector_resource", "list_connector_resources"].includes(rule.tool)) });
+    if (allowedStamp !== publishedAllowStamp) { publishedAllowStamp = allowedStamp; publishedSkillsDirty = true; }
+    if (publishedSkillsDirty) {
+      publishedSkillsDirty = false;
+      if (liveSettings.get<string[]>("mcp.skillsFromServers").length) {
+        const bounded = AbortSignal.any([signal, AbortSignal.timeout(1500)]);
+        try { await connectors.waitAll(Math.min(settings.get<number>("mcp.connectTimeout"), 1500), bounded); await publishedSkills.refresh(bounded); }
+        catch { if (signal.aborted) signal.throwIfAborted(); err("avertissement : compétences de connecteur indisponibles ; le tour continue sans leur mise à jour."); }
+      }
+    }
+    refreshSkills(true);
   };
   let announcedDeferred = new Set<string>();
   let announcedSegment = -1;
@@ -2207,20 +2251,27 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // the model may use either form, and both designate the same folder (SPEC-PER-010). Shared by the tools and the
   // shells, so that a folder added by `/allow-dir` is reachable by both (SPEC-CMD-002).
   const allowedDirectories = [...new Set([cwd, projectReal])];
-  let recommendedExtension = false;
+  extensionRecommendations = new ExtensionRecommendations({
+    stateFile: locations.userStateFile, enabled: () => !!app && !minimal && liveSettings.get<boolean>("extensions.recommendations"),
+    threshold: () => liveSettings.get<number>("extensions.lspRecommendationThreshold"), languages: () => liveSettings.get<Record<string, LanguageRecommendation>>("extensions.languageServerRecommendations"),
+    admitted: ref => {
+      const [name, catalog] = ref.split("@") as [string, string], registration = liveSettings.get<Record<string, { source?: string }>>("extensions.catalogs")[catalog];
+      if (!registration || typeof registration.source !== "string" || catalogRefused(liveSettings, catalog, registration.source) || blockedReason(liveSettings, name, catalog) || listInstalled(locations.configDir).some(entry => entry.name === name && entry.catalog === catalog)) return false;
+      const entry = cachedCatalog(locations.configDir, catalog)?.extensions.find(entry => entry.name === name);
+      return !!entry && flagOf(liveSettings, locations.configDir, name, catalog, entry.version ?? "0.0.0")?.severity !== "critical";
+    },
+    present: (ref, origin) => {
+      app?.notice("info", `Extension suggérée : ${ref}. Commande émettrice ou contexte : ${maskSecrets(redactOutput(origin)).slice(0, 500)}. Installer : /extensions install ${ref} ; plus tard : /extensions recommandation plus-tard ; ne plus proposer : /extensions recommandation ne-plus ${ref}.`);
+      app?.setStatusNotice("extension-recommendation", `Extension suggérée : ${ref}. /extensions recommandation pour les choix.`);
+    },
+    clear: () => app?.setStatusNotice("extension-recommendation", undefined),
+  });
   const shellRuntime =
     posixShell || powerShell
       ? new ShellRuntime({
           hintTag: identity.get("HINT_TAG"),
           recommend: (ref, command) => {
-            if (!app || recommendedExtension || !liveSettings.get<boolean>("extensions.recommendations")) return;
-            const [name, catalog] = ref.split("@") as [string, string];
-            const registration = liveSettings.get<Record<string, { source?: string }>>("extensions.catalogs")[catalog];
-            if (!registration || typeof registration.source !== "string" || catalogRefused(liveSettings, catalog, registration.source) || blockedReason(liveSettings, name, catalog) || listInstalled(locations.configDir).some(e => e.name === name && e.catalog === catalog)) return;
-            const entry = cachedCatalog(locations.configDir, catalog)?.extensions.find(e => e.name === name);
-            if (!entry || flagOf(liveSettings, locations.configDir, name, catalog, entry.version ?? "0.0.0")?.severity === "critical") return;
-            recommendedExtension = true;
-            app.notice("info", `Extension suggérée : ${ref}. Commande émettrice : ${redactOutput(command).slice(0, 500)}. Consultez /extensions découvrir ; /extensions install ${ref} demandera votre accord.`);
+            extensionRecommendations?.recommend(ref, maskSecrets(redactOutput(command)));
           },
           platform: system.platform,
           projectCwd: projectReal,
@@ -3469,7 +3520,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         case "skill": {
           let args = entry.args;
           if (resolved.skill.scope === "product" && resolved.skill.name === "loop") { try { const loop = parseLoop(args); args = `Requested intervalSeconds: ${loop.seconds}. Recurring user request: ${loop.prompt}`; } catch (error) { return { refused: (error as Error).message }; } }
-          const loaded = loadSkill(skillSet, resolved.name, args, "user", { session: sessionId, expand: productSkillContext });
+          const loaded = await loadSessionSkill(resolved.name, args, "user", signal);
           if (!loaded.ok) return { refused: loaded.message };
           activateSkill(loaded.skill);
           replaceFirst(framed(loaded.skill, loaded.content, `/${entry.name}${entry.args ? ` ${entry.args}` : ""}`));
@@ -3609,7 +3660,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     hookParentSignal = signal;
     processingRequests++;
     const ended = diagnostics?.start("query", nonInteractive ? "headless" : "query");
-    try { return await processRequestBody(original, signal, literal, pasted); }
+    try { await refreshPublishedSkills(signal); return await processRequestBody(original, signal, literal, pasted); }
     finally {
       processingRequests--; ended?.(); hookParentSignal = deps.signal;
       for (const release of skillHookReleases.get(skillAllows) ?? []) release();
@@ -4021,6 +4072,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         return { refused: "Usage : /event-hooks [add <événement> <commande> | remove <crochet>]." };
       }
       case "connectors": {
+        if (/^découvrir(?:\s|$)/.test(args.trim())) {
+          if (offlineMinimal) return { refused: "Le registre est indisponible en mode minimal hors ligne." };
+          try { const rows = await searchConnectorRegistry(identity.has("SERVICE_MCP_REGISTRY") ? identity.get("SERVICE_MCP_REGISTRY") : undefined, args.trim().replace(/^découvrir\s*/, ""), network, signal); const report = registryReport(rows); return { shown: box(report.split("\n").map(line => text(line))), note: report }; }
+          catch { return { refused: "Registre non configuré, indisponible ou réponse invalide ; la gestion manuelle des connecteurs reste disponible." }; }
+        }
         // SPEC-CMD-041: the state of each connector, up to date at opening (EF-01), its detail, a reconnection (CA-01).
         const states: Record<string, string> = { connected: "connecté", connecting: "connexion en cours", pending: "en attente", auth_required: "authentification requise", error: "en échec", unavailable: "indisponible", disabled: "désactivé" };
         const list = connectors?.status() ?? [];
@@ -4028,6 +4084,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         const [verb, name] = args.trim().split(/\s+/);
         if (!verb) {
           const lines = list.length === 0 ? ["Aucun connecteur."] : list.map(line);
+          if (!offlineMinimal && identity.has("SERVICE_MCP_REGISTRY")) lines.push("Découvrir : /connectors découvrir <terme>.");
           return { shown: box(lines.map((l) => text(l))), note: lines.join("\n") };
         }
         if (verb === "reconnect") {
@@ -4172,6 +4229,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
             return app.confirm(question, "installer", "annuler");
           },
         };
+        if (verb === "recommandation") {
+          if (!extensionRecommendations || !["plus-tard", "ne-plus"].includes(ref ?? "") || ref === "ne-plus" && !scopeWord) return { refused: "Usage : /extensions recommandation plus-tard | ne-plus <extension>@<catalogue>." };
+          try { if (ref === "ne-plus") await extensionRecommendations.dismiss(scopeWord!); else extensionRecommendations.later(); return { shown: text("Choix de recommandation enregistré."), note: "Choix de recommandation enregistré." }; }
+          catch { return { refused: "Choix non enregistré ; référence ou état utilisateur indisponible." }; }
+        }
         if (!verb || verb === "installées") extensionList(ctx, false);
         else if (verb === "découvrir") extensionList(ctx, true);
         else if (verb === "catalogues") catalogList(ctx);
@@ -4538,7 +4600,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         const scopes: Record<string, string> = { managed: "organisation", user: "utilisateur", project: "projet", extension: "extension" };
         const byScope = new Map<string, string[]>();
         for (const s of skillSet.skills.values()) {
-          const key = s.extension ? `extension ${s.extension}` : (scopes[s.scope] ?? s.scope);
+          const key = s.connector ? `connecteur ${s.connector.server}` : s.extension ? `extension ${s.extension}` : (scopes[s.scope] ?? s.scope);
           byScope.set(key, [...(byScope.get(key) ?? []), `  ${s.name} — ${s.description}${s.tools.length > 0 ? ` (outils : ${s.tools.join(", ")})` : ""}`]);
         }
         const lines = byScope.size === 0 ? ["Aucune compétence disponible."] : [...byScope].flatMap(([k, v]) => [`${k[0]!.toUpperCase()}${k.slice(1)} :`, ...v]);

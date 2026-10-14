@@ -132,8 +132,12 @@ export class EventStream {
         return;
       case "tool_call":
         return this.emit("tool_call", { toolId: e.name, input: e.input, callId: e.callId });
-      case "tool_result":
-        return this.emit("tool_result", { callId: e.callId, output: e.output, errored: e.isError, elapsedMs: e.durationMs });
+      case "tool_result": {
+        const fields = { callId: e.callId, output: e.output, errored: e.isError, elapsedMs: e.durationMs,
+          ...(e.display !== undefined ? { display: e.display } : {}), ...(e.displayRaw !== undefined ? { displayRaw: e.displayRaw } : {}), ...(e.displayRawPath !== undefined ? { displayRawPath: e.displayRawPath } : {}) };
+        if (e.displayRawPath && Buffer.byteLength(jsonLine(fields)) + 200 > this.options.maxEventSize) delete fields.displayRaw;
+        return this.emit("tool_result", fields);
+      }
       case "permission":
         return this.emit("permission", { callId: e.callId, decision: e.decision, reason: e.reason });
       case "warning":

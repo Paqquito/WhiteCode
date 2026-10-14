@@ -6,6 +6,8 @@ const option = (value: boolean, description: string, specs: string[], absentMark
 export const BUILD_OPTIONS = {
   mode_brief: option(true, "Vue des messages adressés avec accès au détail.", ["SPEC-MOD-029", "SPEC-OUT-034", "SPEC-CMD-007"]),
   skill_discovery: option(true, "Sélection locale des compétences pertinentes.", ["SPEC-OUT-038"]),
+  connector_published_skills: option(true, "Compétences publiées par les connecteurs autorisés.", ["SPEC-MCP-014"], ["Remote skill unavailable:"]),
+  connector_structured_display: option(true, "Tableaux bornés pour les résultats structurés de connecteurs.", ["SPEC-MCP-015"], ["[Sortie repliée ; contenu brut dans le détail.]"]),
   push_notifications: option(true, "Notifications locales bornées demandées par l’agent.", ["SPEC-OUT-036"], ["Send a brief device notification only"]),
   ui_auto_theme: option(true, "Suivi de la couleur de fond du terminal.", ["SPEC-IHM-020"], ["Automatique selon le terminal"]),
   review_artifact: option(true, "Décisions humaines sur les constats de revue.", ["SPEC-OUT-045"]),

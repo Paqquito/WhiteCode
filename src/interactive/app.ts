@@ -44,7 +44,7 @@ import { maskSecrets } from "../shared/secrets";
 import { newViewState, TranscriptView, type ItemKind, type TranscriptItem, type ViewSettings } from "./transcript-view";
 import { containsSecret } from "../shared/secrets";
 import { diffNode, type DiffOptions } from "../ui/diff-view";
-import { activityView, interruptionView, modelView, noticeView, toolCallView, toolResultView, userView, type ViewContext } from "./views";
+import { activityView, connectorResultView, interruptionView, modelView, noticeView, toolCallView, toolResultView, userView, type ViewContext } from "./views";
 
 export interface AppSettings {
   readonly slowFrameMs?: number;
@@ -692,8 +692,8 @@ export class InteractiveApp {
         break;
       case "tool_result":
         // EF-06 of SPEC-IHM-006: a sensitive value is masked in the flow as in the view.
-        if (!this.#o.brief?.() || e.isError) this.commit(toolResultView(maskSecrets(e.output), e.isError, this.#view));
-        this.record("result", `${this.#callNames.get(e.callId) ?? "outil"}${e.isError ? " (erreur)" : ""}`, e.output);
+        if (!this.#o.brief?.() || e.isError) this.commit(e.display && !e.isError ? connectorResultView(maskSecrets(e.display)) : toolResultView(maskSecrets(e.output), e.isError, this.#view));
+        this.record("result", `${this.#callNames.get(e.callId) ?? "outil"}${e.isError ? " (erreur)" : ""}`, e.output + (e.displayRaw ? `\n\nStructure brute (valeurs sensibles masquées) :\n${maskSecrets(e.displayRaw)}` : ""));
         this.#activity = "Réflexion…";
         break;
       case "retry":

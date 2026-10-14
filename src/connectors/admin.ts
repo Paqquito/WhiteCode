@@ -19,6 +19,7 @@ import { ConnectorManager } from "./manager";
 import { ConnectorOAuth } from "./oauth";
 import { nativeCredentialVault } from "../platform/credential-vault";
 import { maskSecrets } from "../shared/secrets";
+import { registryReport, searchConnectorRegistry } from "./registry";
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 function document(text: string): Record<string, unknown> {
@@ -43,6 +44,11 @@ function safeDeclaration(d: ConnectorDeclaration): Record<string, unknown> {
 export async function runConnectorAdmin(deps: AdminDependencies, parsed: ParsedSubcommand, write: (value: unknown, text: () => string) => void, out: (text: string) => void, err: (text: string) => void): Promise<number> {
   try {
     deps.assertPolicy?.(); const configuration = loadConfiguration({ ...deps }), { locations, settings } = configuration;
+    if (parsed.operation === "search") {
+      if (parsed.args.length !== 1) { err("Usage : connector search <terme> [--json]."); return 2; }
+      const rows = await searchConnectorRegistry(deps.identity.has("SERVICE_MCP_REGISTRY") ? deps.identity.get("SERVICE_MCP_REGISTRY") : undefined, parsed.args[0]!, configuredNetwork(deps.env), deps.signal ?? new AbortController().signal);
+      write(rows, () => registryReport(rows)); return 0;
+    }
     const key = projectStateKey(locations.projectRoot, deps.system.platform), state = readUserState(locations.userStateFile), projectState = state.projects?.[key] as ProjectState | undefined;
     const sources = connectorSources({ configDir: locations.configDir, managedDir: locations.managedDir, projectRoot: locations.projectRoot, projectDirName: deps.identity.get("PROJECT_DIR"), projectTrusted: configuration.trust.trusted, projectState, cliValues: [], cwd: deps.cwd });
     const installed = await activeInstalled({ settings, configDir: locations.configDir, product: { name: deps.identity.get("PRODUCT"), version: deps.identity.version, cli: deps.identity.get("PRODUCT_CLI") }, runner: { env: deps.env.childEnvironment(), timeoutMs: 30000 }, cwd: deps.cwd, userSettingsFile: locations.userSettingsFile, platform: deps.system.platform, installMissing: false });

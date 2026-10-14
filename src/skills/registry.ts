@@ -35,6 +35,8 @@ export interface Skill {
   readonly extension?: string;
   /** Instructions carried by the product itself, instead of a file. */
   readonly content?: string;
+  /** Allowlisted connector resource; declarations here never grant permissions. */
+  readonly connector?: { readonly server: string; readonly uri: string };
 }
 
 export interface SkillLocation {

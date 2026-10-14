@@ -21,6 +21,7 @@ export interface UserState {
   readonly modelNotices?: Readonly<Record<string, string>>;
   readonly keyConfirmations?: Readonly<Record<string, boolean>>;
   readonly projects?: Readonly<Record<string, unknown>>;
+  readonly extensionRecommendationsDismissed?: readonly string[];
 }
 
 const object = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -32,7 +33,7 @@ function load(path: string): UserState {
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw error; }
   let value: unknown;
   try { value = JSON.parse(readFileSync(path, "utf8")); } catch (error) { if (error instanceof SyntaxError) throw new CorruptState(); throw error; }
-  if (!object(value) || ["trustedProjects", "restrictedProjects", "migrations"].some((key) => value[key] !== undefined && (!Array.isArray(value[key]) || value[key].some((p) => typeof p !== "string"))) ||
+  if (!object(value) || ["trustedProjects", "restrictedProjects", "migrations", "extensionRecommendationsDismissed"].some((key) => value[key] !== undefined && (!Array.isArray(value[key]) || value[key].some((p) => typeof p !== "string"))) ||
       (value["preflightCompleted"] !== undefined && typeof value["preflightCompleted"] !== "boolean") ||
       (value["lastSeenVersion"] !== undefined && (typeof value["lastSeenVersion"] !== "string" || value["lastSeenVersion"].length > 100)) ||
       (value["unrestrictedAccepted"] !== undefined && typeof value["unrestrictedAccepted"] !== "boolean") ||
@@ -86,6 +87,7 @@ export async function recoverUserState(path: string, warn: (message: string) => 
 function merge(state: UserState, patch: Partial<UserState>): UserState {
   const next = { ...state, ...patch };
   for (const key of ["trustedProjects", "restrictedProjects"] as const) if (patch[key]) next[key] = [...new Set([...(state[key] ?? []), ...patch[key]])];
+  if (patch.extensionRecommendationsDismissed) next.extensionRecommendationsDismissed = [...new Set([...(state.extensionRecommendationsDismissed ?? []), ...patch.extensionRecommendationsDismissed])];
   if (patch.modelNotices) next.modelNotices = { ...state.modelNotices, ...patch.modelNotices };
   if (patch.keyConfirmations) next.keyConfirmations = { ...state.keyConfirmations, ...patch.keyConfirmations };
   if (patch.projects) next.projects = mergeObjects(state.projects ?? {}, patch.projects);

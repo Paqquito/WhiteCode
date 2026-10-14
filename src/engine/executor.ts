@@ -188,7 +188,7 @@ export class ResponseExecution {
         if (reminder) outcome = { ...outcome, content: [...outcome.content, { type: "text", text: reminder }] };
       } else if (!evaluated && verdict?.entry && guard) guard.forget(verdict.entry);
       const output = outcome.content.map((c) => (c.type === "text" ? c.text : `[${c.mediaType}]`)).join("\n");
-      this.#deps.emit({ type: "tool_result", callId: call.callId, isError: outcome.isError, durationMs: Date.now() - started, output });
+      this.#deps.emit({ type: "tool_result", callId: call.callId, isError: outcome.isError, durationMs: Date.now() - started, output, ...(outcome.display !== undefined ? { display: outcome.display } : {}), ...(outcome.displayRaw !== undefined ? { displayRaw: outcome.displayRaw } : {}), ...(outcome.displayRawPath !== undefined ? { displayRawPath: outcome.displayRawPath } : {}) });
       return outcome;
     };
     const signal = this.#controller.signal;
@@ -377,7 +377,7 @@ export class ResponseExecution {
   /** FA-01 of SPEC-OUT-001: a result beyond the inline limit is written to the session folder; the model gets its start, its end and the path. */
   #redacted(outcome: ToolOutcome): ToolOutcome {
     const redact = this.#deps.redactOutput;
-    return redact ? { ...outcome, content: outcome.content.map((part) => part.type === "text" ? { ...part, text: redact(part.text) } : part) } : outcome;
+    return redact ? { ...outcome, ...(outcome.display !== undefined ? { display: redact(outcome.display) } : {}), ...(outcome.displayRaw !== undefined ? { displayRaw: redact(outcome.displayRaw) } : {}), content: outcome.content.map((part) => part.type === "text" ? { ...part, text: redact(part.text) } : part) } : outcome;
   }
 
   /** FA-01 of SPEC-OUT-001: a result beyond the inline limit is written to the session folder; the model gets its start, its end and the path. */

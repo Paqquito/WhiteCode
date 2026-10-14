@@ -28,6 +28,7 @@ export interface LanguageOptions {
   readonly timeout: number;
   readonly maxLocations: number;
   readonly warn: (text: string) => void;
+  readonly unconfiguredFile?: (path: string) => void;
 }
 const escaped = (s: string) => s.replace(/[<\x00-\x08\x0b-\x1f\x7f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 const unavailable = "No language server is available for this file. Use search_content for text search.";
@@ -71,7 +72,8 @@ export class LanguageManager implements LanguageService {
   get configured(): boolean { return this.#servers.length > 0; }
   #server(path: string, access: LanguageAccess): Server | undefined {
     if (this.#closed || !readable(path, access)) return;
-    return this.#servers.find((s) => s.declaration.extensions.includes(extname(path).toLowerCase()));
+    const server = this.#servers.find((s) => s.declaration.extensions.includes(extname(path).toLowerCase()));
+    if (!server) this.#options.unconfiguredFile?.(path); return server;
   }
   #unavailable(server: Server): void { server.state = "indisponible"; this.#options.warn(`Serveur de langage ${server.name} indisponible ; utilisez la recherche textuelle.`); }
   #ensure(server: Server): Promise<LanguageClient> {

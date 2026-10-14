@@ -14,7 +14,7 @@ interface FakeConfig {
   resourcesPageSize?: number;
   tools: FakeTool[];
   /** Answers of `tools/call` by tool name; default: the arguments echoed as text. */
-  responses?: Record<string, { text?: string; json?: unknown; repeat?: number; isError?: boolean; delayMs?: number }>;
+  responses?: Record<string, { text?: string; json?: unknown; structuredContent?: unknown; repeat?: number; isError?: boolean; delayMs?: number }>;
   /** Delay before answering `initialize`; `never` leaves it unanswered. */
   initDelayMs?: number | "never";
   /** Exits with code 1 after this many calls (written to `crashMarker` so that a restart does not crash again). */
@@ -85,7 +85,7 @@ async function handle(msg: { id?: number; method?: string; params?: any }): Prom
     const r = config.responses?.[msg.params.name];
     if (r?.delayMs) await Bun.sleep(r.delayMs);
     const text = r?.json !== undefined ? JSON.stringify(r.json) : r?.text !== undefined ? r.text.repeat(r.repeat ?? 1) : `called ${msg.params.name} with ${JSON.stringify(msg.params.arguments)}`;
-    send({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text }], isError: r?.isError === true } });
+    send({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text }], ...(r?.structuredContent !== undefined ? { structuredContent: r.structuredContent } : {}), isError: r?.isError === true } });
     return;
   }
   if (msg.method === "prompts/list") {

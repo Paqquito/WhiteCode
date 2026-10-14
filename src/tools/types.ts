@@ -100,6 +100,11 @@ export interface ToolOutcome {
   readonly isError: boolean;
   readonly errorKind?: ToolErrorKind;
   readonly content: readonly ContentPart[];
+  /** Optional bounded terminal presentation; model content above remains authoritative. */
+  readonly display?: string;
+  /** Complete redacted structured content for user details; excluded from model history. */
+  readonly displayRaw?: string;
+  readonly displayRawPath?: string;
 }
 
 export interface Tool<I = Record<string, unknown>> {

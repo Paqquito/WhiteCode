@@ -53,6 +53,8 @@ export interface ConnectorManagerOptions {
   readonly maxParallel: number;
   readonly maxReconnects: number;
   readonly descriptionMax: number;
+  readonly richOutputMaxLines?: number;
+  readonly redact?: (text: string) => string;
   readonly outputInlineLimit: number;
   readonly clientInfo: { readonly name: string; readonly version: string };
   readonly estimateTokens: (text: string) => number;
@@ -324,6 +326,8 @@ export class ConnectorManager {
     return connectorTool(info, qualified, {
       server: e.d.name,
       descriptionMax: this.#o.descriptionMax,
+      richOutputMaxLines: this.#o.richOutputMaxLines,
+      redact: this.#o.redact,
       timeoutMs: e.d.timeoutMs ?? this.#o.toolTimeoutMs,
       outputLimit: e.d.maxOutputTokens ?? this.#o.outputInlineLimit,
       estimateTokens: this.#o.estimateTokens,

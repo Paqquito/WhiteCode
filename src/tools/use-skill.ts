@@ -2,7 +2,7 @@
 // The model invokes a skill: its content comes back as the result, and its `tools` apply until the end of the turn.
 
 import description from "../../prompts/tools/use_skill.md" with { type: "text" };
-import { framed, loadSkill } from "../skills/invoke";
+import { framed, loadSkill, type Loaded } from "../skills/invoke";
 import type { Skill, SkillSet } from "../skills/registry";
 import { textOutcome, type Tool } from "./types";
 
@@ -16,6 +16,8 @@ export interface UseSkillDeps {
   readonly session: () => string;
   /** Applies the `tools` of the skill until the end of the turn (EF-02). */
   readonly activate: (skill: Skill) => void;
+  /** Optional session loader for live connector resources, subject to their local allowlist. */
+  readonly load?: (name: string, args: string, signal: AbortSignal) => Promise<Loaded>;
   /** Context of a skill of the product, added at the invocation. */
   readonly expand?: (skill: Skill, content: string) => string;
   /** Runs a skill declared `context: agent` in a sub-agent; only its report comes back (SPEC-OUT-037 CA-02). */
@@ -44,7 +46,7 @@ export function createUseSkillTool(deps: UseSkillDeps): Tool<UseSkillInput> {
     summary: (input) => `Use the skill ${input.name}${input.arguments ? ` (${input.arguments.slice(0, 80)})` : ""}`,
 
     async execute(input, ctx) {
-      const loaded = loadSkill(deps.skills(), input.name, input.arguments ?? "", "model", { session: deps.session(), ...(deps.expand ? { expand: deps.expand } : {}) });
+      const loaded = deps.load ? await deps.load(input.name, input.arguments ?? "", ctx.signal) : loadSkill(deps.skills(), input.name, input.arguments ?? "", "model", { session: deps.session(), ...(deps.expand ? { expand: deps.expand } : {}) });
       if (!loaded.ok) return textOutcome(loaded.message, true, loaded.kind === "forbidden" ? "permission_denied" : loaded.kind === "arguments" ? "invalid_input" : "unavailable");
       if (loaded.skill.context === "agent") {
         if (!deps.runInAgent) return textOutcome(`The skill ${input.name} runs in a sub-agent, which cannot be started here.`, true, "unavailable");
