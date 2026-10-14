@@ -85,11 +85,12 @@ export class Conversation {
   }
 
   /** Opens a new segment after a full compaction: nothing of the previous segment is replayed (architecture § 7.2). */
-  startSegment(system: readonly SystemBlock[], tools: readonly ToolDefinition[], opening: ReadonlyArray<ContentPart>): void {
+  startSegment(system: readonly SystemBlock[], tools: readonly ToolDefinition[], opening: ReadonlyArray<ContentPart>, retained: readonly HistoryMessage[] = []): void {
     this.#system = system;
     this.#tools = tools;
     this.#messages.length = 0;
     this.#messages.push({ role: "user", parts: [...opening] });
+    this.#messages.push(...retained);
     this.#segment++;
   }
 

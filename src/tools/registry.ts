@@ -34,6 +34,8 @@ export interface ExtraTool {
 export class UnknownToolsetEntryError extends Error {}
 
 export interface RegistryOptions {
+  /** Product-owned file stores preserve the same schemas and refusal precedence through bounded adapters. */
+  readonly decorateBuiltin?: (tool: Tool<never>) => Tool<never>;
   /** `--toolset`: undefined = all ("default"); empty list = no tool. */
   readonly toolset?: readonly string[];
   /** Tools denied as a whole by a `deny` rule without pattern (§ 5.3 step 3). */
@@ -76,7 +78,7 @@ export class ToolRegistry implements ToolLookup {
 
   static build(env: ToolEnvironment, options: RegistryOptions = {}): ToolRegistry {
     const all = new Map<string, Tool<never>>();
-    for (const t of BUILTIN_TOOLS) if (t.isEnabled(env)) all.set(t.name, t);
+    for (const original of BUILTIN_TOOLS) { const t = options.decorateBuiltin?.(original) ?? original; if (t.isEnabled(env)) all.set(t.name, t); }
     for (const { tool, connector } of options.extraTools ?? []) {
       if (!tool.isEnabled(env)) continue;
       // FA-03: a connector tool never hides a built-in one; it takes the qualified name `cnx_<connector>_<tool>`.

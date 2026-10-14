@@ -70,7 +70,7 @@ describe("SPEC-MOD-005 limits", () => {
   });
 
   test("TECH — an empty failed child's authentication diagnostic reaches the parent in English", async () => {
-    const provider = new ScriptedProvider([{ toolCalls: [{ name: "spawn_agent", input: { description: "child", prompt: "go" } }] }, { text: "done" }], [{ error: { kind: "authentication", status: 401, message: "Authentification refusée par le serveur du modèle." } }]);
+    const provider = new ScriptedProvider([{ toolCalls: [{ name: "spawn_agent", input: { role: "general", description: "child", prompt: "go" } }] }, { text: "done" }], [{ error: { kind: "authentication", status: 401, message: "Authentification refusée par le serveur du modèle." } }]);
     const r = await cli(["--non-interactive", "go"], workspace(), { provider });
     expect(r.code).toBe(0);
     const history = JSON.stringify(provider.requests.at(-1)!.history);
@@ -107,7 +107,7 @@ describe("SPEC-MOD-005 limits", () => {
 
   test("SPEC-MOD-005/CA-05 — the parent and two concurrent children share the limit, including requests still in flight", async () => {
     const provider = new ScriptedProvider([
-      { toolCalls: [1, 2].map((n) => ({ name: "spawn_agent", input: { description: `child ${n}`, prompt: `task ${n}` } })) },
+      { toolCalls: [1, 2].map((n) => ({ name: "spawn_agent", input: { role: "general", description: `child ${n}`, prompt: `task ${n}` } })) },
       { text: "parent must not request again" },
     ], [{ ...tool(1), delayMs: 30 }, { ...tool(2), delayMs: 30 }, { text: "no child remainder" }]);
     const r = await cli(["--non-interactive", "--max-iterations", "3", "--result-format", "json", "go"], workspace(), { provider });

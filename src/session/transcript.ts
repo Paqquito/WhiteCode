@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { tryFileLock } from "../platform/file-lock";
 import { ContentStore } from "./content-store";
+import { decodeRecordContent, retainedHistory } from "./retained-history";
 
 export const TRANSCRIPT_FORMAT_VERSION = 1;
 
@@ -86,6 +87,10 @@ export class TranscriptWriter {
 
   /** Appends one record; returns its identifier. Never rewrites an existing line (RG-01). */
   append(type: RecordType, data: Record<string, unknown>): string {
+    if (type === "compaction" && data["retained"] !== undefined) {
+      const history = retainedHistory(data["retained"]), users = history.filter(message => message.role === "user").map(message => message.parts);
+      return this.#content.publish(users, encoded => { let index = 0; const stored = history.map(message => message.role === "user" ? { ...message, parts: (encoded as unknown[])[index++] } : message); return this.#append(type, { ...data, retained: stored }); });
+    }
     if (type === "user") {
       try { return this.#content.publish(data["content"], content => this.#append(type, { ...data, content })); }
       catch { this.warning = "Le contenu joint reste dans la transcription : son magasin séparé est indisponible."; }
@@ -151,7 +156,7 @@ export function readTranscript(path: string): ReadResult {
     if (line.trim() === "") continue;
     try {
       const record = JSON.parse(line) as TranscriptRecord;
-      records.push(record.type === "user" ? { ...record, data: { ...record.data, content: ContentStore.forTranscript(path).decode(record.data["content"]) } } : record);
+      records.push(decodeRecordContent(record, path));
     } catch {
       skippedLines++;
     }

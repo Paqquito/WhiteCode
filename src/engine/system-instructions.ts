@@ -31,6 +31,8 @@ export interface InstructionsContext {
   readonly mechanisms?: string;
   /** Section 12: the project instructions files, already rendered (SPEC-MOT-005). */
   readonly projectInstructions?: string;
+  /** Untrusted project memory metadata and the product's instructions for its bounded store. */
+  readonly projectMemory?: string;
   /** SPEC-MOT-004: replacement of the default sections and text added at the end. */
   readonly customInstructions?: { readonly replacement?: string; readonly addition?: string };
 }
@@ -112,6 +114,7 @@ export function defaultSectionProviders(contract: () => ContractText = CURRENT_C
       produce: (ctx) => (ctx.gitState ? `# Repository state (snapshot taken at session start)\n${ctx.gitState}` : undefined),
     },
     { id: 12, name: "project-instructions", stable: false, required: false, reducible: false, produce: (ctx) => ctx.projectInstructions },
+    { id: 14, name: "project-memory", stable: true, required: false, reducible: false, produce: (ctx) => ctx.projectMemory },
     // SPEC-MOT-004 CA-01: the added text comes last, as given.
     { id: 13, name: "custom-addition", stable: false, required: false, reducible: false, produce: (ctx) => ctx.customInstructions?.addition },
   ];

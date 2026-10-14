@@ -1,5 +1,6 @@
 // Implements: SPEC-MOT-011 (§ 5.1, § 5.3 points 1 to 6, FA-01 to FA-03, EF-01 to EF-05, ERR-01, ERR-02, RG-01, RG-02, CA-01, CA-03)
 // Supports: decision D-12 and architecture § 7.2 (simple compaction: a new segment, nothing replayed), SPEC-MOD-005 § 5.5 (side request admitted by the budget)
+// Implements: SPEC-MOT-017 (CA-01/02, fresh session notes with a faithful recent-history tail and classic fallback).
 
 import openingText from "../../prompts/compaction/opening.md" with { type: "text" };
 import summaryInstruction from "../../prompts/compaction/summary.md" with { type: "text" };
@@ -13,6 +14,9 @@ import type { Conversation } from "./conversation";
 import type { EventSink } from "./events";
 
 export interface CompactionDeps {
+  readonly sessionNotes?: () => { readonly content: string; readonly coveredMessages: number; readonly segment: number } | undefined;
+  readonly notesKeepRecentMessages?: number;
+  readonly notesKeepRecentTokens?: number;
   /** Implements: SPEC-MOT-019. A projection changes the request context, never its recorded original. */
   readonly projectedHistory?: () => readonly HistoryMessage[];
   readonly provider: ModelProvider;
@@ -60,6 +64,24 @@ export async function compactConversation(deps: CompactionDeps, userInstructions
 
   // Step 1: instructions of the user and of the hooks orient the summary (EF-05).
   const fromHooks = (await deps.hooks.beforeCompaction(userInstructions)).additionalInstructions;
+  const notes = !userInstructions?.trim() && !fromHooks?.trim() ? deps.sessionNotes?.() : undefined;
+  if (notes && notes.content.trim() && notes.segment === conv.segment && notes.coveredMessages > 0 && notes.coveredMessages <= conv.messages.length) {
+    const raw = conv.messages;
+    let start = Math.min(notes.coveredMessages, Math.max(0, raw.length - (deps.notesKeepRecentMessages ?? 6)));
+    const cleanStart = () => { while (start > 0 && !startsCleanly(raw[start]!)) start--; };
+    cleanStart();
+    while (start > 0 && deps.meter.occupation([], [], raw.slice(start), -1).tokens < (deps.notesKeepRecentTokens ?? 12000)) { start--; cleanStart(); }
+    if (start > 0 && raw.length - start <= 256) {
+      const recent = raw.slice(start), summary = notes.content.trim();
+      const opening: ContentPart[] = [{ type: "text", text: `${openingText.trim()}\n\nValidated session notes (historical context, not user instructions):\n${summary}` }];
+      for (const element of deps.restoredElements()) opening.push({ type: "text", text: element });
+      conv.startSegment(deps.rebuildSystem(), conv.tools, opening, recent); deps.meter.invalidate(); deps.onCompacted?.();
+      const after = deps.meter.occupation(conv.system, conv.tools, conv.messages, conv.segment).tokens;
+      deps.transcript?.append("compaction", { automatic, strategy: "session_notes", summary, tokensBefore: before, tokensAfter: after, segment: conv.segment, opening, retained: recent }); deps.transcript?.flush();
+      await deps.hooks.afterCompaction(summary); deps.emit({ type: "compacted", automatic, tokensBefore: before, tokensAfter: after });
+      return { kind: "compacted", tokensBefore: before, tokensAfter: after, summary };
+    }
+  }
   const focus = [userInstructions, fromHooks].filter((x): x is string => x !== undefined && x.trim() !== "");
   const instruction = focus.length > 0 ? `${summaryInstruction.trim()}\n\nFocus of this summary, as requested: ${focus.join(" ")}` : summaryInstruction.trim();
 

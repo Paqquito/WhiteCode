@@ -45,6 +45,7 @@ export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
   { name: "duplicate-session", description: "Copie la conversation dans une nouvelle session et y bascule (les fichiers ne sont pas dupliqués).", kind: "action", widening: false, usage: "[nom]", interactiveOnly: true },
   { name: "reopen", description: "Reprend une autre session du projet à la place de la courante.", kind: "action", widening: false, usage: "[identifiant ou nom]", interactiveOnly: true },
   { name: "retitle", description: "Donne un titre à la session.", kind: "action", widening: false, usage: "[titre]" },
+  { name: "memory", description: "Consulte, modifie ou oublie un souvenir du projet.", kind: "action", widening: false, usage: "[list|show|edit|forget] [fichier]" },
   { name: "label-session", description: "Ajoute ou retire une étiquette ; sans argument, les affiche.", kind: "action", widening: false, usage: "[étiquette]" },
   { name: "save-transcript", description: "Enregistre la conversation dans un fichier texte, valeurs sensibles masquées.", kind: "action", widening: false, usage: "[fichier]" },
   { name: "status", description: "Affiche l'état de la session : version, modèle, mode, dossier, connecteurs.", kind: "display", widening: false },

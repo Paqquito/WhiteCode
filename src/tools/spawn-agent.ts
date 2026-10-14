@@ -7,6 +7,7 @@ import description from "../../prompts/tools/spawn_agent.md" with { type: "text"
 import type { AgentDefinition } from "../agents/definitions";
 import type { EventSink } from "../engine/events";
 import { textOutcome, type Tool } from "./types";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 export interface SpawnAgentInput {
   readonly description: string;
@@ -18,6 +19,7 @@ export interface SpawnAgentInput {
 }
 
 export interface SpawnAgentDeps {
+  readonly forked?: () => boolean;
   /** The agents available, read at each call (SPEC-AGT-005 EF-04). */
   readonly agents: () => ReadonlyMap<string, AgentDefinition>;
   readonly launch: (input: SpawnAgentInput, definition: AgentDefinition | undefined, signal: AbortSignal, progress?: EventSink) => Promise<{ readonly text: string; readonly isError: boolean }>;
@@ -43,8 +45,8 @@ export function createSpawnAgentTool(deps: SpawnAgentDeps): Tool<SpawnAgentInput
       type: "object",
       properties: {
         description: { type: "string", minLength: 1, maxLength: 80, description: "The task in a few words, for the user." },
-        prompt: { type: "string", minLength: 1, description: "The complete task: the sub-agent sees nothing else." },
-        role: { type: "string", description: "Agent to use, among those listed. Default: general." },
+        prompt: { type: "string", minLength: 1, description: buildFlag("agent_forked") ? "The complete task; an explicitly typed agent sees only this task, while an implicit fork also inherits your completed context." : "The complete task: the sub-agent sees nothing else." },
+        role: { type: "string", description: "Typed agent to use, among those listed. Omit this field for the default delegation behavior." },
         model: { type: "string", description: "Model alias for this agent (large, medium, small). Default: the one of the agent, otherwise yours." },
         resume: { type: "string", description: "Id of an agent of this session to continue with a new prompt." },
         detached: { type: "boolean", description: "Run the agent in the background: its task id comes back at once and its report reaches you as a notification." },
@@ -54,7 +56,7 @@ export function createSpawnAgentTool(deps: SpawnAgentDeps): Tool<SpawnAgentInput
     },
     description: () => {
       const listed = [...deps.agents().values()].map((a) => `- ${a.name}: ${a.description}`);
-      return `${description.trim()}\n\nAgents available:\n${listed.join("\n")}`;
+      return `${description.trim()}${buildFlag("agent_forked") && deps.forked?.() ? "\nWithout an explicit role, start a fork of the caller's complete conversation in the background. A typed role keeps the ordinary isolated agent behavior." : ""}\n\nAgents available:\n${listed.join("\n")}`;
     },
     // The call changes nothing by itself; what the agent does is decided call by call (EF-01, gap E-105).
     flags: () => ({ readOnly: true, concurrencySafe: true, destructive: false, requiresPermission: true, openWorld: false }),
@@ -70,7 +72,7 @@ export function createSpawnAgentTool(deps: SpawnAgentDeps): Tool<SpawnAgentInput
         return textOutcome(`Unknown agent type: ${input.role}. Available: ${[...agents.keys()].join(", ")}.`, true, "invalid_input"); // ERR-01
       }
       // SPEC-AGT-018: in the background, the agent runs as a task of the session; its report comes as a notification (CA-03 of SPEC-OUT-016).
-      if (input.detached === true || (input.detached === undefined && definition?.detached === true)) {
+      if (input.detached === true || (input.detached === undefined && (definition?.detached === true || buildFlag("agent_forked") && input.role === undefined && input.resume === undefined && deps.forked?.()))) {
         if (!ctx.background) return textOutcome("Background tasks are not available in this session.", true, "unavailable");
         const task = ctx.background.start("agent", input.description, async (signal, write) => {
           await enter();

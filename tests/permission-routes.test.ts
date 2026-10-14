@@ -8,7 +8,7 @@ import { hook, productEnv, record } from "./helpers/hooks";
 import { ScriptedProvider } from "./helpers/scripted-provider";
 
 const write = (path: string, id?: string) => ({ name: "write_file", input: { path, content: "approved" }, ...(id ? { id } : {}) });
-const spawn = (role?: string) => ({ name: "spawn_agent", input: { description: "A bounded task", prompt: "Write the requested file.", ...(role ? { role } : {}) } });
+const spawn = (role = "general") => ({ name: "spawn_agent", input: { description: "A bounded task", prompt: "Write the requested file.", role } });
 const answer = (host: Host, request: Message, result: Record<string, unknown>) => host.send({ type: "control_response", id: request["id"], ok: true, result });
 const pending = (host: Host, except?: unknown) => host.waitFor((message) => message.type === "control_request" && message["request"] === "approval_request" && message["id"] !== except);
 const done = (host: Host, turn = 1) => host.waitFor((message) => message.type === "turn_completed" && message["turn"] === turn);

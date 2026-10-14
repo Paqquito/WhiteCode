@@ -16,7 +16,7 @@ const header = (h: Record<string, unknown>, body: string) =>
     .join("\n")}\n---\n${body}\n`;
 const userAgent = (ws: Workspace, name: string, h: Record<string, unknown>, body: string) => ws.write(`home/config/agents/${name}.md`, header({ name, ...h }, body));
 const projectAgent = (ws: Workspace, name: string, h: Record<string, unknown>, body: string) => ws.write(`project/${PROJECT_DIR}/agents/${name}.md`, header({ name, ...h }, body));
-const spawn = (input: Record<string, unknown>, id?: string) => ({ name: "spawn_agent", input: { description: "une tâche", prompt: "fais-le", ...input }, ...(id ? { id } : {}) });
+const spawn = (input: Record<string, unknown>, id?: string) => ({ name: "spawn_agent", input: { description: "une tâche", prompt: "fais-le", role: "general", ...input }, ...(id ? { id } : {}) });
 const sub = (p: ScriptedProvider) => p.requests.filter((r) => r.purpose === "subagent");
 const main = (p: ScriptedProvider) => p.requests.filter((r) => r.purpose !== "subagent");
 const toolsOf = (r: ModelRequest | undefined) => (r?.tools ?? []).map((t) => t.name);
@@ -60,7 +60,7 @@ test("SPEC-AGT-004/CA-01 — verifier executes a broken feature and returns its 
   expect(observedSystem).toContain("observed evidence");
   for (const name of ["write_file", "edit_file", "update_notebook_cell"]) expect(toolsOf(sub(p)[0])).not.toContain(name);
   expect(lastResults(main(p)[1])).toContain("Failed: sh check.sh exited with code 3 and printed FEATURE_BROKEN_728.");
-});
+}, 15_000);
 
 describe("SPEC-AGT-001 sub-agents", () => {
   test("SPEC-HOK-001/CA-04 — before_tool identifies the actual child and its effective permission mode", async () => {

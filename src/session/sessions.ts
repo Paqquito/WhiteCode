@@ -6,7 +6,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ContentPart, HistoryMessage, ToolCall, ToolResultPart } from "../providers/types";
 import { decodeProjectKey, projectKey, type TranscriptRecord } from "./transcript";
-import { ContentStore } from "./content-store";
+import { decodeRecordContent, retainedHistory } from "./retained-history";
 // Implements: SPEC-SES-009 (EF-02/03, CA-03), gap E-149.
 
 export function sessionLabels(records: readonly TranscriptRecord[]): string[] {
@@ -41,7 +41,7 @@ export function readTranscript(path: string): { records: TranscriptRecord[]; ski
     if (line.trim() === "") continue;
     try {
       const r = JSON.parse(line) as TranscriptRecord;
-      if (typeof r.id === "string" && typeof r.type === "string") records.push(r.type === "user" ? { ...r, data: { ...r.data, content: ContentStore.forTranscript(path).decode(r.data["content"]) } } : r);
+      if (typeof r.id === "string" && typeof r.type === "string") records.push(decodeRecordContent(r, path));
       else skipped++;
     } catch {
       skipped++;
@@ -224,6 +224,7 @@ export function rebuildHistory(chain: readonly TranscriptRecord[]): RebuiltHisto
         pending = [];
         results = [];
         messages = [{ role: "user", parts: (data["opening"] as ContentPart[] | undefined) ?? [] }];
+        if (data["retained"] !== undefined) messages.push(...retainedHistory(data["retained"]));
         break;
       case "user":
         closeResults();
