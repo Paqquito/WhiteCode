@@ -11,6 +11,7 @@ import type { InternalCommand } from "./catalog";
 import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
+  ...(buildFlag("mode_self_initiated") ? [{ name: "proactive", description: "Bascule les réveils proactifs de cette session ; chaque réveil consomme un appel.", kind: "action", widening: false, interactiveOnly: true }] as readonly InternalCommand[] : []),
   ...(buildFlag("automation_scripts") ? [{ name: "workflows", description: "Liste les flux par source et paramètres ; lance après approbation du plan.", kind: "action", widening: false, usage: "[run <nom> [objet JSON]]" }] as readonly InternalCommand[] : []),
   { name: "browser", description: "Affiche les instructions d’installation de l’extension navigateur configurée.", kind: "display", widening: false },
   { name: "install-chat-app", description: "Ouvre les instructions d’installation de l’application de messagerie configurée.", kind: "action", widening: false, interactiveOnly: true },

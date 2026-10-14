@@ -147,6 +147,9 @@ export function principalElement(input: unknown): string | undefined {
 const SCOPE_LABEL: Readonly<Record<(typeof RULE_SCOPES)[number], string>> = { session: "session", local: "projet (local)", project: "projet (partagé)", user: "utilisateur" };
 
 export interface AppOptions {
+  /** A narrowly authorized local toggle may be consumed even while a model turn runs. */
+  readonly immediateCommand?: (content: string) => boolean;
+  readonly autonomousStatus?: () => string | undefined;
   readonly brief?: () => boolean;
   readonly externalEditor?: (draft: string) => Promise<string | undefined>;
   readonly messageActions?: { readonly enabled: boolean; readonly copy: (text: string) => Promise<boolean>; readonly edit?: (item: TranscriptItem) => Promise<void> };
@@ -176,7 +179,7 @@ export interface AppOptions {
   readonly canBackground?: () => boolean;
   readonly backgroundCurrent?: () => string | undefined;
   readonly openBackgroundTasks?: () => Promise<void>;
-  readonly backgroundActivity?: () => readonly { readonly id: string; readonly activity?: string; readonly toolCalls?: number; readonly tokens?: number }[];
+  readonly backgroundActivity?: () => readonly { readonly id: string; readonly agentType?: string; readonly color?: number; readonly activity?: string; readonly toolCalls?: number; readonly tokens?: number }[];
   /** The task list of the main agent, shown above the input area (SPEC-OUT-021 § 10). */
   readonly tasks?: () => ReadonlyArray<{ readonly subject: string; readonly status: string; readonly progressLabel?: string }>;
   /** Summary of a tool call for the flow. */
@@ -479,6 +482,7 @@ export class InteractiveApp {
 
   get exiting(): boolean { return this.#exiting; }
   get humanDialogActive(): boolean { return !!(this.#confirm || this.#choice || this.#secret || this.#approvals.length); }
+  get autonomousInputBusy(): boolean { return this.humanDialogActive || !!this.#capture || this.#externalEditing || this.#readingImage || !this.#editor.isEmpty; }
   #lastInteractionAt = Date.now();
   get lastInteractionAt(): number { return this.#lastInteractionAt; }
 
@@ -1523,6 +1527,9 @@ export class InteractiveApp {
       void this.requestExit({ byCommand: true });
       return;
     }
+    if (!literal && this.running && this.#o.immediateCommand?.(content)) {
+      this.#editor.set(""); this.#editor.breakGroup(); this.#saveState(); this.#redraw(); return;
+    }
     if (this.running || !this.#waiting) {
       if (this.#queue.length >= this.#o.settings.queueMax) {
         this.notice("warning", "File d'attente pleine."); // ERR-01, FA-04: the draft stays in the input area
@@ -1620,7 +1627,7 @@ export class InteractiveApp {
     if (this.running) stream.push(activityView((tasks.find(task => task.status === "in_progress")?.progressLabel ?? this.#activity) + this.#tokenGoal, this.#now - this.#turnStarted, this.#spinner, this.#view));
     if (this.running && this.#tip) stream.push(text([{ text: this.#tip, style: { dim: true } }]));
     const background = this.#o.backgroundActivity?.() ?? [];
-    if (background.length > 0) panels.push(box(background.slice(-3).map((task) => text(`Agent ${task.id} · ${task.activity ?? "En attente…"} · ${task.toolCalls ?? 0} outil${task.toolCalls === 1 ? "" : "s"} · ${task.tokens ?? 0} jetons`, { overflow: "clip" })), { padding: { left: 2 } }));
+    if (background.length > 0) panels.push(box(background.slice(-3).map((task) => text([{ text: `Agent ${task.id} ${this.#view.unicode ? "●" : "*"} `, style: { fg: { ansi: task.color ?? 7 } } }, { text: `${task.agentType ?? "Agent"} · ${task.activity ?? "En attente…"} · ${task.toolCalls ?? 0} outil${task.toolCalls === 1 ? "" : "s"} · ${task.tokens ?? 0} jetons` }], { overflow: "clip" })), { padding: { left: 2 } }));
     if (buildFlag("ui_dev_bar") && buildProfile() !== "public") { const development = this.#o.developmentBar?.(); if (development) panels.push(text([{ text: development, style: { dim: true } }], { overflow: "clip" })); }
     const frame = composeFrame(
       { stream: stream.length > 0 ? box(stream) : undefined, panels, input: this.#inputNode(size.columns, ctx), status: this.#statusNode() },
@@ -1661,6 +1668,7 @@ export class InteractiveApp {
     const indent: Cell[] = spansToLines([{ text: "  " }])[0]!;
     const rows = lines.map((l, i) => [...(i === 0 ? prompt : indent), ...l]);
     const extra: string[] = [];
+    const autonomous = this.#o.autonomousStatus?.(); if (autonomous) extra.push(autonomous);
     if (ranges.length) extra.push(keyword?.supported ? "Réflexion maximale pour ce tour." : "Ce modèle ne prend pas en charge la réflexion : mot-clé sans effet.");
     if (this.#modal) extra.push(this.#modal.label()); // EF-01: always visible, as a text
     if (shell) extra.push(`Mode shell : la ligne est exécutée par ${this.#o.shell!.label} ; elle n'est pas envoyée au modèle.`);

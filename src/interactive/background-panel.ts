@@ -1,11 +1,12 @@
 // Implements: SPEC-IHM-028 (CA-01/02, EF-01/02), gap E-148.
+// Supports: SPEC-AGT-024 (CA-01, monitor event count and latest event), gap E-166.
 import type { BackgroundTasks, BackgroundTask } from "../engine/background";
 import type { InteractiveApp } from "./app";
 import { maskSecrets } from "../shared/secrets";
 
 const state = (task: BackgroundTask) => ({ running: "en cours", completed: "terminée", failed: "en échec", stopped: "arrêtée", timed_out: "délai dépassé", rate_limited: "débit dépassé" })[task.status];
 const label = (task: BackgroundTask) => `${task.id} — ${task.kind === "agent" ? "agent" : task.kind === "monitor" ? "surveillance" : task.kind === "workflow" ? "flux" : "commande"} — ${state(task)} — ${maskSecrets(task.description)}`;
-const detail = (task: BackgroundTask) => `${Math.round(((task.endedAt ?? Date.now()) - task.startedAt) / 1000)} s${task.activity ? ` · ${task.activity} · ${task.toolCalls ?? 0} outils · ${task.tokens ?? 0} jetons` : ""}${task.summary ? `\n${maskSecrets(task.summary)}` : ""}`;
+const detail = (task: BackgroundTask) => `${task.kind === "monitor" ? `${task.eventCount ?? 0} événements${task.lastEvent ? ` · ${maskSecrets(task.lastEvent).slice(0, 200)}` : ""} · ` : ""}${Math.round(((task.endedAt ?? Date.now()) - task.startedAt) / 1000)} s${task.activity ? ` · ${task.activity} · ${task.toolCalls ?? 0} outils · ${task.tokens ?? 0} jetons` : ""}${task.summary ? `\n${maskSecrets(task.summary)}` : ""}`;
 
 /** Dialogs are passive: an incoming permission request takes priority and closes the panel. */
 export async function openBackgroundPanel(app: InteractiveApp, background: BackgroundTasks): Promise<void> {

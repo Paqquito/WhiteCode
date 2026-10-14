@@ -113,6 +113,8 @@ export interface Tool<I = Record<string, unknown>> {
   readonly name: string;
   /** Name under which the rules decide its calls, when it is not its own (`monitor_process` is decided as `run_shell`). */
   readonly permissionName?: string;
+  /** Trusted timer-only waits may outlast the ordinary tool timeout; the run signal still governs them. */
+  readonly idleWait?: boolean;
   readonly inputSchema: Record<string, unknown>;
   /** Description for the model, from the text referential (stable within a session, EF-08). */
   description(env: ToolEnvironment): string;

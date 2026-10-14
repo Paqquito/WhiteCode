@@ -55,6 +55,7 @@ function exportUrl(value: string | undefined, insecureLocal = false): string | u
 }
 
 export interface ObserverOptions {
+  readonly experimentBaseline?: boolean;
   readonly onLoggedError?: (stack: string) => void;
   readonly enhanced?: boolean; readonly includeToolContent?: boolean;
   readonly commonProductAttributes?: Readonly<Record<string, string>>; readonly commonTraceAttributes?: Readonly<Record<string, string>>;
@@ -115,7 +116,7 @@ export class SessionObserver {
   }
   #record(name: EventName, data: Attributes): void {
     if (!this.#o.productEnabled() || !exportUrl(this.#o.productUrl)) { this.#products = []; return; }
-    if (this.#products.length < 256) this.#products.push({ name, attributes: { ...productAttributes(data), ...this.#o.commonProductAttributes } });
+    if (this.#products.length < 256) this.#products.push({ name, attributes: { ...productAttributes(data), ...this.#o.commonProductAttributes, ...(this.#o.experimentBaseline ? { "experiment.baseline": true } : {}) } });
   }
   #log(name: EventName, data: Attributes): void {
     if (!this.#o.otelEnabled() || this.#logs.length >= 512) return;
@@ -236,7 +237,7 @@ export class SessionObserver {
     this.#log("render_summary", { frames: summary.frames, duration_ms: summary.durationMs, slow_frames: summary.slowFrames });
   }
   #resource(): { attributes: OtlpAttribute[] } {
-    return { attributes: attributes({ "service.name": this.#o.slug, "service.version": this.#o.version, "entrypoint": this.#o.entrypoint, ...this.#o.commonTraceAttributes, ...(this.#o.includeSessionId ? { "session.id": this.#sessionId() } : {}) }) };
+    return { attributes: attributes({ "service.name": this.#o.slug, "service.version": this.#o.version, "entrypoint": this.#o.entrypoint, ...this.#o.commonTraceAttributes, ...(this.#o.experimentBaseline ? { "experiment.baseline": true } : {}), ...(this.#o.includeSessionId ? { "session.id": this.#sessionId() } : {}) }) };
   }
   #metricData(): Array<Record<string, unknown>> {
     const groups = new Map<string, Array<Record<string, unknown>>>(), time = nano();

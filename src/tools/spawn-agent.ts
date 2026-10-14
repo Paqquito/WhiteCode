@@ -96,6 +96,7 @@ export function createSpawnAgentTool(deps: SpawnAgentDeps): Tool<SpawnAgentInput
             leave();
           }
         });
+        ctx.background.identifyAgent(task.id, definition?.name ?? input.role ?? "general", definition?.color);
         return textOutcome(`Agent started in the background as task ${task.id}. Its report will reach you as a notification; background_output (task_id ${task.id}) tells whether it still runs.`);
       }
       await enter();

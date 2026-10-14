@@ -352,7 +352,7 @@ export class ResponseExecution {
         );
         // EF-05: the own limit of the tool (plus the grace period of its own stop), bounded by `engine.toolTimeout`.
         const own = tool.timeoutMs?.(call.input as never, ctx);
-        const limit = own === undefined ? this.#deps.toolTimeoutMs : Math.min(own + TOOL_STOP_MARGIN_MS, this.#deps.toolTimeoutMs);
+        const limit = tool.idleWait && own !== undefined ? Math.min(3606000, own + TOOL_STOP_MARGIN_MS) : own === undefined ? this.#deps.toolTimeoutMs : Math.min(own + TOOL_STOP_MARGIN_MS, this.#deps.toolTimeoutMs);
         const outcome = await withTimeout(execution, limit, () => callController.abort());
         signal.removeEventListener("abort", onAbort);
         if (writes.length > 0) this.#deps.fileHistory?.afterWrite(writes);

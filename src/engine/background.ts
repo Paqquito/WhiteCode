@@ -3,6 +3,7 @@
 // Background tasks of a session: a shell command, an agent or a monitor that go on while the conversation continues.
 // Each writes its output to its own file; its end is announced to its owner exactly once, at the next request.
 // Supports: SPEC-AGT-017 (CA-02), SPEC-AGT-018 (CA-01), gap E-147.
+// Implements: SPEC-AGT-006 (CA-01, stable per-type colors), SPEC-AGT-024 (CA-01, delivered monitor counters), gap E-166.
 
 import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -26,6 +27,10 @@ export interface BackgroundTask {
   toolCalls?: number;
   tokens?: number;
   readonly outputFile: string;
+  agentType?: string;
+  color?: number;
+  eventCount?: number;
+  lastEvent?: string;
 }
 
 export interface BackgroundOptions {
@@ -55,6 +60,10 @@ export class BackgroundTasks {
   readonly #done = new Map<string, Promise<void>>();
   readonly #monitors = new Map<string, MonitorState>();
   readonly #notes: Reminder[] = [];
+  #notificationVersion = 0;
+  get notificationVersion(): number { return this.#notificationVersion; }
+  readonly #deliveries = new Map<Reminder, { task: BackgroundTask; count: number }>();
+  readonly #agentColors = new Map<string, number>();
   #next = 1;
   readonly #listeners: Array<() => void> = [];
   readonly #foreground = new Map<symbol, () => string | undefined>();
@@ -112,6 +121,17 @@ export class BackgroundTasks {
     return undefined;
   }
 
+  /** Stable per-type colors, chosen by active use; text ids remain the primary identification. */
+  identifyAgent(id: string, type: string, declared?: string): void {
+    const task = this.#tasks.get(id); if (!task || task.kind !== "agent") return;
+    const palette = ["red", "green", "yellow", "blue", "magenta", "cyan", "white", "gray"];
+    const explicit = declared === undefined ? -1 : palette.indexOf(declared);
+    let color = this.#agentColors.get(type);
+    if (explicit >= 0) color = explicit + 1;
+    if (color === undefined) { const counts = palette.map((_, index) => this.running.filter(active => active.kind === "agent" && active.color === index + 1).length); color = counts.indexOf(Math.min(...counts)) + 1; }
+    this.#agentColors.set(type, color); task.agentType = type; task.color = color; this.#changed();
+  }
+
   updateActivity(id: string, activity: string, toolCalls = 0, tokens = 0): void {
     const task = this.#tasks.get(id);
     if (!task || task.status !== "running") return;
@@ -124,7 +144,7 @@ export class BackgroundTasks {
   }
 
   /** EF-03, CA-01: the ends and the monitor lines, each delivered once, at the next request of the owner (FA-03). */
-  readonly reminders: ReminderProducer = { type: "background_task", produce: () => this.#notes.splice(0) };
+  readonly reminders: ReminderProducer = { type: "background_task", produce: () => { const notes = this.#notes.splice(0); for (const note of notes) { const delivery = this.#deliveries.get(note); if (delivery) { delivery.task.eventCount = (delivery.task.eventCount ?? 0) + delivery.count; this.#deliveries.delete(note); this.#changed(); } } return notes; } };
 
   #now(): number {
     return (this.#o.now ?? Date.now)();
@@ -179,6 +199,7 @@ export class BackgroundTasks {
     task.exitCode = exitCode ?? null;
     if (summary !== undefined) task.summary = summary;
     this.#notes.push({ type: "background_task", text: this.#endNote(task), priority: 3 });
+    this.#notificationVersion++;
     this.#changed();
   }
 
@@ -228,7 +249,10 @@ export class BackgroundTasks {
     m.timer = undefined;
     if (m.pending.length === 0) return;
     const lines = m.pending.splice(0);
-    this.#notes.push({ type: "monitor_event", text: `The monitor ${task.id} (${task.description}) reported:\n${lines.slice(-50).join("\n")}`, priority: 3 });
+    task.lastEvent = lines.at(-1);
+    const note: Reminder = { type: "monitor_event", text: `The monitor ${task.id} (${task.description}) reported:\n${lines.slice(-50).join("\n")}`, priority: 3 };
+    this.#notes.push(note); this.#deliveries.set(note, { task, count: Math.min(50, lines.length) });
+    this.#notificationVersion++;
     this.#changed();
   }
 

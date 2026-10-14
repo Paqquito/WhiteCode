@@ -44,6 +44,7 @@ export interface ControlOperations {
 }
 
 export interface ControlSessionOptions {
+  readonly onEnqueue?: () => void;
   readonly send: (message: Record<string, unknown>) => void;
   readonly defaultTimeoutMs: number;
   readonly maxInFlight: number;
@@ -245,6 +246,7 @@ export class ControlSession {
 
   #enqueue(item: QueueItem): void {
     this.#queue.push(item);
+    this.#o.onEnqueue?.();
     this.#signal();
   }
 

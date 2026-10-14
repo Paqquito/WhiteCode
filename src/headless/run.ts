@@ -62,6 +62,8 @@ import { parseLoop } from "../schedule/loop";
 import { writeAtomic } from "../tools/text-file";
 import { credentialStore, loginWithKey, logout, type AuthUi, type CredentialValidator } from "../auth/commands";
 import { isCredentialFile } from "../auth/credentials";
+import { baselineSettings, BASELINE_MECHANISMS } from "../autonomy/baseline";
+import { ProactiveWake, WakeEvents, waitTool } from "../autonomy/wake";
 import { builtinWorkflows } from "../workflows/builtin";
 import { loadWorkflows, type Workflow, type WorkflowStep } from "../workflows/definitions";
 import { WorkflowRunner } from "../workflows/runtime";
@@ -712,7 +714,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       } else await updateUserState(loaded.locations.userStateFile, { restrictedProjects: [root] }, system.platform);
     }
   }
-  const { locations, firstPass, settings, trust } = loaded;
+  const experimentBaseline = buildFlag("mode_experiment_baseline") && env.ownBoolean("EXPERIMENT_BASELINE") === true;
+  const { locations, firstPass, settings: rawSettings, trust } = loaded;
+  const settings = baselineSettings(rawSettings, experimentBaseline);
+  if (experimentBaseline) err("Mode de référence expérimental : mécanismes implicites désactivés ; réglages explicites conservés.");
   phase("environnement, options et configuration");
   // SPEC-CFG-005: the settings files are checked before each request; `liveSettings` holds the effective values.
   let liveSettings = settings;
@@ -1116,6 +1121,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     enhanced: buildFlag("telemetry_enhanced") && env.ownBoolean("DETAILED_TELEMETRY") === true,
     includeToolContent: buildFlag("telemetry_enhanced") && env.ownBoolean("DETAILED_TELEMETRY") === true && env.ownBoolean("TELEMETRY_INCLUDE_CONTENT") === true,
     ...(buildFlag("telemetry_orchestrator_role") ? collaborationMetadata(env.own("ORCHESTRATOR_ROLE")) : {}),
+    experimentBaseline,
     includeSessionId: settings.get<boolean>("telemetry.otel.includeSessionId"),
     ...(buildFlag("strict_failure") && opt("strict-failure") ? { onLoggedError: (stack: string) => { if (!holder.loggedFailure) err(`STRICT-FAILURE: ${stack}`); holder.loggedFailure = true; holder.abortOnLoggedError?.(); } } : {}),
     environment: name => env.public(name), fetch: deps.observabilityFetch ?? network,
@@ -1216,7 +1222,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const toolsetOption = opt("toolset");
   const toolsetNames = typeof toolsetOption === "string" ? (toolsetOption.trim() === "" ? [] : splitList(toolsetOption)) : undefined;
   // `spawn_agent` is a tool of the session, added after the registry is built: it is listed like the others (SPEC-OUT-001).
-  const toolset = toolsetNames?.filter((n) => !["run_workflow", "discover_skills", "message_user", "review_artifact", "search_web", "overflow_test", "prune_history", "configure", "submit_result", "spawn_agent", "code_intelligence", "list_connector_resources", "read_connector_resource", "connector_sign_in", "schedule_create", "schedule_list", "schedule_delete"].includes(n));
+  const toolset = toolsetNames?.filter((n) => !["wait", "run_workflow", "discover_skills", "message_user", "review_artifact", "search_web", "overflow_test", "prune_history", "configure", "submit_result", "spawn_agent", "code_intelligence", "list_connector_resources", "read_connector_resource", "connector_sign_in", "schedule_create", "schedule_list", "schedule_delete"].includes(n));
   const agentsInToolset = toolsetNames === undefined || toolsetNames.includes("spawn_agent") || (toolsetNames.length === 1 && toolsetNames[0] === "default");
   let registry: ToolRegistry;
   const minimal = opt("minimal") === true || offlineMinimal;
@@ -1939,6 +1945,15 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     ];
     return loadWorkflows(builtinWorkflows(), locationsForWorkflows, readDenied, warning => { if (!workflowWarnings.has(warning)) { workflowWarnings.add(warning); err(warning); } });
   };
+  const wakes = buildFlag("mode_self_initiated") && !minimal ? new WakeEvents() : undefined;
+  let proactive: ProactiveWake | undefined, waitUntil: number | undefined;
+  let waitQueueSize = 0;
+  const advertiseWait = () => { if (!wakes || !proactive?.active || !inToolset("wait")) return; const tool = waitTool({ events: wakes, enabled: () => !!proactive?.active, maxMs: () => liveSettings.get<number>("engine.autonomous.maxWait"), tickMs: () => liveSettings.get<number>("engine.autonomous.tickInterval"), waiting: until => { waitUntil = until; app?.refresh(); } }); registry.addStatic(tool as never); conversation.extendTools([{ name: tool.name, description: tool.description({ platform: system.platform, home: system.home }), inputSchema: tool.inputSchema }]); };
+  const toggleProactive = () => {
+    const active = proactive!.toggle();
+    if (active) advertiseWait(); else { wakes?.emit("wake"); conversation.retireTools(name => name === "wait"); }
+    return active ? "Mode proactif activé pour cette session. Chaque réveil consomme un appel au modèle ; le cache peut expirer pendant la veille." : "Mode proactif désactivé.";
+  };
   const workflowRunner = buildFlag("automation_scripts") ? new WorkflowRunner(Math.min(settings.get<number>("workflows.maxParallel"), settings.get<number>("agents.maxParallel"))) : undefined;
   const workflowTool = (depth: number, caller: ToolLookup, parentContext: AgentPermissionContext = mainPermissionContext, callerMaxIterations?: number) => createRunWorkflowTool({
     catalog: workflowCatalog, runner: workflowRunner!, depth, maxDepth: maxAgentDepth, remainingMs: () => limits.remainingMs(), redact: value => redactOutput(maskSecrets(value)),
@@ -2193,7 +2208,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       const unavailable = connectors.status().filter(s => s.state === "disabled" || s.state === "auth_required").map(s => `cnx_${s.name}_`);
       conversation.retireTools(name => name === "connector_sign_in" && !tools.some(t => t.name === name) || unavailable.some(prefix => name.startsWith(prefix)));
     }
-    conversation.extendTools(registry.list().map((t) => ({ name: t.name, description: t.description(toolEnv), inputSchema: t.inputSchema })));
+    conversation.extendTools(registry.list().filter(t => t.name !== "wait" || proactive?.active).map((t) => ({ name: t.name, description: t.description(toolEnv), inputSchema: t.inputSchema })));
   };
   // SPEC-EXT-019 EF-04, CA-02: a skill changed during the session is read again and the model is told.
   const skillNotes: Reminder[] = [];
@@ -2429,6 +2444,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const permissionDenials = new PermissionDenials(() => ({ consecutive: liveSettings.get<number>("permissions.denials.maxConsecutive"), total: liveSettings.get<number>("permissions.denials.maxTotal") }));
   const toolDecisions = new Map<string, Extract<EngineEvent, { type: "permission" }>>();
   const emit = (event: EngineEvent) => {
+    if (event.type === "retry") proactive?.backoff(event.delayMs);
+    if (event.type === "turn_completed") proactive?.activity();
     if (event.type === "turn_completed") { turnDuration += event.result.durationMs; refreshFooter(); }
     observer.event(event);
     if (event.type === "permission") {
@@ -2565,6 +2582,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const control =
     controlled && stream
       ? new ControlSession({
+          onEnqueue: () => wakes?.emit("message"),
           send: (m) => {
             const { type, ...fields } = m;
             stream.emit(String(type), fields);
@@ -2647,7 +2665,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     assertPolicy();
     const reload = reloader.check();
     if (!reload) return;
-    liveSettings = reload.settings;
+    liveSettings = baselineSettings(reload.settings, experimentBaseline);
     observer.recheck();
     featureFlags.recheck();
     if (reload.changed.includes("ui.theme") && !themePreviewActive) {
@@ -2802,7 +2820,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       } } : undefined,
       maxKeyword: buildFlag("thinking_max_keyword") ? () => ({ keyword: liveSettings.get<string>("thinking.maxKeyword"), supported: currentModel.capabilities.thinking !== "none" }) : undefined,
       onApprovalWaiting: waiting => { setTerminalTitle(waiting); notifications.waiting(waiting); },
-      onFocus: focused => notifications.focus(focused), onActivity: () => notifications.activity(),
+      onFocus: focused => notifications.focus(focused), onActivity: () => { notifications.activity(); proactive?.activity(); },
       autoTheme: buildFlag("ui_auto_theme") ? () => liveSettings.get<string>("ui.theme") === "auto" && !themePreviewActive : undefined,
       onAppearance: buildFlag("ui_auto_theme") ? light => { if (liveSettings.get<string>("ui.theme") === "auto" && !themePreviewActive) { activeTheme = light ? "light" : "dark"; app?.setTheme(resolveTheme(activeTheme, identity.get("BRAND_COLOR_PRIMARY")), renderOptions(liveSettings)); } } : undefined,
       terminal: terminal!,
@@ -2872,7 +2890,12 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         launch: launchExternal,
       }),
       restored,
-      onInputState: (s) => stateWriter?.update(s),
+      onInputState: (s) => { stateWriter?.update(s); if (s.queue.length > waitQueueSize) wakes?.emit("message"); waitQueueSize = s.queue.length; },
+      immediateCommand: buildFlag("mode_self_initiated") ? content => {
+        const entry = recognize(content); if (entry?.kind !== "command" || entry.name !== "proactive" || entry.args.trim() || commandCatalog().resolve(entry.name).kind !== "internal" || !proactive?.active) return false;
+        app?.notice("info", toggleProactive()); return true;
+      } : undefined,
+      autonomousStatus: buildFlag("mode_self_initiated") ? () => proactive?.active ? waitUntil === undefined ? "Mode proactif" : `Mode proactif · en veille jusqu’à ${new Date(waitUntil).toLocaleTimeString("fr-FR")}` : undefined : undefined,
       keymap,
       showFooterHints: settings.get<boolean>("ui.keybindings.showFooterHints"),
       history,
@@ -2934,6 +2957,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     takeSubmittedResult: () => submittedResult.take(),
     postSampling: (assistant, agent) => postSampling.dispatch({ assistant, agent, minimal, ephemeral: transcript === undefined }),
     beforeRequest: () => {
+      wakes?.acknowledge();
       assertPolicy();
       if (pruneRequested && pruning) { pruneRequested = false; const result = pruning.pruneOldLargeResults(); emit({ type: "warning", message: `Élagage : environ ${result.freedTokens} jetons libérés ; messages utilisateur conservés.` }); }
       applySettingsChanges();
@@ -3030,7 +3054,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         modelImages: currentModel.capabilities.images,
         ripgrepPath,
         taskList,
-        background,
+        background: settings.get<boolean>("tasks.enabled") ? background : undefined,
         web: webAccess,
         languages,
         extraReadableDirectories: [resultStore.dir],
@@ -3137,8 +3161,14 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     ...(a.classifier ? { classifier: { decide: (r, s) => a.classifier!.decide({ ...r, requester, ...agentScope() }, s) } } : {}),
     ...(a.habilitatedHook ? { habilitatedHook: { decide: (r, s) => a.habilitatedHook!.decide({ ...r, requester, ...agentScope() }, s) } } : {}),
   });
+  if (wakes && app) {
+    proactive = new ProactiveWake({ now: () => (deps.now?.() ?? new Date()).getTime(), intervalMs: () => liveSettings.get<number>("modes.proactive.intervalMinutes") * 60000, ready: () => !!app && !app.exiting && !app.running && !app.autonomousInputBusy && app.queue.length === 0 && processingRequests === 0 && limits.beforeRequest() === undefined, pressure: () => { const s = ledger.snapshot; return s.cap !== undefined && s.conservative + s.reserved >= s.cap * settings.get<number>("engine.limits.warnRatio"); }, submit: message => app!.enqueueScheduled(message), changed: () => app?.refresh() });
+    holder.cleanups.push(() => proactive?.close());
+    let notificationVersion = background.notificationVersion;
+    const stopWakes = background.onChange(() => { if (notificationVersion !== background.notificationVersion) { notificationVersion = background.notificationVersion; wakes.emit("notification"); } }); holder.cleanups.push(stopWakes);
+  }
   const runSubagent = async (input: SpawnAgentInput, definition: AgentDefinition | undefined, signal: AbortSignal, depth: number, caller: ToolLookup, parentContext: AgentPermissionContext, callerMaxIterations?: number, progress?: (event: EngineEvent) => void, ownedBackground?: BackgroundTasks): Promise<{ text: string; isError: boolean }> => {
-    const inheritedBackground = ownedBackground ?? (caller === registry ? background : [...subagents.values()].find(candidate => candidate.deps.executor.registry === caller)?.deps.executor.toolContext(signal).background ?? background);
+    const inheritedBackground = !settings.get<boolean>("tasks.enabled") ? undefined : ownedBackground ?? (caller === registry ? background : [...subagents.values()].find(candidate => candidate.deps.executor.registry === caller)?.deps.executor.toolContext(signal).background ?? background);
     let agent: { readonly name: string; readonly deps: LoopDeps; readonly caller: ToolLookup; readonly skillAllows: Rule[]; readonly hookDefinition?: AgentDefinition };
     let id: string;
     if (input.resume !== undefined) {
@@ -3185,7 +3215,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       // below the maximal depth; a planning agent only reads (EF-06 of SPEC-OUT-016).
       const replaced = new Map<string, never>();
       const allowed = (name: string) =>
-        !["message_user", "review_artifact", "discover_skills"].includes(name) &&
+        !["wait", "message_user", "review_artifact", "discover_skills"].includes(name) &&
         !(def.webHosts && name === "search_web") &&
         name !== "prune_history" &&
         name !== "submit_result" &&
@@ -3722,6 +3752,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       if (command.name !== "quit" && command.name !== "exit") return { refused: policyGuard.check(policyCapability).map((i) => i.message).join("\n") };
     }
     switch (command.name) {
+      case "proactive": {
+        if (!app || minimal || !buildFlag("mode_self_initiated")) return { refused: "Mode proactif indisponible dans cette session." };
+        if (args.trim()) return { refused: "Usage : /proactive." };
+        return { shown: text(toggleProactive()) };
+      }
       case "workflows": {
         if (args.trim()) { const match = /^run\s+([a-z][a-z0-9-]*)(?:\s+([\s\S]+))?$/.exec(args.trim()); if (!match) return { refused: "Usage : /workflows run <nom> [objet JSON]." }; return launchWorkflowCommand(match[1]!, match[2] ?? "", signal); }
         const note = [...workflowCatalog().values()].map(workflow => `${workflow.name} (${workflow.source === "built-in" ? "intégré" : workflow.source === "project" ? "projet" : "utilisateur"}) : ${workflow.description}\n  Paramètres : ${Object.entries(workflow.parameters ?? {}).map(([name, parameter]) => `${name}: ${parameter.type}${parameter.required ? " (obligatoire)" : ""}${parameter.default !== undefined ? `, défaut ${JSON.stringify(parameter.default)}` : ""}`).join(" ; ") || "aucun"}`).join("\n"); return { note: note || "Aucun flux disponible." };
@@ -4538,6 +4573,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           `Dossier : ${projectReal}`,
           `Fournisseur : ${providerId} · modèle : ${currentModel.id}`,
           `Authentification : ${credentialSource}`,
+          ...(experimentBaseline ? [`Mode de référence expérimental (liste v1) : ${BASELINE_MECHANISMS.map(key => `${key}=${settings.get(key)} (${settings.origin(key)})`).join(" ; ")}`] : []),
           `Mode de permission : ${modeState.mode}`,
           `Confiance du projet : ${trust.trusted ? "accordée" : "non accordée"}`,
           `Options dynamiques : ${featureFlags.lastRefresh ?? "valeurs embarquées ou cache, aucun rafraîchissement"}`,
