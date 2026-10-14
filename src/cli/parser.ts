@@ -98,6 +98,7 @@ export function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
       value = inline ?? true;
       const next = argv[i + 1];
       if (name === "debug" && inline === undefined && next !== undefined && splitList(next).length > 0 && splitList(next).every((domain) => (DEBUG_DOMAINS as readonly string[]).includes(domain.replace(/^!/, "")))) { value = next; i++; }
+      if (name === "isolated-copy" && inline === undefined && next !== undefined && /^[a-z][a-z0-9-]{0,47}$/.test(next)) { value = next; i++; }
     } else {
       if (inline !== undefined) value = inline;
       else {

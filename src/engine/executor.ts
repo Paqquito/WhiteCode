@@ -201,10 +201,6 @@ export class ResponseExecution {
       if (blocked) return blocked;
       if (!tool) return finish(textOutcome(`Unknown tool: ${call.name}. This tool is not available in this session.`, true, "unavailable")); // ERR-01 of SPEC-MOT-001
       if (schemaErrors.length > 0) return finish(textOutcome(`Invalid input: ${schemaErrors.join("; ")}.`, true, "invalid_input")); // EF-02
-      const ctx = this.#deps.toolContext(signal);
-      const businessError = tool.validate?.(call.input as never, ctx);
-      if (businessError) return finish(textOutcome(businessError, true, "invalid_input"));
-
       // Unsafe calls wait for the end of the response before anything else (E-022).
       if (!safe) {
         const gate = await this.#gate;
@@ -213,6 +209,13 @@ export class ResponseExecution {
         if (gate === "aborted") return finish(textOutcome("Not executed: the turn was interrupted.", true, "interrupted"));
       }
       if (signal.aborted) return finish(textOutcome("Not executed: the turn was interrupted.", true, "interrupted"));
+      // Context, validation and permission contributions follow earlier barriers, including a working-folder switch.
+      if (safe) await lastBarrier;
+      else await Promise.allSettled(previous);
+      if (signal.aborted) return finish(textOutcome("Not executed: the turn was interrupted.", true, "interrupted"));
+      const ctx = this.#deps.toolContext(signal);
+      const businessError = tool.validate?.(call.input as never, ctx);
+      if (businessError) return finish(textOutcome(businessError, true, "invalid_input"));
 
       // Suspended repeated call (SPEC-MOT-046 § 5.3): the user chooses; without interface, never executed (EF-02).
       if (verdict?.suspend && guard) {
@@ -305,8 +308,6 @@ export class ResponseExecution {
       }
 
       // Scheduling (RG-01 to RG-03): a safe call waits for the last barrier; a barrier waits for every previous call.
-      if (safe) await lastBarrier;
-      else await Promise.allSettled(previous);
       const release = await this.#semaphore.acquire();
       try {
         if (signal.aborted) return finish(textOutcome("Not executed: the turn was interrupted.", true, "interrupted"));

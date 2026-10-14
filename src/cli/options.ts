@@ -77,7 +77,7 @@ export const OPTIONS: readonly OptionDef[] = [
   { name: "system-instructions-file", value: "required", type: "path", group: "Instructions et contexte", description: "Idem, depuis un fichier.", delivered: true, owner: "SPEC-MOT-004" },
   { name: "add-system-instructions", value: "required", type: "string", group: "Instructions et contexte", description: "Ajoute aux instructions de base.", delivered: true, owner: "SPEC-MOT-004" },
   { name: "add-system-instructions-file", value: "required", type: "path", group: "Instructions et contexte", description: "Idem, depuis un fichier.", delivered: true, owner: "SPEC-MOT-004" },
-  { name: "allow-dir", value: "required", type: "path", repeatable: true, group: "Instructions et contexte", description: "Ajoute un dossier au périmètre autorisé.", danger: true, delivered: false, owner: "SPEC-PER-011" },
+  { name: "allow-dir", value: "required", type: "path", repeatable: true, group: "Instructions et contexte", description: "Ajoute un dossier au périmètre autorisé.", danger: true, delivered: true, owner: "SPEC-PER-011" },
   { name: "lean-context", value: "none", group: "Instructions et contexte", description: "Contexte d'environnement réduit.", delivered: false, owner: "SPEC-MOT-003" },
 
   // Tools, permissions and hooks
@@ -113,7 +113,7 @@ export const OPTIONS: readonly OptionDef[] = [
 
   // Integrations
   { name: "connect-editor", value: "none", group: "Intégrations", description: "Se connecte à l'IDE compatible.", delivered: false, owner: "SPEC-INT-001" },
-  { name: "isolated-copy", value: "optional", type: "string", group: "Intégrations", description: "Démarre dans une copie de travail isolée.", delivered: false, owner: "SPEC-INT-007" },
+  { name: "isolated-copy", value: "optional", type: "string", group: "Intégrations", description: "Démarre dans une copie de travail isolée.", delivered: true, owner: "SPEC-INT-007" },
   { name: "multiplexer", value: "none", group: "Intégrations", description: "Avec --isolated-copy, ouvre la session dans le multiplexeur de terminal.", delivered: false, owner: "SPEC-INT-007" },
   { name: "from-merge-request", value: "required", type: "string", group: "Intégrations", description: "Reprend la session liée à une demande de fusion.", delivered: false, owner: "SPEC-INT-009" },
   { name: "browser", value: "none", group: "Intégrations", description: "Active le pilotage du navigateur.", delivered: false, owner: "SPEC-INT-011" },

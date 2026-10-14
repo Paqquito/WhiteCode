@@ -3,7 +3,7 @@
 
 import type { Settings } from "../config/settings";
 import { satisfies } from "../platform/semver";
-import { cachedCatalog } from "./catalog";
+import { cachedCatalog, type CatalogRegistration } from "./catalog";
 
 /** ERR-01 of SPEC-EXT-009: blocked by name, by `<name>@<catalogue>` or through its catalogue (EF-02: installed ones too). */
 export function blockedReason(settings: Settings, name: string, catalog: string): string | undefined {
@@ -23,7 +23,7 @@ export interface Flag {
  * known). A critical flag allowed by the organisation (`extensions.allowFlagged`) is lowered to a warning (FA-01).
  */
 export function flagOf(settings: Settings, configDir: string, name: string, catalog: string, version: string): Flag | undefined {
-  const flag = cachedCatalog(configDir, catalog)?.flagged.find((f) => f.name === name && (f.versions === undefined || satisfies(version, f.versions)));
+  const flag = cachedCatalog(configDir, catalog, settings.get<Record<string, CatalogRegistration>>("extensions.catalogs")[catalog])?.flagged.find((f) => f.name === name && (f.versions === undefined || satisfies(version, f.versions)));
   if (!flag) return undefined;
   const allowed = settings.get<string[]>("extensions.allowFlagged");
   if (flag.severity === "critical" && (allowed.includes(name) || allowed.includes(`${name}@${catalog}`))) return { severity: "warning", reason: flag.reason };

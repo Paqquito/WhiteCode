@@ -2,7 +2,10 @@
 // Catalogues of extensions: a `catalog.json` in a local folder or a Git repository, fetched into a cache of the
 // configuration folder; the extensions are then installed from it.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readPrivateText, ordinaryPrivateFile } from "../shared/private-text";
+import { writeAtomic } from "../tools/text-file";
+import { currentPlatform } from "../platform/system";
 import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
@@ -57,6 +60,8 @@ export interface Catalog {
 
 /** Registration of a catalogue in `extensions.catalogs` (§ 11). */
 export interface CatalogRegistration {
+  /** Trusted composition metadata, never accepted by the settings schema. */
+  readonly requireOrigin?: true;
   readonly source: string;
   readonly ref?: string;
   readonly leanContext?: readonly string[];
@@ -138,9 +143,21 @@ export function readCatalog(dir: string): { catalog?: Catalog; error?: string } 
 }
 
 /** The cached catalogue `name`, when present. */
-export function cachedCatalog(configDir: string, name: string): Catalog | undefined {
+export function cachedCatalog(configDir: string, name: string, registration?: CatalogRegistration): Catalog | undefined {
   const dir = join(catalogsDir(configDir), name);
+  if (registration?.requireOrigin) {
+    try {
+      const receipt = JSON.parse(readPrivateText(join(dir, ".catalog-origin.json"), 4096)) as { sourceHash?: unknown; manifestHash?: unknown };
+      if (receipt.sourceHash !== catalogSourceHash(registration) || receipt.manifestHash !== createHash("sha256").update(readPrivateText(join(dir, CATALOG_FILE), 1024 * 1024)).digest("hex")) return undefined;
+    } catch { return undefined; }
+  }
   return existsSync(dir) ? readCatalog(dir).catalog : undefined;
+}
+const catalogSourceHash = (registration: CatalogRegistration) => createHash("sha256").update(JSON.stringify([registration.source, registration.ref ?? null, registration.leanContext ?? []])).digest("hex");
+/** Provenance is written after a valid fetch; a legacy cache cannot acquire official status by being renamed. */
+export function recordCatalogOrigin(dir: string, registration: CatalogRegistration): void {
+  const file = join(dir, ".catalog-origin.json"); ordinaryPrivateFile(file, 4096);
+  writeAtomic(file, Buffer.from(JSON.stringify({ sourceHash: catalogSourceHash(registration), manifestHash: createHash("sha256").update(readPrivateText(join(dir, CATALOG_FILE), 1024 * 1024)).digest("hex") })), currentPlatform(), true);
 }
 
 /** Replaces the cache of a catalogue by a fetched copy; the previous cache stays when the new one is invalid (FA-02). */
@@ -154,6 +171,7 @@ export function refreshCatalog(configDir: string, name: string, registration: Ca
     return { error: read.error ?? `le catalogue récupéré s'appelle ${read.catalog?.name}, et non ${name}` };
   }
   const final = join(root, name);
+  try { recordCatalogOrigin(temp, registration); } catch { rmSync(temp, { recursive: true, force: true }); return { error: "Provenance du catalogue non enregistrée ; cache antérieur conservé." }; }
   rmSync(final, { recursive: true, force: true });
   renameSync(temp, final);
   return { catalog: read.catalog };

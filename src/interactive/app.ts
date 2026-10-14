@@ -147,6 +147,7 @@ export function principalElement(input: unknown): string | undefined {
 const SCOPE_LABEL: Readonly<Record<(typeof RULE_SCOPES)[number], string>> = { session: "session", local: "projet (local)", project: "projet (partagé)", user: "utilisateur" };
 
 export interface AppOptions {
+  readonly beforeExit?: () => Promise<void>;
   /** A narrowly authorized local toggle may be consumed even while a model turn runs. */
   readonly immediateCommand?: (content: string) => boolean;
   readonly autonomousStatus?: () => string | undefined;
@@ -1097,6 +1098,7 @@ export class InteractiveApp {
       const yes = await this.confirm(`Travail en cours : ${work.join(" ; ")}. Quitter quand même ?`, "quitter", "rester");
       if (!yes) return;
     }
+    await this.#o.beforeExit?.();
     this.#exiting = true;
     this.#turn?.abort();
     this.#saveState();

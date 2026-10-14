@@ -6,6 +6,7 @@
 import OpenAI from "openai";
 import type { ContentPart, HistoryMessage, ModelEvent, ModelProvider, ModelRequest, StopReason, SystemBlock, ToolCall } from "./types";
 import { ProviderError } from "./types";
+import { warmProviderConnection } from "../platform/network";
 import type { ModelCapabilities } from "./catalog";
 
 export interface OpenAICompatibleOptions {
@@ -140,6 +141,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
   readonly id: "openai" | "openai_compatible";
   readonly #client: OpenAI;
   readonly #idleTimeoutMs: number;
+  readonly #network: typeof fetch | undefined;
+  preconnect(): void { warmProviderConnection(this.#network, this.#client.baseURL); }
 
   constructor(options: OpenAICompatibleOptions) {
     this.id = options.providerId ?? "openai_compatible";
@@ -154,6 +157,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       defaultHeaders: { ...options.headers, ...(options.apiKey ? {} : { Authorization: null }) },
     });
     this.#idleTimeoutMs = options.idleTimeoutMs;
+    this.#network = options.fetch;
   }
 
   async *stream(request: ModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {

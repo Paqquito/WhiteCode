@@ -1,12 +1,14 @@
 // Supports: SPEC-CFG-010 (§ 12), SPEC-PER-027 (EF-02): owner-only access before any private bytes are written.
-import { chmodSync } from "node:fs";
+import { chmodSync, lstatSync } from "node:fs";
 import { dirname, join, toNamespacedPath } from "node:path";
 import { runToCompletion } from "./process";
 import { currentPlatform } from "./system";
-import { dlopen } from "bun:ffi";
+import { dlopen, read } from "bun:ffi";
 
 const openAclApi = () => ({
   security: dlopen("advapi32.dll", {
+    GetNamedSecurityInfoW: { args: ["buffer", "u32", "u32", "buffer", "ptr", "ptr", "ptr", "buffer"], returns: "u32" },
+    ConvertSidToStringSidW: { args: ["ptr", "buffer"], returns: "i32" },
     ConvertStringSecurityDescriptorToSecurityDescriptorW: { args: ["buffer", "u32", "buffer", "ptr"], returns: "i32" },
     GetSecurityDescriptorDacl: { args: ["ptr", "buffer", "buffer", "buffer"], returns: "i32" },
     SetNamedSecurityInfoW: { args: ["buffer", "u32", "u32", "ptr", "ptr", "ptr", "ptr"], returns: "u32" },
@@ -54,6 +56,26 @@ export function restrictFileToOwner(path: string): void {
     // SE_FILE_OBJECT, DACL_SECURITY_INFORMATION and PROTECTED_DACL_SECURITY_INFORMATION.
     if (native.security.symbols.SetNamedSecurityInfoW(Buffer.from(toNamespacedPath(path) + "\0", "utf16le"), 1, 0x80000004, null, null, dacl.readBigUInt64LE(), null) !== 0) throw new Error("Impossible de restreindre les droits du fichier à son propriétaire.");
   } finally { native.memory.symbols.LocalFree(pointer); }
+}
+
+/** Supports: SPEC-INT-016/EF-01 and SPEC-OUT-018/EF-01: PID liveness alone never proves the system user. */
+export function ownedByCurrentUser(path: string): boolean {
+  if (currentPlatform() !== "windows") return lstatSync(path).uid === process.getuid?.();
+  const prepared = ownerDescriptor(path), native = aclApi!;
+  native.memory.symbols.LocalFree(prepared);
+  const owner = Buffer.alloc(8), descriptor = Buffer.alloc(8), text = Buffer.alloc(8);
+  try {
+    if (native.security.symbols.GetNamedSecurityInfoW(Buffer.from(toNamespacedPath(path) + "\0", "utf16le"), 1, 1, owner, null, null, null, descriptor) !== 0) return false;
+    if (!native.security.symbols.ConvertSidToStringSidW(owner.readBigUInt64LE(), text)) return false;
+    const pointer = Number(text.readBigUInt64LE()); let sid = "";
+    for (let index = 0; index < 256; index++) { const char = read.u16(pointer, index * 2); if (!char) return sid === ownerSid; sid += String.fromCharCode(char); }
+    return false;
+  } finally { if (text.readBigUInt64LE()) native.memory.symbols.LocalFree(text.readBigUInt64LE()); if (descriptor.readBigUInt64LE()) native.memory.symbols.LocalFree(descriptor.readBigUInt64LE()); }
+}
+
+export function securePrivateDirectory(path: string): void {
+  if (!ownedByCurrentUser(path)) throw new Error("Private directory belongs to another system user.");
+  if (currentPlatform() === "windows") restrictFileToOwner(path); else chmodSync(path, 0o700);
 }
 
 /** Windows applies the private DACL during CREATE_NEW, before any other process can open the file. */

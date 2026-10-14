@@ -8,9 +8,18 @@ import { currentPlatform } from "../src/platform/system";
 import { readFileTool } from "../src/tools/read-file";
 import type { ToolContext } from "../src/tools/types";
 import { testToolFields, workspace } from "./helpers/env";
+import { isProtectedPath, protectedLocations } from "../src/permissions/paths";
 
 const ws = workspace();
 const platform = currentPlatform();
+
+test("TECH — an owned worktree permits ordinary files while nested configuration, instructions and Git remain protected", () => {
+  const config = join(ws.project, ".fixture-config"), copy = join(config, "copies", "owned");
+  const base = protectedLocations({ home: ws.home, userConfigDir: ws.configHome, projectConfigDir: config, instructionFileNames: ["FIXTURE-INSTRUCTIONS.md"] });
+  const protectedPaths = { ...base, directories: [...base.directories, join(copy, ".fixture-config")], ownedWorktrees: [copy] };
+  expect(isProtectedPath(join(copy, "ordinary.txt"), protectedPaths, platform)).toBe(false);
+  for (const path of [join(config, "outside.txt"), join(copy, ".fixture-config", "settings.json"), join(copy, "FIXTURE-INSTRUCTIONS.md"), join(copy, ".git")]) expect(isProtectedPath(path, protectedPaths, platform)).toBe(true);
+});
 
 function rule(text: string, decision: RuleDecision, scope: RuleScope = "user"): Rule {
   const r = parseRule(text, decision, scope, ws.project);

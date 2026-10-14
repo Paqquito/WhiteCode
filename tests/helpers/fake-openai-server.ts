@@ -32,6 +32,7 @@ export function startFakeOpenAI(turns: FakeChatTurn[]): FakeChatServer {
     port: 0,
     hostname: "127.0.0.1",
     async fetch(req) {
+      if (req.method === "HEAD") return new Response(null);
       const headers: Record<string, string> = {};
       req.headers.forEach((v, k) => (headers[k] = v));
       const body = (await req.json()) as Record<string, unknown>;

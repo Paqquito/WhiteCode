@@ -4,8 +4,11 @@ import { join, relative, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { runToCompletion, startChild } from "../src/platform/process";
 import { loadIdentity, ROOT, workspace } from "./helpers/env";
-import { BUN, productEnv } from "./helpers/hooks";
+import { BUN, POSIX, productEnv } from "./helpers/hooks";
 import { resolveIdentityText, runtimeIdentity } from "../src/identity/resolver";
+import { bootstrapScript } from "../src/installation/bootstrap";
+import { findExecutable } from "../src/platform/system";
+import { Identity } from "../src/identity/identity";
 
 /** Builds execute in an ordinary isolated copy; no generation or deletion touches the calling checkout. */
 function fixture() {
@@ -33,6 +36,21 @@ function fixture() {
   };
   return { root, ws, build, manifest, run };
 }
+
+test("SPEC-CAD-002/CA-21 — apostrophes and quotes in the actual package manifest and both installer scripts remain syntactically valid", async () => {
+  const f = fixture(), brand = `L'outil "Clair"`, input = JSON.parse(readFileSync(join(f.root, "identity/dev.identity.json"), "utf8"));
+  input.identity.PRODUCT = brand;
+  const source = join(f.root, "identity/quoted.identity.json"); writeFileSync(source, JSON.stringify(input));
+  const generated = await runToCompletion(BUN, [join(f.root, "scripts/generate.ts"), "--identity", source], { cwd: f.root, env: productEnv(f.ws), timeoutMs: 10000 });
+  expect(generated.code).toBe(0); expect(JSON.parse(readFileSync(join(f.root, "src/identity/generated/package.json"), "utf8")).description).toStartWith(brand);
+  const resolved = resolveIdentityText(JSON.stringify(input), { version: "0.1.0" }); expect(resolved.identity).toBeDefined(); const identity = new Identity(resolved.identity!);
+  const sh = join(f.root, "install.sh"), ps = join(f.root, "install.ps1"); writeFileSync(sh, bootstrapScript(identity, "sh")); writeFileSync(ps, bootstrapScript(identity, "powershell"));
+  const shell = POSIX?.path;
+  if (shell) { const parsed = await runToCompletion(shell, ["-n", sh.replace(/\\/g, "/")], { cwd: f.root, env: productEnv(f.ws), timeoutMs: 5000 }); expect(parsed.code).toBe(0); expect(readFileSync(sh, "utf8")).toContain(`L'\\''outil "Clair"`); }
+  const powershell = findExecutable("pwsh") ?? findExecutable("powershell.exe");
+  if (powershell) { const parsed = await runToCompletion(powershell, ["-NoProfile", "-NonInteractive", "-Command", `$t=$null; $e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile('${ps.replace(/'/g, "''")}',[ref]$t,[ref]$e); if ($e.Count) { $e | Out-String | Write-Error; exit 1 }`], { cwd: f.root, env: productEnv(f.ws), timeoutMs: 5000 }); expect(parsed.code).toBe(0); expect(readFileSync(ps, "utf8")).toContain(`L''outil "Clair"`); }
+  expect(Boolean(shell || powershell)).toBe(true);
+}, 20000);
 
 test("SPEC-BLD-006/CA-01 — SPEC-BLD-008/CA-01 — two identities generate their package manifests and extension author documentation", async () => {
   const f = fixture();

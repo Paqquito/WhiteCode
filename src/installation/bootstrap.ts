@@ -1,11 +1,13 @@
 // Implements: SPEC-INS-001 (native shell bootstrap, no runtime dependency, integrity before execution).
-// Supports: E-156 (bootstrap receipt, one-time verified executable delegates atomic installation to itself).
+// Supports: E-156 (bootstrap receipt), E-167; SPEC-CAD-002 (CA-21, escaped brand text in native install commands).
 import type { Identity } from "../identity/identity";
 export function bootstrapScript(identity: Identity, shell: "powershell" | "sh"): string {
   const service=identity.get('SERVICE_DOWNLOADS').replace(/\/$/,''), cli=identity.get('PRODUCT_CLI');
+  const label = `Installation de ${identity.get("PRODUCT")}`;
   if (!/^https:\/\//.test(service) || /[\s"'`$\\]/.test(service)) throw new Error('Adresse de distribution invalide pour un script.');
   if (shell==='powershell') return `param([ValidatePattern('^(stable|latest|[0-9]+\\.[0-9]+\\.[0-9]+)$')][string]$Target = 'stable')
 $ErrorActionPreference = 'Stop'
+Write-Host '${label.replace(/'/g, "''")}'
 $service = '${service}'
 $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
 if ($architecture -notin @('x64','arm64')) { throw 'Plateforme non prise en charge' }
@@ -35,6 +37,7 @@ try {
 `;
   return `#!/bin/sh
 set -eu
+printf '%s\\n' '${label.replace(/'/g, "'\\''")}'
 target="\${1:-stable}"
 case "$target" in stable|latest) ;; *) printf '%s' "$target" | LC_ALL=C grep -Eq '^[0-9]+\\.[0-9]+\\.[0-9]+$' || { echo 'Cible invalide' >&2; exit 1; }; [ "\${target%%.*}" -lt 900000 ] || { echo 'Version réservée' >&2; exit 1; } ;; esac
 service='${service}'

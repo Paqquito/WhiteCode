@@ -10,7 +10,7 @@ import { setValueInSettingsFile } from "../config/settings-writer";
 import { satisfies } from "../platform/semver";
 import type { PlatformName } from "../platform/system";
 import { parseRef } from "./ref";
-import { cachedCatalog, catalogsDir, fetchSource, parseSource, readCatalog, refreshCatalog, type Catalog, type CatalogRegistration, type GitRunner } from "./catalog";
+import { cachedCatalog, recordCatalogOrigin, catalogsDir, fetchSource, parseSource, readCatalog, refreshCatalog, type Catalog, type CatalogRegistration, type GitRunner } from "./catalog";
 import { describeExtension } from "./extension";
 import { engineProblem, installedVersions, listInstalled, uninstall } from "./store";
 import { installExtension, type InstallInputs } from "./install";
@@ -20,6 +20,8 @@ import { compareVersions } from "../platform/semver";
 export type WritableScope = "user" | "project" | "local";
 
 export interface ExtensionAdminContext {
+  readonly reservedCatalogName?: string;
+  readonly officialCatalog?: { readonly name: string; readonly source: string };
   readonly configDir: string;
   readonly cwd: string;
   readonly platform: PlatformName;
@@ -57,6 +59,7 @@ export function catalogRefused(s: Settings, name: string, source: string): strin
 
 /** `catalog add <source> [--scope] [--lean-context <paths>] [--name <name>]` (§ 5.3 steps 1 to 5). */
 export function catalogAdd(ctx: ExtensionAdminContext, input: string, scope: WritableScope, lean: readonly string[] | undefined, rename: string | undefined): number {
+  if (rename && (!/^[a-z][a-z0-9-]{0,63}$/.test(rename) || rename === ctx.reservedCatalogName)) { ctx.err(rename === ctx.reservedCatalogName ? "Nom réservé au catalogue officiel." : "Nom de catalogue invalide."); return USAGE; }
   const source = parseSource(input, ctx.cwd);
   const temp = join(catalogsDir(ctx.configDir), `.tmp-${randomUUID()}`);
   const failed = fetchSource(source, temp, { lean }, ctx.runner);
@@ -68,12 +71,14 @@ export function catalogAdd(ctx: ExtensionAdminContext, input: string, scope: Wri
   };
   if (read.error || !read.catalog) return discard(read.error ?? "Aucun catalogue valide à cette adresse."); // ERR-01, ERR-04
   const name = rename ?? read.catalog.name;
+  if (name === ctx.reservedCatalogName) return discard("Nom réservé au catalogue officiel.", USAGE);
   const stored = source.kind === "folder" ? source.path : source.kind === "git" ? source.url : source.value;
   const refused = catalogRefused(ctx.settings, name, stored);
   if (refused) return discard(refused); // ERR-03
   if (registrations(ctx.settings)[name] !== undefined || existsSync(join(catalogsDir(ctx.configDir), name))) return discard(`Un catalogue porte déjà ce nom : ${name} (--name pour l'enregistrer sous un autre nom).`); // ERR-02
-  renameSync(temp, join(catalogsDir(ctx.configDir), name));
   const registration: CatalogRegistration = { source: stored, ...(lean && lean.length > 0 ? { leanContext: lean } : {}) };
+  try { recordCatalogOrigin(temp, registration); } catch { return discard("Provenance du catalogue non enregistrée."); }
+  renameSync(temp, join(catalogsDir(ctx.configDir), name));
   setValueInSettingsFile(ctx.files[scope], ["extensions", "catalogs", name], registration, ctx.platform);
   const names = read.catalog.extensions.map((e) => e.name);
   ctx.write({ name, scope, extensions: names }, () => `Catalogue ${name} ajouté en portée ${scope} : ${names.length} extension(s)${names.length > 0 ? ` (${names.join(", ")})` : ""}.`);
@@ -85,10 +90,10 @@ export function catalogList(ctx: ExtensionAdminContext): number {
   const docs = Object.entries(registrations(ctx.settings))
     .sort(([a], [b]) => (a < b ? -1 : 1))
     .map(([name, r]) => {
-      const c = cachedCatalog(ctx.configDir, name);
-      return { name, source: r.source, cached: c !== undefined, extensions: c?.extensions.map((e) => e.name) ?? [] };
+      const c = cachedCatalog(ctx.configDir, name, r);
+      return { name, source: r.source, ...(ctx.officialCatalog?.name === name && ctx.officialCatalog.source === r.source ? { official: true } : {}), cached: c !== undefined, extensions: c?.extensions.map((e) => e.name) ?? [] };
     });
-  ctx.write(docs, () => (docs.length === 0 ? "Aucun catalogue configuré." : docs.map((d) => `${d.name} — ${d.source}${d.cached ? ` : ${d.extensions.join(", ") || "aucune extension"}` : " (cache absent : catalog update)"}`).join("\n")));
+  ctx.write(docs, () => (docs.length === 0 ? "Aucun catalogue configuré." : docs.map((d) => `${d.name}${d.official ? " (officiel)" : ""} — ${d.source}${d.cached ? ` : ${d.extensions.join(", ") || "aucune extension"}` : " (cache absent : catalog update)"}`).join("\n")));
   return OK;
 }
 
@@ -118,6 +123,7 @@ export function catalogUpdate(ctx: ExtensionAdminContext, only: string | undefin
 
 /** `catalog remove <name> [--scope]`; the extensions installed from it are listed for removal (EF-05). */
 export async function catalogRemove(ctx: ExtensionAdminContext, name: string, scope: WritableScope | undefined, force: boolean): Promise<number> {
+  if (name === ctx.reservedCatalogName) { ctx.err("Catalogue officiel : sa désactivation relève de la politique strictCatalogs ou blockedCatalogs."); return FAILED; }
   const scopes = ctx.settings.valuesByScope("extensions.catalogs").filter((v) => (v.value as Record<string, unknown>)[name] !== undefined).map((v) => v.origin);
   if (scopes.length === 0) {
     ctx.err(`Catalogue inconnu : ${name}.`);
@@ -144,11 +150,11 @@ export async function catalogRemove(ctx: ExtensionAdminContext, name: string, sc
 function locate(ctx: ExtensionAdminContext, ref: string): { name: string; catalog: Catalog } | string {
   const { name, catalog } = parseRef(ref);
   const all = registrations(ctx.settings);
-  const candidates = catalog ? [catalog] : Object.keys(all).filter((c) => cachedCatalog(ctx.configDir, c)?.extensions.some((e) => e.name === name));
+  const candidates = catalog ? [catalog] : Object.keys(all).filter((c) => cachedCatalog(ctx.configDir, c, all[c])?.extensions.some((e) => e.name === name));
   if (candidates.length > 1) return `Extension ${name} présente dans plusieurs catalogues (${candidates.join(", ")}) : précisez ${name}@<catalogue>.`;
   const chosen = candidates[0];
   if (!chosen || !all[chosen]) return catalog ? `Catalogue inconnu : ${catalog}.` : "Extension introuvable dans le catalogue."; // ERR-01
-  let c = cachedCatalog(ctx.configDir, chosen);
+  let c = cachedCatalog(ctx.configDir, chosen, all[chosen]);
   if (!c) {
     const r = refreshCatalog(ctx.configDir, chosen, all[chosen]!, ctx.cwd, ctx.runner);
     if (r.error) return `Catalogue ${chosen} indisponible : ${r.error}.`;
@@ -208,7 +214,7 @@ export async function extensionUpdate(ctx: ExtensionAdminContext, ref: string | 
     const registration = ctx.settings.get<Record<string, CatalogRegistration>>("extensions.catalogs")[catalog!];
     const refreshed = registration ? refreshCatalog(ctx.configDir, catalog!, registration, ctx.cwd, ctx.runner) : { error: "catalogue non configuré" };
     if (refreshed.error) ctx.err(`avertissement : catalogue ${catalog} non rafraîchi (${refreshed.error}) ; dernière liste connue utilisée.`);
-    const c = refreshed.catalog ?? cachedCatalog(ctx.configDir, catalog!);
+    const c = refreshed.catalog ?? cachedCatalog(ctx.configDir, catalog!, registration);
     const entry = c?.extensions.find((e) => e.name === name);
     const current = installedVersions(ctx.configDir, catalog!, name)[0]!;
     if (!c || !entry) {
@@ -322,7 +328,7 @@ export function extensionList(ctx: ExtensionAdminContext, installable: boolean):
   if (installable) {
     const docs = Object.keys(registrations(ctx.settings))
       .sort()
-      .flatMap((c) => (cachedCatalog(ctx.configDir, c)?.extensions ?? []).map((e) => ({ name: e.name, catalog: c, version: e.version, description: e.description, installed: installed.some((i) => i.name === e.name && i.catalog === c) })))
+      .flatMap((c) => (cachedCatalog(ctx.configDir, c, registrations(ctx.settings)[c])?.extensions ?? []).map((e) => ({ name: e.name, catalog: c, version: e.version, description: e.description, installed: installed.some((i) => i.name === e.name && i.catalog === c) })))
       .filter((d) => !d.installed);
     ctx.write(docs, () => (docs.length === 0 ? "Aucune extension installable." : docs.map((d) => `${d.name}@${d.catalog}${d.version ? ` ${d.version}` : ""}${d.description ? ` — ${d.description}` : ""}`).join("\n")));
     return OK;

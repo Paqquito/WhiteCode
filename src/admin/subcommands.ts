@@ -39,6 +39,7 @@ import { suggest } from "../shared/suggest";
 import { maskSecrets } from "../shared/secrets";
 import { readTranscriptReference } from "../session/transcript-access";
 import { renderValidation, validateExtension } from "../extensions/validate";
+import { officialSettings, officialCatalog, officialName } from "../extensions/official";
 import { catalogAdd, catalogList, catalogRemove, catalogUpdate, extensionAdd, extensionEnable, extensionList, extensionRemove, extensionUpdate, scopeOf, type ExtensionAdminContext } from "../extensions/admin";
 import { runConnectorAdmin } from "../connectors/admin";
 import { runInstallationAdmin } from "../installation/admin";
@@ -270,8 +271,9 @@ function extensionContext(deps: AdminDependencies, write: Writer, out: (t: strin
     configDir: locations.configDir,
     cwd: deps.cwd,
     platform: deps.system.platform,
+    reservedCatalogName: officialName(deps.identity), officialCatalog: officialCatalog(deps.identity),
     product: { name: deps.identity.get("PRODUCT"), version: deps.identity.version, cli: deps.identity.get("PRODUCT_CLI") },
-    settings,
+    settings: officialSettings(settings, deps.identity),
     files: { user: locations.userSettingsFile, project: locations.projectSettingsFile, local: locations.localSettingsFile },
     runner: { env: deps.env.childEnvironment(), timeoutMs: 300_000 },
     out,

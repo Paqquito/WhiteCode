@@ -8,6 +8,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { MessageStream } from "@anthropic-ai/sdk/lib/MessageStream";
 import type { ContextEditingStrategy, HistoryMessage, ModelEvent, ModelProvider, ModelRequest, StopReason, ToolCall } from "./types";
 import { ProviderError } from "./types";
+import { warmProviderConnection } from "../platform/network";
 
 /** Beta of service-side context management (SPEC-MOT-014), confined to this adapter (D-11). */
 const CONTEXT_MANAGEMENT_BETA = "context-management-2025-06-27";
@@ -167,6 +168,8 @@ export class AnthropicProvider implements ModelProvider {
   readonly id = "anthropic";
   readonly #client: Anthropic;
   readonly #idleTimeoutMs: number;
+  readonly #network: typeof fetch | undefined;
+  preconnect(): void { warmProviderConnection(this.#network, this.#client.baseURL); }
 
   constructor(options: AnthropicProviderOptions) {
     this.#client = new Anthropic({
@@ -179,6 +182,7 @@ export class AnthropicProvider implements ModelProvider {
       defaultHeaders: { ...options.headers },
     });
     this.#idleTimeoutMs = options.idleTimeoutMs;
+    this.#network = options.fetch;
   }
 
   /** Service-side clearing rejected once: disabled for the rest of the session (ERR-01 of SPEC-MOT-014). */

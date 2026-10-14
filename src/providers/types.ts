@@ -149,6 +149,8 @@ export class ProviderError extends Error {
 
 export interface ModelProvider {
   readonly id: string;
+  /** Optional anonymous connection warmup; never blocks initialization (SPEC-API-022). */
+  preconnect?(): void;
   /** Streams the response; throws ProviderError. Implementations must honour the abort signal. */
   stream(request: ModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent>;
 }

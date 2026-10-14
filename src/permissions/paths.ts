@@ -7,6 +7,8 @@ import { comparablePath, isWithin, realPathOrSelf, type PlatformName } from "../
 
 /** Protected locations: writing there always requires a request, whatever the mode, except `unrestricted` (EF-02). */
 export interface ProtectedLocations {
+  /** Trusted composition may carve out an exclusively owned worktree; its nested configuration stays protected. */
+  readonly ownedWorktrees?: readonly string[];
   /** Folders protected with their whole content (product configuration, key folders). */
   readonly directories: readonly string[];
   /** Individual protected files (shell configuration of the user). */
@@ -76,7 +78,7 @@ export function insideAllowed(path: string, allowed: readonly string[], platform
 }
 
 function isProtectedOne(path: string, p: ProtectedLocations, platform: PlatformName): boolean {
-  if (p.directories.some((d) => isWithin(path, d, platform))) return true;
+  if (p.directories.some(d => isWithin(path, d, platform) && !p.ownedWorktrees?.some(copy => isWithin(copy, d, platform) && isWithin(path, copy, platform)))) return true;
   const c = comparablePath(path, platform);
   if (p.files.some((f) => comparablePath(f, platform) === c)) return true;
   const segments = c.split("/");

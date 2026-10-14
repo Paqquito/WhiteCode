@@ -39,7 +39,7 @@ export async function installExtension(inputs: InstallInputs, catalog: Catalog, 
     discardPlan(undefined, [fetched]);
     return { ok: false, error: `Extension ${key} ${fetched.extension.version} signalée critique par son catalogue : ${flag.reason}. Installation refusée.` }; // SPEC-EXT-010 step 3
   }
-  const { plan, error: planError } = planInstall(inputs.configDir, { key, catalog, fetched }, { runner: inputs.runner, activeKeys: activeKeys(inputs.settings) });
+  const { plan, error: planError } = planInstall(inputs.configDir, { key, catalog, fetched }, { runner: inputs.runner, registrations: inputs.settings.get("extensions.catalogs"), activeKeys: activeKeys(inputs.settings) });
   if (!plan) {
     discardPlan(undefined, [fetched]);
     return { ok: false, error: planError! };

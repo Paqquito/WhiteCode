@@ -139,6 +139,13 @@ export class ShellRuntime {
     this.#cwd = options.projectCwd;
   }
 
+  get running(): boolean { return this.#running.size > 0; }
+  /** Supports: SPEC-OUT-026; trusted composition changes the working folder only while idle. */
+  selectWorkingDirectory(path: string): void {
+    if (this.running || !this.options.allowedDirectories.some(folder => isWithin(path, folder, this.options.platform))) throw new Error("Shell working folder cannot change while active or outside its perimeter.");
+    this.#cwd = path;
+  }
+
   get cwd(): string {
     return this.#cwd;
   }

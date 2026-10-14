@@ -49,7 +49,7 @@ async function installImposed(i: ActivationInputs, key: string): Promise<string 
   const { name, catalog } = parseRef(key);
   const registration = i.settings.get<Record<string, CatalogRegistration>>("extensions.catalogs")[catalog!];
   if (!registration) return `catalogue ${catalog} non configuré`;
-  const c = cachedCatalog(i.configDir, catalog!) ?? refreshCatalog(i.configDir, catalog!, registration, i.cwd, i.runner).catalog;
+  const c = cachedCatalog(i.configDir, catalog!, registration) ?? refreshCatalog(i.configDir, catalog!, registration, i.cwd, i.runner).catalog;
   const entry = c?.extensions.find((e) => e.name === name);
   if (!c || !entry) return `absente du catalogue ${catalog}`;
   const outcome = await installExtension({ configDir: i.configDir, settings: i.settings, runner: i.runner, product: i.product }, c, entry, async () => true);

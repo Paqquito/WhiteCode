@@ -5,7 +5,7 @@
 import { rmSync } from "node:fs";
 import { compareVersions, satisfies } from "../platform/semver";
 import { parseRef } from "./ref";
-import { cachedCatalog, type Catalog, type GitRunner } from "./catalog";
+import { cachedCatalog, type Catalog, type CatalogRegistration, type GitRunner } from "./catalog";
 import { describeExtension } from "./extension";
 import { fetchExtension, installedDir, installedVersions, listInstalled, type Fetched } from "./store";
 
@@ -51,7 +51,7 @@ export function discardPlan(plan: Plan | undefined, extra: readonly Fetched[] = 
 export function planInstall(
   configDir: string,
   target: { readonly key: string; readonly catalog: Catalog; readonly fetched: Fetched },
-  o: { readonly runner: GitRunner; readonly activeKeys: ReadonlySet<string> },
+  o: { readonly runner: GitRunner; readonly activeKeys: ReadonlySet<string>; readonly registrations?: Readonly<Record<string, CatalogRegistration>> },
 ): { plan?: Plan; error?: string } {
   const steps = new Map<string, PlanStep>([[target.key, { key: target.key, catalog: target.catalog.name, fetched: target.fetched, version: target.fetched.extension.version }]]);
   const manifests = new Map<string, Record<string, unknown> | undefined>([[target.key, target.fetched.extension.manifest]]);
@@ -86,7 +86,7 @@ export function planInstall(
         queue.push(dep.key);
         continue;
       }
-      const c = cachedCatalog(configDir, depCatalog!);
+      const c = cachedCatalog(configDir, depCatalog!, o.registrations?.[depCatalog!]);
       const entry = c?.extensions.find((e) => e.name === name);
       if (!c || !entry) return fail(`Dépendance introuvable : ${dep.key} (exigée par ${current}).`); // ERR-01
       const { fetched, error } = fetchExtension(configDir, c, entry, o.runner);
