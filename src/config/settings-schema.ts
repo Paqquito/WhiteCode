@@ -334,6 +334,8 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "mcp.serve.maxAgentDepth", schema: int(0, 10), default: 2, scopes: [U], owner: "SPEC-MOD-008" },
   { key: "agents.maxDepth", schema: int(0, 10), default: 2, scopes: [U, G], owner: "SPEC-OUT-016" },
   { key: "agents.maxParallel", schema: int(1, 100), default: 10, scopes: [U, G], owner: "SPEC-OUT-016" },
+  { key: "workflows.maxParallel", schema: int(1, 32), default: 4, scopes: [U, G], owner: "SPEC-PLA-003" },
+  { key: "workflows.directories", schema: strList(), default: [], scopes: [U, P], owner: "SPEC-PLA-003" },
   { key: "agents.defaultModel", schema: str(), scopes: [U, P], owner: "SPEC-OUT-016" },
   { key: "agents.disabledBuiltIns", schema: strList(), default: [], scopes: [U, G], owner: "SPEC-AGT-002" },
   { key: "agents.loadProjectInstructions", schema: bool(), default: true, scopes: [U], owner: "SPEC-AGT-001" },

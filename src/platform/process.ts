@@ -111,14 +111,14 @@ export function startChild(file: string, args: readonly string[], options: Child
     async killTree(graceMs: number) {
       const pid = child.pid;
       if (pid === undefined || done) return;
+      // Retain the native tree while its leader is alive: a POSIX-group stop can orphan Windows children.
+      if (windows) killWindowsTree(pid);
       try {
         options.stopDescendants?.();
       } catch {
         // best effort: the tree is stopped below anyway
       }
-      if (windows) {
-        killWindowsTree(pid);
-      } else {
+      if (!windows) {
         signalGroup(pid, "SIGTERM");
         const timer = new Promise<void>((r) => setTimeout(r, graceMs));
         await Promise.race([exited, timer]);

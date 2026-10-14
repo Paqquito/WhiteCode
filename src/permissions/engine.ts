@@ -33,6 +33,8 @@ export interface PermissionContext {
   readonly mode: PermissionMode;
   readonly rules: readonly Rule[];
   readonly sessionAllows: readonly Rule[];
+  /** Grants actually chosen by a human or designated host, excluding temporary skill grants. */
+  readonly explicitSessionAllows?: readonly Rule[];
   readonly managedRulesOnly: boolean;
   readonly cwd: string;
   readonly home: string;
@@ -63,6 +65,13 @@ export function decide(q: PermissionQuery, ctx: PermissionContext): Decision {
   // Step 2: requests imposed by the managed policy, even in `unrestricted`.
   const managedAsk = rules.find((r) => r.decision === "ask" && r.scope === "managed" && match(r));
   if (managedAsk) return { kind: "ask", step: 2, origin: "managed", reason: `Confirmation required by the managed rule ${managedAsk.raw}.`, suggestions: [] };
+
+  if (q.flags.explicitApproval) {
+    const ask = rules.find(r => r.decision === "ask" && match(r));
+    if (ask || q.hookDecision === "ask") return { kind: "ask", step: 4, origin: "explicit", reason: ask ? `Confirmation required by the rule ${ask.raw}.` : q.hookReason ?? "Confirmation requested by a hook.", suggestions: [] };
+    const allow = rules.find(r => r.decision === "allow" && r.tool === q.toolName && match(r)) ?? ctx.explicitSessionAllows?.find(r => r.decision === "allow" && r.tool === q.toolName && match(r));
+    return allow ? { kind: "allow", step: 6, why: `rule ${allow.raw}` } : { kind: "ask", step: 4, origin: "explicit", reason: "The execution plan requires approval before any step starts.", suggestions };
+  }
 
   // Step 3: unrestricted mode allows ordinary requests.
   if (ctx.mode === "unrestricted") return { kind: "allow", step: 3, why: "unrestricted mode" };

@@ -11,6 +11,8 @@ import type { PosixShell, PowerShellInfo, ShellRuntime } from "./shell-runtime";
 import type { LanguageService } from "../languages/contracts";
 
 export interface ToolFlags {
+  /** An execution plan needs a human/designated host unless its named tool has an explicit allow rule. */
+  readonly explicitApproval?: boolean;
   readonly readOnly: boolean;
   readonly concurrencySafe: boolean;
   readonly destructive: boolean;

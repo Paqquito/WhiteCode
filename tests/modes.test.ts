@@ -248,9 +248,9 @@ describe("SPEC-OUT-001 registry", () => {
     const all = new ScriptedProvider([{ text: "ok" }]);
     await cli(["--non-interactive", "x"], workspace(), { provider: all });
     const names = all.requests[0]!.tools.map((t) => t.name);
-    expect(names).toEqual(expect.arrayContaining(["background_output", "background_stop", "configure", "discover_skills", "edit_file", "fetch_url", "find_files", "prune_history", "read_file", "search_content", "spawn_agent", "update_notebook_cell", "update_todo_list", "use_skill", "work_item_create", "work_item_get", "work_item_list", "work_item_update", "write_file"]));
+    expect(names).toEqual(expect.arrayContaining(["background_output", "background_stop", "configure", "discover_skills", "edit_file", "fetch_url", "find_files", "prune_history", "read_file", "run_workflow", "search_content", "spawn_agent", "update_notebook_cell", "update_todo_list", "use_skill", "work_item_create", "work_item_get", "work_item_list", "work_item_update", "write_file"]));
     // Shell tools depend on the shells detected on the machine.
-    expect(names.filter((n) => !["background_output", "background_stop", "configure", "discover_skills", "edit_file", "fetch_url", "find_files", "notify_device", "prune_history", "read_file", "search_content", "spawn_agent", "update_notebook_cell", "update_todo_list", "use_skill", "work_item_create", "work_item_get", "work_item_list", "work_item_update", "write_file"].includes(n)).every((n) => n === "run_shell" || n === "run_powershell" || n === "monitor_process")).toBe(true);
+    expect(names.filter((n) => !["background_output", "background_stop", "configure", "discover_skills", "edit_file", "fetch_url", "find_files", "notify_device", "prune_history", "read_file", "run_workflow", "search_content", "spawn_agent", "update_notebook_cell", "update_todo_list", "use_skill", "work_item_create", "work_item_get", "work_item_list", "work_item_update", "write_file"].includes(n)).every((n) => n === "run_shell" || n === "run_powershell" || n === "monitor_process")).toBe(true);
   });
 
   test("SPEC-OUT-001/CA-05 — a connector exposing read_file: the built-in tool is kept, the connector tool gets its prefix", () => {

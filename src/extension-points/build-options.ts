@@ -4,6 +4,7 @@ export const BUILD_PROFILES = ["public", "internal", "development", "test"] as c
 export type BuildProfile = (typeof BUILD_PROFILES)[number];
 const option = (value: boolean, description: string, specs: string[], absentMarkers: string[] = []) => ({ description, specs, implemented: value, values: { public: value, internal: value, development: value, test: value }, absentMarkers });
 export const BUILD_OPTIONS = {
+  automation_scripts: option(true, "Flux déclaratifs avec permissions et tâches de fond.", ["SPEC-PLA-003", "SPEC-PLA-004", "SPEC-OUT-042", "SPEC-CMD-077"], ["Run a named, validated workflow"]),
   mode_brief: option(true, "Vue des messages adressés avec accès au détail.", ["SPEC-MOD-029", "SPEC-OUT-034", "SPEC-CMD-007"]),
   skill_discovery: option(true, "Sélection locale des compétences pertinentes.", ["SPEC-OUT-038"]),
   connector_published_skills: option(true, "Compétences publiées par les connecteurs autorisés.", ["SPEC-MCP-014"], ["Remote skill unavailable:"]),

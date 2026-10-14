@@ -421,6 +421,7 @@ export class ResponseExecution {
         action: actionOf(tool.name, subject),
         reason: decision.reason,
         origin: decision.origin,
+        ...(tool.flags(call.input as never).explicitApproval ? { planApproval: true } : {}),
         ...(shown?.humanOnly ? { humanOnly: true } : {}),
         suggestions: decision.suggestions,
         ...(shown?.diff ? { preview: shown.diff } : {}),

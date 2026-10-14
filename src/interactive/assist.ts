@@ -19,6 +19,8 @@ export interface AssistOptions {
     readonly maxVisible: number;
     readonly fuzzy: boolean;
     readonly commands: () => readonly Candidate[];
+    /** An exact disabled name is submitted for its refusal, never replaced by a fuzzy neighbour. */
+    readonly blockedCommand?: (name: string) => boolean;
     readonly files: () => FileIndex;
   };
   readonly maxChars: number;
@@ -187,6 +189,7 @@ export class InputAssist {
     let candidates: readonly Candidate[];
     let partial = false;
     try {
+      if (trigger.trigger === "/" && c.blockedCommand?.(trigger.term)) { this.#list = undefined; return; }
       if (trigger.trigger === "/") candidates = c.commands();
       else {
         const index = c.files();

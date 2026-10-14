@@ -29,7 +29,7 @@ const PATH_TOOLS = new Set(["read_file", "write_file", "edit_file", "update_note
 const COMMAND_TOOLS = new Set(["run_shell", "run_powershell"]);
 const URL_TOOLS = new Set(["fetch_url"]);
 /** Tools whose rules designate an element by name, `*` standing for any run of characters (`use_skill(review-*)`). */
-const NAME_TOOLS = new Set(["use_skill", "spawn_agent", "list_connector_resources", "read_connector_resource"]);
+const NAME_TOOLS = new Set(["use_skill", "spawn_agent", "list_connector_resources", "read_connector_resource", "run_workflow"]);
 
 /** `domain:<host>` with an optional subdomain wildcard: `*.example.com` covers every subdomain, not the bare domain (§ 5.2). */
 export function domainMatches(pattern: string, url: string): boolean {

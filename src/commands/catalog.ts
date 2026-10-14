@@ -7,6 +7,7 @@
 import type { McpPromptInfo } from "../connectors/stdio-client";
 import { suggest } from "../shared/suggest";
 import type { Skill, SkillSet } from "../skills/registry";
+import type { Workflow } from "../workflows/definitions";
 
 export type CommandKind = "display" | "prompt" | "action" | "mixed";
 
@@ -40,6 +41,7 @@ export interface CatalogEntry {
 }
 
 export type Resolution =
+  | { readonly kind: "workflow"; readonly workflow: Workflow }
   | { readonly kind: "internal"; readonly command: InternalCommand }
   | { readonly kind: "skill"; readonly skill: Skill; readonly name: string }
   | { readonly kind: "connector"; readonly entry: ConnectorPromptCommand }
@@ -57,6 +59,7 @@ export class CommandCatalog {
   readonly #internal: ReadonlyMap<string, InternalCommand>;
   readonly #skills: SkillSet;
   readonly #connectors: ReadonlyMap<string, ConnectorPromptCommand>;
+  readonly #workflows: ReadonlyMap<string, Workflow>;
   readonly #disabled: ReadonlySet<string>;
   /** Automated run: the commands of the interface are neither listed nor suggested (FA-04). */
   readonly #automated: boolean;
@@ -68,6 +71,7 @@ export class CommandCatalog {
     readonly internal: readonly InternalCommand[];
     readonly skills: SkillSet;
     readonly connectors: readonly ConnectorPromptCommand[];
+    readonly workflows?: readonly Workflow[];
     readonly disabled: readonly string[];
     readonly automated?: boolean;
   }) {
@@ -75,6 +79,7 @@ export class CommandCatalog {
     this.#internal = new Map(o.internal.map((c) => [c.name, c]));
     this.#skills = o.skills;
     this.#connectors = new Map(o.connectors.map((c) => [c.command, c]));
+    this.#workflows = new Map((o.workflows ?? []).map(workflow => [workflow.name, workflow]));
     this.#disabled = new Set(o.disabled.map((n) => n.replace(/^\//, "")));
     // EF-01, EF-07, CA-03: an internal command masks any command of the same name, which stays reachable when qualified.
     for (const s of o.skills.skills.values()) {
@@ -91,7 +96,7 @@ export class CommandCatalog {
   }
 
   #claim(short: string, qualified: string, target: { kind: "skill"; skill: Skill } | { kind: "connector"; entry: ConnectorPromptCommand }): void {
-    if (this.#internal.has(short) || this.#localSkill(short)) return;
+    if (this.#internal.has(short) || this.#localSkill(short) || this.#workflows.has(short)) return;
     this.#claims.set(short, [...(this.#claims.get(short) ?? []), qualified].sort());
     this.#thirdParty.set(qualified, target);
   }
@@ -115,6 +120,8 @@ export class CommandCatalog {
     if (qualified) return this.#isDisabled(name, qualified.name) ? disabled : { kind: "skill", skill: qualified, name };
     const local = this.#localSkill(name);
     if (local) return this.#isDisabled(name) ? disabled : { kind: "skill", skill: local, name };
+    const workflow = this.#workflows.get(name);
+    if (workflow) return this.#isDisabled(name) ? disabled : { kind: "workflow", workflow };
     const extension = this.#skills.skills.get(name);
     if (extension && extension.extension && extension.invocation !== "model") return this.#isDisabled(name) ? disabled : { kind: "skill", skill: extension, name };
     const connector = this.#connectors.get(name);
@@ -145,6 +152,7 @@ export class CommandCatalog {
       if (this.#skills.skills.get(s.name) === s && !this.#internal.has(s.name)) continue;
       if (!this.#isDisabled(key)) out.push({ name: key, source: s.scope === "product" ? "internal" : s.scope, description: s.description, usage: s.argumentsHelp });
     }
+    for (const workflow of this.#workflows.values()) if (!this.#internal.has(workflow.name) && !this.#localSkill(workflow.name) && !this.#isDisabled(workflow.name)) out.push({ name: workflow.name, source: workflow.source === "built-in" ? "internal" : workflow.source, description: workflow.description, usage: "[objet JSON]" });
     const shortOf = new Map<string, string>();
     for (const [short, names] of this.#claims) if (names.length === 1) shortOf.set(names[0]!, short);
     for (const s of this.#skills.skills.values()) {

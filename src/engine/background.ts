@@ -8,7 +8,7 @@ import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from
 import { join } from "node:path";
 import type { Reminder, ReminderProducer } from "./reminders";
 
-export type TaskKind = "shell" | "agent" | "monitor";
+export type TaskKind = "shell" | "agent" | "monitor" | "workflow";
 export type TaskStatus = "running" | "completed" | "failed" | "stopped" | "timed_out" | "rate_limited";
 
 export interface BackgroundTask {
@@ -74,6 +74,29 @@ export class BackgroundTasks {
   get outputLimitBytes(): number { return this.#o.maxOutputBytes; }
   get hasForeground(): boolean { return this.#foreground.size > 0; }
 
+  /** A workflow owns tasks started through this view and joins them before it ends (E-165). */
+  scope(owner: AbortSignal): { readonly tasks: BackgroundTasks; readonly close: () => Promise<void> } {
+    const owned = new Set<string>();
+    let closed = false;
+    const tasks = new Proxy(this, {
+      get: (target, key) => {
+        if (key === "start") return (kind: TaskKind, description: string, work: Parameters<BackgroundTasks["start"]>[2]) => {
+          owner.throwIfAborted();
+          if (closed) throw new Error("The owning workflow has ended.");
+          const task = target.start(kind, description, async (signal, write) => {
+            const combined = AbortSignal.any([signal, owner]);
+            try { const result = await work(combined, write); return combined.aborted ? { ...result, status: "stopped" as const } : result;
+            } catch (error) { if (combined.aborted) return { status: "stopped" as const }; throw error; }
+          });
+          owned.add(task.id); return task;
+        };
+        const value: unknown = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    return { tasks, close: async () => { closed = true; await Promise.all([...owned].map(id => this.stop(id))); } };
+  }
+
   /** Offers an already authorized command; newest active command wins, without another launch. */
   offerForeground(detach: () => string | undefined): () => void {
     const key = Symbol();
@@ -117,7 +140,7 @@ export class BackgroundTasks {
    */
   start(kind: TaskKind, description: string, work: (signal: AbortSignal, write: (chunk: string) => void) => Promise<{ readonly status: TaskStatus; readonly exitCode?: number | null; readonly summary?: string }>): BackgroundTask {
     mkdirSync(this.#o.dir, { recursive: true });
-    const id = `${kind === "agent" ? "a" : kind === "monitor" ? "m" : "b"}${this.#next++}`;
+    const id = `${kind === "agent" ? "a" : kind === "monitor" ? "m" : kind === "workflow" ? "w" : "b"}${this.#next++}`;
     const task: BackgroundTask = { id, kind, description, startedAt: this.#now(), status: "running", outputFile: join(this.#o.dir, `${id}.log`) };
     writeFileSync(task.outputFile, "");
     this.#tasks.set(id, task);
@@ -161,7 +184,7 @@ export class BackgroundTasks {
 
   /** § 5.3 step 3: a summary and where to read the output. */
   #endNote(t: BackgroundTask): string {
-    const what = t.kind === "agent" ? "background agent" : t.kind === "monitor" ? "monitor" : "background command";
+    const what = t.kind === "agent" ? "background agent" : t.kind === "monitor" ? "monitor" : t.kind === "workflow" ? "workflow" : "background command";
     const how =
       t.status === "completed"
         ? `ended${t.exitCode !== null && t.exitCode !== undefined ? ` with exit code ${t.exitCode}` : ""}`
@@ -172,7 +195,7 @@ export class BackgroundTasks {
             : t.status === "rate_limited"
               ? "was stopped because its output came too fast: filter the command more (for example with grep) and start it again"
               : `failed${t.exitCode !== null && t.exitCode !== undefined ? ` with exit code ${t.exitCode}` : ""}`;
-    const report = t.kind === "agent" && t.summary ? `\nReport:\n${t.summary}` : t.summary && t.status !== "completed" ? ` (${t.summary})` : "";
+    const report = (t.kind === "agent" || t.kind === "workflow") && t.summary ? `\nReport:\n${t.summary}` : t.summary && t.status !== "completed" ? ` (${t.summary})` : "";
     const tail = t.kind !== "agent" ? `\nLast output:\n${this.tail(t.id, 1_500) || "(none)"}` : "";
     return `The ${what} ${t.id} (${t.description}) ${how}.${report}${tail}\nRead its whole output with background_output (task_id ${t.id}).`;
   }
