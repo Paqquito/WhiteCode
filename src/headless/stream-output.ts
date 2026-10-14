@@ -121,6 +121,8 @@ export class EventStream {
       }
     }
     switch (e.type) {
+      case "progress_summary": return this.emit("progress_summary", { text: e.text });
+      case "input_suggestion": return this.emit("input_suggestion", { text: e.text });
       case "text_delta":
         return this.emit("assistant", { content: e.text, partial: true });
       case "assistant_message":

@@ -52,6 +52,7 @@ export const ModelEntrySchema = Type.Object(
     contextWindow: Type.Integer({ minimum: 1 }),
     maxOutputTokens: Type.Integer({ minimum: 1 }),
     capabilities: Type.Optional(CapabilitiesSchema),
+    advisors: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 32, uniqueItems: true })),
     pricing: Type.Optional(PricingSchema),
     /** Opaque options read only by the adapter of the provider (gap E-043). */
     providerOptions: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
@@ -130,6 +131,7 @@ const validateCatalog = compileSchema<ModelCatalogData>(ModelCatalogSchema);
 const validateEntries = compileSchema<ModelEntry[]>(Type.Array(ModelEntrySchema));
 
 export interface ResolvedModel {
+  readonly advisors?: readonly string[];
   readonly id: string;
   readonly provider: string;
   readonly family: string;
@@ -238,6 +240,7 @@ export class ModelCatalog {
       maxOutputTokens: entry?.maxOutputTokens ?? 16_000,
       capabilities: entry ? capabilitiesOf(entry) : { ...DEFAULT_CAPABILITIES, toolCalling: true },
       pricing: entry?.pricing,
+      advisors: entry?.advisors,
       providerOptions: entry?.providerOptions ?? {},
       currency: this.#data.currency,
       source: distribution ? "distribution" : extra ? "extra" : "none",

@@ -7,6 +7,7 @@ import type { RuleSubject, ToolFlags } from "../tools/types";
 import { ruleMatches, suggestRule, type Rule } from "./rules";
 import { exactlyAllowed } from "./command-analysis";
 import { opaquePowerShell } from "./powershell-normalize";
+import { splitCommand } from "./command-split";
 
 export type AskOrigin = "managed" | "explicit" | "tool_check" | "default";
 
@@ -31,6 +32,7 @@ export interface PermissionQuery {
 }
 
 export interface PermissionContext {
+  readonly shellShadow?: (value: { existing: RuleKind; candidate: RuleKind }) => void;
   readonly mode: PermissionMode;
   readonly rules: readonly Rule[];
   readonly sessionAllows: readonly Rule[];
@@ -47,7 +49,21 @@ export interface PermissionContext {
 /** The tool that leaves planning mode is the only non-read-only tool allowed in `planning` (step 1). */
 export const PLANNING_EXIT_TOOL = "submit_plan";
 
+type RuleKind = Decision["kind"];
+// Implements: SPEC-PER-007 (CA-03, isolated conservative shadow observer), gap E-170.
 export function decide(q: PermissionQuery, ctx: PermissionContext): Decision {
+  const existing = decideExisting(q, ctx);
+  if (ctx.shellShadow && q.subject.kind === "command" && ["run_shell", "run_powershell"].includes(q.toolName)) {
+    try {
+      const parsed = splitCommand(q.subject.command, q.toolName === "run_powershell" ? "powershell" : "posix");
+      const parts = parsed.complete ? parsed.parts.map(command => decideExisting({ ...q, subject: { kind: "command", command } }, ctx).kind) : ["ask" as const];
+      const candidate: RuleKind = parts.includes("deny") ? "deny" : parts.includes("ask") || !parts.length ? "ask" : "allow";
+      if (candidate !== existing.kind) ctx.shellShadow({ existing: existing.kind, candidate });
+    } catch { /* an observer cannot affect execution */ }
+  }
+  return existing;
+}
+function decideExisting(q: PermissionQuery, ctx: PermissionContext): Decision {
   const rules = ctx.managedRulesOnly ? ctx.rules.filter((r) => r.scope === "managed") : ctx.rules;
   const match = (r: Rule) => ruleMatches(r, q.toolName, q.subject, ctx);
 

@@ -92,6 +92,7 @@ export function createSpawnAgentTool(deps: SpawnAgentDeps): Tool<SpawnAgentInput
             else if (event.type === "tool_started") activity = `Outil ${names.get(event.callId) ?? "en cours"}…`;
             else if (event.type === "tool_result" || event.type === "thinking_delta") activity = "Réflexion…";
             else if (event.type === "text_delta") activity = "Rédaction…";
+            else if (event.type === "progress_summary") activity = event.text;
             else if (event.type === "retry") activity = "Nouvelle tentative…";
             else if (event.type === "usage") tokens += event.usage.inputTokens + event.usage.outputTokens;
             ctx.background!.updateActivity(task.id, activity, tools, tokens);

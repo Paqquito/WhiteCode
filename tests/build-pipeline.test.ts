@@ -153,7 +153,7 @@ test("SPEC-BLD-001/CA-01, SPEC-BLD-003/CA-02, SPEC-BLD-007/CA-02 — two stable 
 }, 240_000);
 
 test("SPEC-BLD-002/CA-01 — disabled automatic approval: classifier code and its prompt are absent from the product bundle and executable", async () => {
-  const f = fixture(), options = f.ws.write("options.json", JSON.stringify({ permission_auto_approve: false, agent_explorer_planner: false, agent_verifier: false, stream_compact_profile: false, ui_fast_find: false, ui_history_browser: false, ui_message_menu: false }));
+  const f = fixture(), options = f.ws.write("options.json", JSON.stringify({ permission_auto_approve: false, agent_explorer_planner: false, agent_verifier: false, stream_compact_profile: false, ui_fast_find: false, ui_history_browser: false, ui_message_menu: false, prompt_hints: false, mode_template_jobs: false, mode_background_sessions: false }));
   const result = await f.build(["--build-options", options]);
   if (result.code !== 0) throw new Error(result.stderr + result.stdout);
   expect(result.code).toBe(0);
@@ -163,6 +163,7 @@ test("SPEC-BLD-002/CA-01 — disabled automatic approval: classifier code and it
   expect(manifest.build.options.agent_verifier).toBe(false);
   expect(manifest.build.options.stream_compact_profile).toBe(false);
   expect(manifest.build.options.ui_fast_find).toBe(false); expect(manifest.build.options.ui_history_browser).toBe(false); expect(manifest.build.options.ui_message_menu).toBe(false);
+  expect(manifest.build.options.prompt_hints).toBe(false); expect(manifest.build.options.mode_template_jobs).toBe(false); expect(manifest.build.options.mode_background_sessions).toBe(false);
   for (const d of manifest.deliverables.filter((d: { target: string }) => ["bundle", "current"].includes(d.target))) {
     const contents = readFileSync(join(f.root, "dist", d.file)).toString("latin1");
     expect(contents).not.toContain("You are the approval classifier for a coding session");
@@ -172,6 +173,8 @@ test("SPEC-BLD-002/CA-01 — disabled automatic approval: classifier code and it
     expect(contents).not.toContain("You are the independent feature verifier");
     expect(contents).not.toContain("tool_summary");
     expect(contents).not.toContain("Ouverture rapide"); expect(contents).not.toContain("Recherche globale"); expect(contents).not.toContain("Filtrer mes saisies"); expect(contents).not.toContain("Copier le bloc");
+    expect(contents).not.toContain("Predict one short next user request"); expect(contents).not.toContain("Classify the whole main-agent turn");
+    expect(contents).not.toContain("Job workspace must be an ordinary directory"); expect(contents).not.toContain("Summarize this session's task, current progress and next need");
   }
 }, 150_000);
 

@@ -27,6 +27,7 @@ export class Conversation {
 
   /** A presentation change keeps history but opens a new immutable request prefix. */
   replaceSystem(system: readonly SystemBlock[]): void { this.#system = system; this.#segment++; }
+  replaceTools(tools: readonly ToolDefinition[]): void { this.#tools = tools; this.#segment++; }
 
   get tools(): readonly ToolDefinition[] {
     return this.#tools;

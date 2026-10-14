@@ -163,6 +163,10 @@ export interface AppOptions {
   readonly onApprovalWaiting?: (waiting: boolean) => void;
   readonly onFocus?: (focused: boolean) => void;
   readonly onActivity?: () => void;
+  readonly onTurnEnd?: () => void;
+  readonly teammateView?: () => { readonly name: string; readonly lines: readonly string[] } | undefined;
+  readonly sendToTeammate?: (text: string) => boolean;
+  readonly leaveTeammate?: () => void;
   readonly autoTheme?: () => boolean;
   readonly onAppearance?: (light: boolean) => void;
   readonly reducedMotion?: boolean;
@@ -216,6 +220,9 @@ export interface AppOptions {
 }
 
 export class InteractiveApp {
+  #suggestion = "";
+  /** A suggestion is staged only in an empty, idle input; Tab accepts it without sending. */
+  setSuggestion(value: string): void { if (!value || !this.running && !this.autonomousInputBusy) { this.#suggestion = maskSecrets(value); this.#redraw(); } }
   readonly #o: AppOptions;
   readonly #view: ViewContext;
   #theme: Theme | undefined;
@@ -635,7 +642,7 @@ export class InteractiveApp {
     }
     else if (outcome.stopCause === "error") this.notice("error", `Le tour a échoué : ${outcome.message ?? "erreur inconnue"}.`); // ERR-03
     else if (outcome.stopCause !== "completed" && outcome.message) this.notice("warning", outcome.message);
-    this.#redraw();
+    this.#redraw(); this.#o.onTurnEnd?.();
   }
 
   /** Engine events of the turn, displayed as they arrive (ENF-01: the first character as soon as it is received). */
@@ -1190,6 +1197,9 @@ export class InteractiveApp {
       return;
     }
     const approval = this.#approvals[0];
+    if (e.name === "escape" && !approval && !this.humanDialogActive && this.#o.teammateView?.()) { this.#o.leaveTeammate?.(); this.#redraw(); return; }
+    if (e.name === "tab" && !e.shift && !e.ctrl && !e.alt && !e.super && this.#suggestion && this.#editor.isEmpty && !this.running && !this.humanDialogActive && !this.#capture) { this.#editor.set(this.#suggestion); this.#suggestion = ""; this.#saveState(); this.#redraw(); return; }
+    if (e.name !== "tab" || e.shift || e.ctrl || e.alt || e.super) this.#suggestion = "";
     const searching = this.#assist.searching;
     const contexts: KeyContext[] = approval || this.#confirm || this.#choice ? ["dialog", "app"] : searching ? ["search", "app"] : [...this.#assist.contexts(), "input", "app"];
     const action = this.#keymap.action(e, contexts);
@@ -1509,6 +1519,7 @@ export class InteractiveApp {
     const typed = this.#editor.text || (this.#images.length ? "Image jointe." : "");
     if (typed.trim() === "") return; // EF-06, CA-06
     const content = this.#expanded(typed);
+    if (this.#o.teammateView?.() && this.#o.sendToTeammate?.(content)) { this.#editor.set(""); this.#pasted = []; this.#literalLead = undefined; this.#saveState(); this.#redraw(); return; }
     const literal = this.#images.length ? "certain" : this.#literalLead;
     if (literal === "uncertain") {
       // CA-09 of SPEC-IHM-010: the origin is uncertain; executing as a command needs a confirmation.
@@ -1582,6 +1593,8 @@ export class InteractiveApp {
       queueMicrotask(() => this.notice("warning", "Terminal étroit : affichage simplifié.")); // ERR-02 of SPEC-MOD-001
     }
     const panels: Node[] = [];
+    const teammate = this.#o.teammateView?.();
+    if (teammate) panels.push(box([text(`Vue du coéquipier ${teammate.name} — saisie adressée à ${teammate.name} · Échap : chef`), ...teammate.lines.slice(-8).map(line => text(maskSecrets(line)))], { border: {} }));
     const notices = [...this.#statusNotices.values()];
     if (notices.length) panels.push(box([text(`Avis : ${notices.slice(0, 3).join(" · ")}${notices.length > 3 ? ` · ${notices.length - 3} autres` : ""}`, { overflow: "clip" })], { padding: { left: 2 } }));
     const approval = this.#approvals[0];
@@ -1649,7 +1662,7 @@ export class InteractiveApp {
     const highlighted: Span[] = []; let offset = 0;
     for (const range of ranges) { highlighted.push({ text: ed.text.slice(offset, range.start) }, { text: ed.text.slice(range.start, range.end), style: { bold: true, underline: true } }); offset = range.end; }
     highlighted.push({ text: ed.text.slice(offset) });
-    const spans: Span[] = placeholder ? [{ text: this.running ? "Message à mettre en file…" : "Votre message (Entrée pour envoyer, Alt+Entrée pour un saut de ligne)", style: { dim: true } }] : highlighted;
+    const spans: Span[] = placeholder ? [{ text: this.running ? "Message à mettre en file…" : this.#suggestion || "Votre message (Entrée pour envoyer, Alt+Entrée pour un saut de ligne)", style: { dim: true } }] : highlighted;
     const laid = layoutNode(text(spans, { caret: placeholder ? 0 : ed.caretGrapheme }), inner, ctx);
     let lines = laid.lines;
     let cursor = laid.cursor;

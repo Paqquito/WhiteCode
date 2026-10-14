@@ -23,7 +23,7 @@ export const KNOWN_TOOL_NAMES: ReadonlySet<string> = new Set([
   "schedule_delete", "schedule_list", "start_remote_run", "request_user_choice", "message_user", "deliver_file",
   "notify_device", "use_skill", "discover_skills", "configure", "code_intelligence", "submit_result", "run_workflow",
   "prune_history", "inspect_context", "review_artifact", "subscribe_merge_request", "suggest_background_merge_request",
-  "overflow_test", "permission_test",
+  "overflow_test", "permission_test", "consult_advisor",
 ]);
 
 const PATH_TOOLS = new Set(["read_file", "write_file", "edit_file", "update_notebook_cell", "find_files", "search_content", "code_intelligence"]);

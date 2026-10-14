@@ -34,7 +34,7 @@ export const EMITTED_DEMANDS: readonly EngineDemand[] = ["approval_request", "re
 export const RESPONSE_TIMEOUT_BOUNDS = { min: 1_000, max: 600_000 } as const;
 
 export type ControlMessage =
-  | { readonly type: "control_init"; readonly protocolVersion: string; readonly demands: readonly string[]; readonly responseTimeoutMs?: number; readonly decisionAuthority?: boolean }
+  | { readonly type: "control_init"; readonly protocolVersion: string; readonly demands: readonly string[]; readonly responseTimeoutMs?: number; readonly decisionAuthority?: boolean; readonly toolProgress?: boolean }
   | { readonly type: "control_request"; readonly id: string; readonly request: string; readonly params: Readonly<Record<string, unknown>> }
   | { readonly type: "control_response"; readonly id: string; readonly ok: boolean; readonly result?: unknown; readonly error?: { readonly code: string; readonly message: string } };
 
@@ -61,6 +61,7 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 export function parseControlMessage(value: Record<string, unknown>): ControlMessage | { readonly error: string; readonly id?: string } {
   const type = value["type"];
   if (type === "control_init") {
+    if (value["toolProgress"] !== undefined && typeof value["toolProgress"] !== "boolean") return { error: "toolProgress : booléen attendu" };
     const version = value["protocolVersion"];
     if (typeof version !== "string") return { error: "protocolVersion attendu" };
     const demands = value["demands"] ?? [];
@@ -71,7 +72,7 @@ export function parseControlMessage(value: Record<string, unknown>): ControlMess
     }
     const authority = value["decisionAuthority"];
     if (authority !== undefined && typeof authority !== "boolean") return { error: "decisionAuthority : booléen attendu" };
-    return { type, protocolVersion: version, demands: demands as string[], ...(timeout !== undefined ? { responseTimeoutMs: timeout as number } : {}), ...(authority !== undefined ? { decisionAuthority: authority } : {}) };
+    return { type, protocolVersion: version, demands: demands as string[], ...(timeout !== undefined ? { responseTimeoutMs: timeout as number } : {}), ...(authority !== undefined ? { decisionAuthority: authority } : {}), ...(value["toolProgress"] === true ? { toolProgress: true } : {}) };
   }
   const id = value["id"];
   if (typeof id !== "string" || id === "" || id.length > 200) return { error: "identifiant attendu (texte non vide)" };

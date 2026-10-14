@@ -158,8 +158,10 @@ describe("SPEC-IHM-009 completion", () => {
     const run = interactive([], ws, { provider: new ScriptedProvider([]) });
     await run.idle();
     run.type("/");
+      await run.waitFor((t) => t.includes("/access-rules") && t.includes("Affiche ou modifie") && t.includes("(produit)"), "commands listed");
+      run.type("cle");
     await run.waitFor((t) => t.includes("/clear  Commence une nouvelle conversation") && t.includes("(produit)"), "commands listed");
-    run.type("hlep");
+      run.type("\u0015/hlep");
     await run.waitFor((t) => t.includes("❯ /help"), "typo tolerated");
     expect(matchQuality("hlep", "help", true)).toBe(4);
     await quit(run);

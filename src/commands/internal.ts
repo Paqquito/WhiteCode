@@ -11,6 +11,12 @@ import type { InternalCommand } from "./catalog";
 import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
+  { name: "generate-skills", description: "Propose une compétence de tests après analyse en lecture seule du dépôt.", kind: "action", widening: false },
+  { name: "skill-improvements", description: "Relit, applique ou écarte une proposition d’amélioration de compétence.", kind: "action", widening: false, usage: "[apply|dismiss]" },
+  { name: "agents", description: "Liste les agents ; create propose une définition avant enregistrement.", kind: "action", widening: false, usage: "[create <description>|copy <nom>]" },
+  { name: "sandbox", description: "Affiche l’état de l’isolation et ses instructions d’installation.", kind: "display", widening: false },
+  { name: "teammate", description: "Ouvre la vue d’un coéquipier ; lead revient au chef.", kind: "action", widening: false, usage: "[nom|lead]", interactiveOnly: true },
+  { name: "advisor", description: "Choisit un conseiller compatible, ou le désactive avec off.", kind: "action", widening: false, usage: "[modèle|off]" },
   ...(buildFlag("mode_self_initiated") ? [{ name: "proactive", description: "Bascule les réveils proactifs de cette session ; chaque réveil consomme un appel.", kind: "action", widening: false, interactiveOnly: true }] as readonly InternalCommand[] : []),
   ...(buildFlag("automation_scripts") ? [{ name: "workflows", description: "Liste les flux par source et paramètres ; lance après approbation du plan.", kind: "action", widening: false, usage: "[run <nom> [objet JSON]]" }] as readonly InternalCommand[] : []),
   { name: "browser", description: "Affiche les instructions d’installation de l’extension navigateur configurée.", kind: "display", widening: false },

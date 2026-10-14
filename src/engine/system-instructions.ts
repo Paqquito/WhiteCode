@@ -11,6 +11,7 @@ import { REMINDER_EXPLANATION } from "./reminders";
 import { assembleContract, CONTRACT_VERSION, CURRENT_CONTRACT, FALLBACK_CONTRACT, selectFamily, type ContractText, type Variant } from "./behavior-contract";
 
 export interface InstructionsContext {
+  readonly languageInstruction?: string;
   readonly outputStyle?: OutputStyle;
   readonly identity: Identity;
   readonly variant: Variant;
@@ -84,7 +85,7 @@ export function defaultSectionProviders(contract: () => ContractText = CURRENT_C
     { id: 2, name: "rules", stable: true, required: true, reducible: false, produce: (ctx) => contractSections(ctx, contract()).rules },
     { id: 3, name: "method", stable: true, required: false, reducible: false, produce: (ctx) => contractSections(ctx, contract()).method },
     { id: 4, name: "tools", stable: true, required: true, reducible: false, produce: (ctx) => contractSections(ctx, contract()).tools },
-    { id: 5, name: "output-style", stable: false, required: false, reducible: false, produce: ctx => ctx.outputStyle ? styleInstructions(ctx.outputStyle) || undefined : undefined },
+    { id: 5, name: "output-style", stable: false, required: false, reducible: false, produce: ctx => [ctx.languageInstruction, ctx.outputStyle ? styleInstructions(ctx.outputStyle) : undefined].filter(Boolean).join("\n") || undefined },
     // Section 8 (SPEC-EXT-019 § 5.4 step 3): names and descriptions only; reducible by shortening the descriptions.
     { id: 8, name: "skills", stable: false, required: false, reducible: true, produce: (ctx) => ctx.skills },
     {

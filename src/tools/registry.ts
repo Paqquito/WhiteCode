@@ -159,6 +159,9 @@ export class ToolRegistry implements ToolLookup {
     return [...this.#tools.values(), ...dynamic].sort((a, b) => (a.name < b.name ? -1 : 1));
   }
 
+  /** Optional session capabilities may disappear after a model or setting change. */
+  removeStatic(name: string): void { this.#tools.delete(name); this.#validators.delete(name); }
+
   /** Schema validation before any execution (EF-02): the list of deviations, or an empty list. */
   validateInput(tool: Tool<never>, input: unknown): string[] {
     let v = this.#validators.get(tool.name);

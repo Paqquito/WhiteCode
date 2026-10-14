@@ -81,6 +81,17 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "ui.footerLine.timeoutMs", schema: int(1, 60_000), default: 1500, scopes: [U], owner: "SPEC-IHM-021" },
   { key: "ui.externalEditor", schema: str(), scopes: [U], widening: true, owner: "SPEC-INT-019" },
   // Models, thinking and effort
+  { key: "skills.apiReferenceFile", schema: str(), default: "", scopes: [U, G], owner: "SPEC-EXT-034" },
+  { key: "skills.improvements.enabled", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-EXT-039" },
+  { key: "skills.improvements.everyTurns", schema: int(2, 100), default: 3, scopes: [U], owner: "SPEC-EXT-039" },
+  { key: "ui.promptSuggestions", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-MOT-028", hot: true },
+  { key: "ui.returnSummary.enabled", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-MOT-030", hot: true },
+  { key: "ui.returnSummary.afterMinutes", schema: int(1, 1440), default: 30, scopes: [U], owner: "SPEC-MOT-030" },
+  { key: "sessions.taskSummary.enabled", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-MOT-044" },
+  { key: "sessions.taskSummary.everyTurns", schema: int(1, 100), default: 4, scopes: [U], owner: "SPEC-MOT-044" },
+  { key: "agents.progressSummary.enabled", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-AGT-025" },
+  { key: "ui.language", schema: Type.String({ pattern: "^(auto|[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*)$", maxLength: 80 }), default: "auto", scopes: [U, P, L, G], owner: "SPEC-CFG-012", hot: true },
+  { key: "models.advisor", schema: str(), default: "off", scopes: [U, G], owner: "SPEC-MOT-027", hot: true },
   { key: "modes.brief", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-MOD-029" },
   { key: "ui.shortMessages.maxAttachmentBytes", schema: int(1, 104857600), default: 10485760, scopes: [U], owner: "SPEC-OUT-034" },
   { key: "tools.webSearch.enabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-OUT-013" },
@@ -108,6 +119,7 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "thinking.summaries.visible", schema: bool(), default: false, scopes: [U], owner: "SPEC-MOT-023" },
 
   // Permissions
+  { key: "permissions.shellAnalysis", schema: enumOf(["off", "shadow"]), default: "off", scopes: [U, G], owner: "SPEC-PER-007" },
   { key: "policy.requiredKeys", schema: strList(), default: [], scopes: [G], owner: "SPEC-CFG-003" },
   { key: "permissions.detachedWaitTimeout", schema: durationSchema(), kind: "duration", default: 30 * 60_000, scopes: [U, G], owner: "SPEC-PER-001" },
   { key: "permissions.allowRules", schema: strList(), default: [], scopes: [U, P, L, G, C], owner: "SPEC-PER-001", merge: "concat", hot: true },

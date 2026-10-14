@@ -77,6 +77,13 @@ export function sessionTitle(records: readonly TranscriptRecord[]): string | und
   return title;
 }
 
+// Supports: SPEC-MOT-044 (metadata shown by the local session selector), gap E-170.
+export function sessionTaskSummary(records: readonly TranscriptRecord[]): string | undefined {
+  let summary: string | undefined;
+  for (const record of records) if (record.type === "system" && record.data["event"] === "task_summary" && typeof record.data["summary"] === "string") summary = record.data["summary"];
+  return summary;
+}
+
 /**
  * Session designated by `--reopen <value>` (SPEC-SES-002 § 5.1): an identifier of this project, a title of this project
  * (SPEC-SES-008 EF-03), or an identifier of another project (SPEC-SES-005, reported to the caller).

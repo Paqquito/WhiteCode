@@ -105,11 +105,13 @@ export function rankCandidates(term: string, candidates: readonly Candidate[], o
     if (q !== undefined) scored.push({ c, q });
   }
   const use = (c: Candidate) => o.usage.get(c.value);
+  const latest = Math.max(0, ...[...o.usage.values()].map(value => value.last));
+  const usageScore = (c: Candidate) => { const value = use(c); return value ? value.count / (1 + Math.max(0, latest - value.last) / 604800000) : 0; };
   const depth = (c: Candidate) => c.value.split("/").filter((s) => s !== "").length;
   scored.sort(
     (a, b) =>
       a.q - b.q ||
-      (use(b.c)?.count ?? 0) - (use(a.c)?.count ?? 0) ||
+      usageScore(b.c) - usageScore(a.c) ||
       (use(b.c)?.last ?? 0) - (use(a.c)?.last ?? 0) ||
       depth(a.c) - depth(b.c) ||
       (a.c.value < b.c.value ? -1 : a.c.value > b.c.value ? 1 : 0),

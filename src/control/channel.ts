@@ -31,6 +31,7 @@ export interface ChannelOptions {
 }
 
 export interface HostCapabilities {
+  readonly toolProgress?: boolean;
   readonly demands: ReadonlySet<string>;
   readonly timeoutMs: number;
   /** The host declares itself as the decision authority; the policy decides whether it is designated (RG-05). */
@@ -95,6 +96,7 @@ export class ControlChannel {
           demands: new Set(message.demands),
           timeoutMs: message.responseTimeoutMs ?? this.#o.defaultTimeoutMs,
           declaresAuthority: message.decisionAuthority === true,
+          toolProgress: message.toolProgress === true,
         };
         this.#o.trace("initialized", { demands: message.demands, timeoutMs: this.#host.timeoutMs, declaresAuthority: this.#host.declaresAuthority });
         this.#initialized();

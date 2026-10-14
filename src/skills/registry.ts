@@ -86,6 +86,11 @@ function readSkill(file: string, folderName: string, scope: SkillScope, command:
   } catch {
     return undefined;
   }
+  return parseSkill(text, file, folderName, scope, command, warnings);
+}
+
+/** The same validation is used before saving an assisted skill and when loading it. */
+export function parseSkill(text: string, file: string, folderName: string, scope: SkillScope, command: boolean, warnings: string[]): Skill | undefined {
   const { header, body, invalid } = splitHeader(text);
   const what = command ? `Commande ${file}` : `Compétence ${folderName}`;
   if (invalid) {
