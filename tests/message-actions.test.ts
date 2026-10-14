@@ -89,3 +89,13 @@ test("TECH — an editor finishing after application shutdown cannot restore raw
   const work = app.editDraft(); expect(raw.at(-1)).toBe(false); app.stop(); release("Late draft"); await work;
   expect(raw.at(-1)).toBe(false); expect(writes).toBe(0);
 });
+
+test("TECH — transcript navigation counts as user activity while focus and appearance reports do not", () => {
+  let activity = 0;
+  const { term, app } = appForActions(async () => true, undefined, { onActivity: () => { activity++; }, autoTheme: () => true });
+  try {
+    app.record("model", "", "A response to inspect."); app.openTranscript(); term.type("j"); expect(activity).toBe(1);
+    const last = app.lastInteractionAt; term.type("\u001b[O"); term.type("\u001b]11;rgb:0000/0000/0000\u0007");
+    expect(activity).toBe(1); expect(app.lastInteractionAt).toBe(last);
+  } finally { app.stop(); }
+});

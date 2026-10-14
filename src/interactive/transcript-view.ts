@@ -286,7 +286,7 @@ export class TranscriptView {
 
   key(e: InputEvent): void {
     if (!this.#screen) return;
-    if (e.kind === "paste") return; // RG-01: read-only
+    if (e.kind !== "key") return; // RG-01: read-only; terminal reports never become navigation keys
     const page = Math.max(1, (this.#term.rows || 24) - 3);
     const current = this.#rows[this.#state.top]?.item ?? 0;
     const items = this.#items();

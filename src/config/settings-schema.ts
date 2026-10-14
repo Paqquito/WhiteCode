@@ -232,6 +232,13 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "sessions.snapshotMaxFileSize", schema: durationSchema(), kind: "size", default: 5_242_880, scopes: [U, G], owner: "SPEC-SES-006" },
   { key: "sessions.presenceTimeout", schema: durationSchema(), kind: "duration", default: 60_000, scopes: [U, G], owner: "SPEC-SES-011" },
   { key: "sessions.retentionDays", schema: int(1), default: 30, scopes: [U, G], owner: "SPEC-CFG-013" },
+  { key: "sessions.pasteInlineThreshold", schema: int(1, 1_000_000), default: 4000, scopes: [U, G], owner: "SPEC-SES-017" },
+  { key: "sessions.autoTitle", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-SES-008" },
+  { key: "notifications.channel", schema: Type.Union([Type.Literal("auto"), Type.Literal("terminal"), Type.Literal("system"), Type.Literal("bell"), Type.Literal("disabled"), Type.Literal("système"), Type.Literal("sonnerie"), Type.Literal("désactivé")]), default: "auto", scopes: [U, G], owner: "SPEC-INT-020", hot: true },
+  { key: "notifications.minTurnSeconds", schema: int(0, 3600), default: 30, scopes: [U, G], owner: "SPEC-INT-020", hot: true },
+  { key: "ui.notifications.agentEnabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-OUT-036", hot: true },
+  { key: "ui.notifications.channel", schema: Type.Union([Type.Literal("auto"), Type.Literal("terminal"), Type.Literal("systeme"), Type.Literal("system"), Type.Literal("mobile")]), default: "auto", scopes: [U, G], owner: "SPEC-OUT-036", hot: true },
+  { key: "ui.notifications.maxPerHour", schema: int(1, 100), default: 6, scopes: [U, G], owner: "SPEC-OUT-036", hot: true },
   // SPEC-HOK-002, SPEC-HOK-012: hook declarations by scope and their controls (applied during the session, SPEC-HOK-002 FA-01).
   { key: "hooks", schema: Type.Record(Type.String(), Type.Unknown()), default: {}, scopes: [U, P, L, G, C], owner: "SPEC-HOK-002", hot: true },
   { key: "hooksConfig.disabled", schema: bool(), default: false, scopes: [U, L, G], owner: "SPEC-HOK-012", hot: true },
@@ -326,7 +333,7 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "engine.output.schemaMaxDepth", schema: int(1, 100), default: 12, scopes: [U], owner: "SPEC-MOD-004" },
   // SPEC-IHM-001, SPEC-IHM-002: rendering and layout of the interactive interface (lot 5; values in English, gap E-093).
   { key: "ui.colorMode", schema: enumOf(["auto", "none", "16", "256", "truecolor"]), default: "auto", scopes: [U], owner: "SPEC-IHM-001" },
-  { key: "ui.theme", schema: enumOf(["dark", "light", "dark-accessible", "light-accessible"]), default: "dark", scopes: [U], owner: "SPEC-IHM-020", hot: true },
+  { key: "ui.theme", schema: enumOf(["dark", "light", "dark-accessible", "light-accessible", "auto"]), default: "dark", scopes: [U], owner: "SPEC-IHM-020", hot: true },
   { key: "ui.welcome.compact", schema: bool(), default: false, scopes: [U], owner: "SPEC-IHM-025" },
   { key: "ui.welcome.hideAccount", schema: bool(), default: false, scopes: [U], owner: "SPEC-IHM-025" },
   { key: "ui.terminalTitle", schema: bool(), default: true, scopes: [U], owner: "SPEC-IHM-036" },

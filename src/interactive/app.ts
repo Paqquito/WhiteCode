@@ -11,6 +11,8 @@
 // Supports: SPEC-IHM-019 (CA-01/02, choices and preview), SPEC-IHM-020 (CA-02), SPEC-CMD-072 (CA-01), SPEC-IHM-005 (CA-07), SPEC-MOD-001 (CA-06), gap E-142.
 
 import type { Terminal } from "../platform/terminal";
+import type { ImagePart } from "../providers/types";
+import type { PreparedImage } from "../tools/image-resize";
 // Supports: SPEC-IHM-015/016/017/018/021/024/034, SPEC-IHM-005 CA-05, SPEC-INT-019, gap E-159.
 import { buildFlag, buildProfile } from "../extension-points/build-flags" with { type: "macro" };
 import { matchQuality } from "./completion";
@@ -73,7 +75,7 @@ export interface InputState {
  * An entry of the user. `literal`: the line starts with pasted text that stays text, never a command nor a shell line
  * (SPEC-IHM-010 EF-09); `pasted`: the texts pasted in it, which never make an active reference (EF-10).
  */
-export type Entry = { readonly kind: "message"; readonly text: string; readonly literal?: boolean; readonly pasted?: readonly string[] } | { readonly kind: "exit" };
+export type Entry = { readonly kind: "message"; readonly text: string; readonly literal?: boolean; readonly pasted?: readonly string[]; readonly images?: readonly ImagePart[] } | { readonly kind: "exit" };
 
 interface Choice {
   readonly label: string;
@@ -155,6 +157,10 @@ export interface AppOptions {
   readonly maxKeyword?: () => { keyword: string; supported: boolean } | undefined;
   // Supports: SPEC-IHM-036 (CA-01, pending decision), gap E-150.
   readonly onApprovalWaiting?: (waiting: boolean) => void;
+  readonly onFocus?: (focused: boolean) => void;
+  readonly onActivity?: () => void;
+  readonly autoTheme?: () => boolean;
+  readonly onAppearance?: (light: boolean) => void;
   readonly reducedMotion?: boolean;
   readonly screenReader?: boolean;
   readonly tips?: boolean;
@@ -197,6 +203,7 @@ export interface AppOptions {
   readonly paste?: { readonly collapseThreshold: number; readonly maxChars: number; readonly detectHeuristic: boolean };
   /** Files that a `@` reference of the input will attach at sending (EF-10: shown before sending). */
   readonly attachments?: (text: string, pasted: readonly string[]) => readonly string[];
+  readonly clipboardImage?: { readonly enabled: () => boolean; readonly read: () => Promise<PreparedImage | undefined>; readonly maxCount: number; readonly maxBytes: number };
   /** Rich text of the answers (SPEC-IHM-003, SPEC-IHM-004) and differences of the changes (SPEC-IHM-005). */
   readonly render?: { readonly markdown: MarkdownOptions; readonly diff: DiffOptions };
   readonly theme?: Theme;
@@ -237,6 +244,7 @@ export class InteractiveApp {
   #unsubscribeInput: (() => void) | undefined;
   #unsubscribeResize: (() => void) | undefined;
   #developmentTimer?: ReturnType<typeof setInterval>;
+  #appearanceTimer?: ReturnType<typeof setInterval>;
   #waiting: ((e: Entry) => void) | undefined;
   #turn: AbortController | undefined;
   #turnStarted = 0;
@@ -255,6 +263,8 @@ export class InteractiveApp {
   #pasteCount = 0;
   /** Texts pasted in the current input (EF-10). */
   #pasted: string[] = [];
+  readonly #images: PreparedImage[] = [];
+  #readingImage = false;
   /** The input starts with a pasted `/` or `!`: it stays text (EF-09); `uncertain`: detected by the heuristic only. */
   #literalLead: "certain" | "uncertain" | undefined;
   /** Output of the shell command running (SPEC-IHM-012 EF-04). */
@@ -487,6 +497,7 @@ export class InteractiveApp {
       maxFramesPerSecond: this.#o.settings.maxFramesPerSecond,
       slowFrameMs: this.#o.settings.slowFrameMs,
       sequential: this.#o.screenReader,
+      focusReporting: this.#o.capabilities.bracketedPaste,
       source: (size) => this.#frame(size),
       scheduler: this.#o.scheduler,
     });
@@ -494,6 +505,7 @@ export class InteractiveApp {
     this.#unsubscribeResize = this.#o.terminal.onResize(() => this.#transcriptView?.resized());
     this.#updateCursorShape();
     this.#session.screen.flush();
+    if (this.#o.onAppearance && !this.#o.screenReader) { this.#queryAppearance(); this.#appearanceTimer = setInterval(() => this.#queryAppearance(), 5000); }
     if (buildFlag("ui_dev_bar") && buildProfile() !== "public" && this.#o.developmentBar) this.#developmentTimer = setInterval(() => this.#redraw(), 500);
   }
 
@@ -506,6 +518,7 @@ export class InteractiveApp {
     if (this.#tipTimer) clearTimeout(this.#tipTimer); this.#tipTimer = undefined;
     this.#exiting = true;
     clearInterval(this.#developmentTimer); this.#developmentTimer = undefined;
+    clearInterval(this.#appearanceTimer); this.#appearanceTimer = undefined;
     if (this.#cursorShape) {
       this.#o.terminal.write("\u001b[0 q"); // the shape of the cursor found at start
       this.#cursorShape = "";
@@ -571,6 +584,13 @@ export class InteractiveApp {
 
   /** Recovery of one interrupted message does not release the saved queue (gap E-132). */
   setQueueHeld(held: boolean): void { this.#queueHeld = held; }
+  /** Implements: SPEC-MOT-008 (CA-03); a declined immediate send returns every queued message to the editable input. */
+  restoreInterruptedQueue(): void {
+    const messages = this.#queue.splice(0);
+    if (!messages.length) return;
+    this.#editor.set([...messages, ...(this.#editor.text ? [this.#editor.text] : [])].join("\n\n"));
+    this.#saveState(); this.#redraw();
+  }
 
   // ---- Turn ----------------------------------------------------------------------------------------------------
 
@@ -1113,12 +1133,14 @@ export class InteractiveApp {
 
   #input(data: string): void {
     if (this.#externalEditing) return;
-    this.#lastInteractionAt = Date.now();
+    this.#keys.enableAppearanceReports(this.#o.autoTheme?.() === true && !this.#o.screenReader);
     if (this.#transcriptView) {
       // RG-01 of SPEC-IHM-006: the view is read-only; Ctrl+C closes it without interrupting the session.
       const events = this.#keys.feed(data);
       if (data === "\u001b") events.push(...this.#keys.flush());
       for (const e of events) {
+        if (e.kind === "focus" || e.kind === "appearance") { this.#event(e); continue; }
+        this.#lastInteractionAt = Date.now(); this.#o.onActivity?.();
         const global = e.kind === "key" ? this.#keymap.action(e, ["app"]) : undefined;
         if (!this.#transcriptView.modalActive && (global === "app.quickOpen" || global === "app.globalSearch")) { this.#transcriptView.close(); this.#event(e); continue; }
         if (e.kind === "key" && e.ctrl && e.name === "c") this.#transcriptView?.close();
@@ -1137,7 +1159,12 @@ export class InteractiveApp {
     for (const e of events) this.#event(e);
   }
 
+  #queryAppearance(): void { if (!this.#externalEditing && !this.#exiting && this.#o.autoTheme?.() && this.#o.capabilities.bracketedPaste) this.#o.terminal.write("\u001b]11;?\u001b\\"); }
   #event(e: InputEvent, uncertain = false): void {
+    if (e.kind === "focus") { this.#o.onFocus?.(e.focused); return; }
+    if (e.kind === "appearance") { if (this.#o.autoTheme?.()) this.#o.onAppearance?.(e.light); return; }
+    this.#lastInteractionAt = Date.now();
+    this.#o.onActivity?.();
     if (this.#secret) {
       const secret = this.#secret;
       if (e.kind === "paste") {
@@ -1326,10 +1353,27 @@ export class InteractiveApp {
     this.#saveState();
   }
 
+  /** An explicit paste only stages the image; a dialog or a closed session cannot receive a late clipboard result. */
+  async pasteClipboardImage(): Promise<void> {
+    const source = this.#o.clipboardImage;
+    if (!source || this.#readingImage || this.humanDialogActive || this.#capture || this.#exiting) return;
+    if (!source.enabled()) { this.notice("warning", "Le modèle actuel n’accepte pas les images."); return; }
+    this.#readingImage = true;
+    try {
+      const image = await source.read();
+      if (this.#exiting || this.humanDialogActive || this.#capture) return;
+      if (!image) { this.notice("warning", "Aucune image accessible dans le presse-papiers local."); return; }
+      if (this.#images.length >= source.maxCount || this.#images.reduce((bytes, image) => bytes + image.bytes.length, 0) + image.bytes.length > source.maxBytes) { this.notice("warning", "Limite des pièces jointes atteinte : l’image n’a pas été ajoutée."); return; }
+      this.#images.push(image); this.#redraw();
+    } catch { if (!this.#exiting) this.notice("warning", "Image du presse-papiers indisponible : format, taille ou accès non pris en charge."); }
+    finally { this.#readingImage = false; }
+  }
+
   #inputAction(e: KeyEvent, action: string | undefined): void {
     const ed = this.#editor;
     switch (action) {
       case "input.externalEditor": void this.editDraft(); return;
+      case "clipboard.pasteImage": void this.pasteClipboardImage(); return;
       case "app.exit":
         if (ed.isEmpty) this.#armedExit("ctrl+d");
         else ed.deleteForward();
@@ -1455,10 +1499,11 @@ export class InteractiveApp {
       this.#saveState();
       return;
     }
-    const typed = this.#editor.text;
+    if (this.#images.length && (this.running || !this.#waiting)) { this.notice("info", "L’image et le brouillon sont conservés : envoyez-les après la fin du tour."); return; }
+    const typed = this.#editor.text || (this.#images.length ? "Image jointe." : "");
     if (typed.trim() === "") return; // EF-06, CA-06
     const content = this.#expanded(typed);
-    const literal = this.#literalLead;
+    const literal = this.#images.length ? "certain" : this.#literalLead;
     if (literal === "uncertain") {
       // CA-09 of SPEC-IHM-010: the origin is uncertain; executing as a command needs a confirmation.
       void this.confirm(`Cette ligne semble collée : « ${content.split("\n")[0]!.slice(0, 60)} ». L'exécuter comme commande ?`, "exécuter", "envoyer comme texte").then((yes) => {
@@ -1467,7 +1512,7 @@ export class InteractiveApp {
       });
       return;
     }
-    this.#assist.submitted(typed); // § 5.1 of SPEC-IHM-008: messages and commands are recorded
+    this.#assist.submitted(content); // § 5.1 of SPEC-IHM-008: history restores the complete paste, not its visual marker
     const pasted = this.#pasted;
     this.#pasted = [];
     this.#literalLead = undefined;
@@ -1494,7 +1539,8 @@ export class InteractiveApp {
     this.#saveState();
     const w = this.#waiting;
     this.#waiting = undefined;
-    w({ kind: "message", text: content, ...(literal ? { literal: true } : {}), ...(pasted.length > 0 ? { pasted } : {}) });
+    const images = this.#images.splice(0).map((image): ImagePart => ({ type: "image", mediaType: image.mediaType, dataBase64: image.bytes.toString("base64") }));
+    w({ kind: "message", text: content, ...(literal ? { literal: true } : {}), ...(pasted.length > 0 ? { pasted } : {}), ...(images.length ? { images } : {}) });
   }
 
   #stashDraft(): void {
@@ -1622,6 +1668,7 @@ export class InteractiveApp {
     if (this.#pastes.size > 0) extra.push("Alt+P : déplier les textes collés pour les vérifier.");
     // EF-10 of SPEC-IHM-010: the attachments are visible before sending.
     const files = this.#o.attachments?.(this.#expanded(ed.text), this.#pasted) ?? [];
+    for (const image of this.#images) extra.push(`Image jointe : ${image.width} × ${image.height}, ${image.bytes.length} octets${image.resized ? " (redimensionnée)" : ""}.`);
     if (files.length > 0) extra.push(`Pièces jointes à l'envoi : ${files.join(", ")}`);
     if (hidden > 0) extra.push(`${hidden} ligne${hidden > 1 ? "s" : ""} hors de la vue`);
     if (ed.text.length > this.#o.settings.inputWarnChars) extra.push(`${ed.text.length} caractères : risque de saturer le contexte`); // FA-02

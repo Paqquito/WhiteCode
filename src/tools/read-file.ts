@@ -1,12 +1,14 @@
 // Implements: SPEC-OUT-002 (§ 5.3 points 5 to 7, EF-01 to EF-07, FA-01 to FA-03, ERR-01 to ERR-07, RG-01, CA-01, CA-02, CA-04, CA-05)
 // Supports: SPEC-PER-010 (reads inside the allowed folders are allowed), decisions D-06 (PDF in lot 2) and D-20 (correction D-3), gaps E-027 (image limits), E-033 (model-facing messages in English), E-082 (PDF as text)
+// Supports: SPEC-OUT-002 (CA-03 PNG resizing), gap E-162.
 
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync, type Stats } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
 import description from "../../prompts/tools/read_file.md" with { type: "text" };
 import { comparablePath, isAbsolutePath, isWithin, realPathOrSelf } from "../platform/system";
 import { suggest } from "../shared/suggest";
-import { IMAGE_MAX_BYTES, IMAGE_MAX_DIMENSION, imageInfo } from "./image-header";
+import { IMAGE_MAX_BYTES } from "./image-header";
+import { ImageFailure, prepareImage } from "./image-resize";
 import { parseNotebook, renderNotebook } from "./notebook";
 import { readPdf } from "./pdf";
 import { decodeText } from "./text-file";
@@ -164,22 +166,19 @@ export const readFileTool: Tool<ReadFileInput> = {
   },
 };
 
-function readImage(path: string, stats: Stats, ctx: ToolContext): ToolOutcome {
+async function readImage(path: string, stats: Stats, ctx: ToolContext): Promise<ToolOutcome> {
   if (!ctx.modelImages) return textOutcome("The current model does not accept images.", true);
   if (extname(path).toLowerCase() === ".bmp") return textOutcome("BMP images are not supported: convert the image to PNG or JPEG.", true);
-  // Gap E-027: no decoder in this version; limits are checked on the file and its header, the image is never resized.
   if (stats.size > IMAGE_MAX_BYTES) return textOutcome(`The image is too large (${stats.size} bytes, limit ${IMAGE_MAX_BYTES}): reduce it before reading it.`, true);
-  const bytes = readFileSync(path);
-  const info = imageInfo(bytes);
-  if (!info) return textOutcome("The image cannot be read: unrecognised or damaged format.", true);
-  if (info.width > IMAGE_MAX_DIMENSION || info.height > IMAGE_MAX_DIMENSION) {
-    return textOutcome(`The image is too large (${info.width} × ${info.height} pixels, limit ${IMAGE_MAX_DIMENSION}): reduce it before reading it.`, true);
-  }
+  let info;
+  try { info = await prepareImage(readFileSync(path), ctx.signal); }
+  catch (error) { if (error instanceof ImageFailure) return textOutcome(error.message, true); throw error; }
+  ctx.readState.set(comparablePath(realPathOrSelf(path), ctx.platform), { mtimeMs: stats.mtimeMs, size: stats.size, complete: true });
   return {
     isError: false,
     content: [
-      { type: "text", text: `Image ${path} (${info.width} × ${info.height}, ${info.mediaType}).` },
-      { type: "image", mediaType: info.mediaType, dataBase64: bytes.toString("base64") },
+      { type: "text", text: `Image ${path} (${info.width} × ${info.height}, ${info.mediaType}${info.resized ? ", resized" : ""}).` },
+      { type: "image", mediaType: info.mediaType, dataBase64: info.bytes.toString("base64") },
     ],
   };
 }

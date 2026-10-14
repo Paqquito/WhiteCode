@@ -182,13 +182,20 @@ import { BackgroundTasks } from "../engine/background";
 import { createFetchUrlTool, type WebAccess } from "../tools/fetch-url";
 import { textOutcome } from "../tools/types";
 import { costOf, requestBound } from "../engine/budget";
+import { sampleSideText } from "../engine/side-text";
+import { TITLE_PROMPT, validGeneratedTitle } from "../session/title";
 import type { ModelRequest } from "../providers/types";
 import { createPlanningTools, createUserChoiceTool, type ChoiceQuestion, type ChoiceReply, type PlanDecision } from "../tools/planning";
 import { backgroundOutputTool, backgroundStopTool, createWorkItemTools, monitorProcessTool } from "../tools/background-tools";
 import { NEUTRAL_HOOKS, type HookBus } from "../extension-points/hooks";
 import { closingFields, combineResults, exitCodeFor, renderResult, type ResultFormat } from "./output";
 import { EventStream } from "./stream-output";
-import { copyText } from "../platform/clipboard";
+import { copyText, readClipboardImage } from "../platform/clipboard";
+import { prepareImage } from "../tools/image-resize";
+import { ContentStore } from "../session/content-store";
+import { SessionNotifications } from "../notifications/session";
+import { createNotifyDeviceTool } from "../tools/notify-device";
+import { notifyLocal } from "../platform/notification";
 import { connectorResourceTools } from "../tools/connector-resources";
 // Supports: SPEC-SES-008 (CA-02/03), SPEC-CMD-015/088/097/106 (CA-01), gap E-151.
 import { sessionLabels } from "../session/sessions";
@@ -327,6 +334,9 @@ export interface RunDependencies {
   readonly scheduleRandom?: () => number;
   /** Platform clipboard port; a terminal sequence is used when no local clipboard is available. */
   readonly copyText?: (text: string) => Promise<boolean>;
+  /** Explicit keyboard image paste; the default adapter never reads a remote machine’s clipboard. */
+  readonly readClipboardImage?: () => Promise<Buffer | undefined>;
+  readonly notifyLocal?: (title: string, message: string, channel: string, signal?: AbortSignal) => Promise<boolean>;
   readonly onEvent?: (event: EngineEvent) => void;
   /** Engine API of the session, for a control host or the tests: mode changes (SPEC-PER-003 § 5.3). */
   readonly onSession?: (session: {
@@ -1398,6 +1408,19 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // SPEC-OUT-020, SPEC-OUT-022: the tools of the work items and of the background tasks, named in --toolset like the others.
   const inToolset = (name: string) => toolsetNames === undefined || toolsetNames.includes(name) || (toolsetNames.length === 1 && toolsetNames[0] === "default");
   if (buildFlag("skill_discovery") && skillDiscovery && inToolset("discover_skills")) registry.addStatic(createDiscoverSkillsTool(skillDiscovery) as never);
+  const notifications = new SessionNotifications({
+    unattended: nonInteractive,
+    settings: () => ({ channel: liveSettings.get<string>("notifications.channel"), agentChannel: liveSettings.get<string>("ui.notifications.channel"), agentEnabled: liveSettings.get<boolean>("ui.notifications.agentEnabled"), maxPerHour: liveSettings.get<number>("ui.notifications.maxPerHour"), idleMs: Math.max(1000, liveSettings.get<number>("notifications.minTurnSeconds") * 1000) }),
+    send: async (message, channel, signal) => {
+      const title = redactOutput(maskSecrets(identity.get("PRODUCT"))), safe = redactOutput(maskSecrets(message));
+      if (deps.notifyLocal) return deps.notifyLocal(title, safe, channel, signal);
+      if ((channel === "auto" || channel === "system" || channel === "systeme" || channel === "système") && await notifyLocal(title, safe, env.childEnvironment(), signal)) return true;
+      if (terminal && ["auto", "terminal", "bell", "sonnerie"].includes(channel)) { terminal.write("\u0007"); emit({ type: "notification", message: safe }); return true; }
+      return false;
+    },
+  });
+  (holder.finalizers ??= []).push(async () => notifications.close());
+  if (buildFlag("push_notifications") && inToolset("notify_device")) registry.addStatic(createNotifyDeviceTool((message, signal) => notifications.notify(message, signal), redactOutput) as never);
   let briefMode = buildFlag("mode_brief") && settings.get<boolean>("modes.brief"), briefNote: string | undefined;
   let publishedMessage: string | undefined;
   const messageUserTool = buildFlag("mode_brief") ? createMessageUserTool({ enabled: () => briefMode, maxBytes: () => liveSettings.get<number>("ui.shortMessages.maxAttachmentBytes"), publish: addressed => {
@@ -1644,6 +1667,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         sessionId: continued ? reopened.info.id : assignedId,
         parentId: continued ? reopened.chain[reopened.chain.length - 1]?.id : undefined,
         clock: deps.now,
+        contentInlineThreshold: settings.get<number>("sessions.pasteInlineThreshold"),
       })
     : undefined;
   const sessionId = transcript?.sessionId ?? assignedId ?? crypto.randomUUID();
@@ -1944,6 +1968,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     manualTitle = true; transcript?.append("system", { event: "title", title: launchTitle, source: "manual" });
   }
   let terminalSessionTitle = launchTitle ?? (reopened ? sessionTitle(reopened.records) : undefined) ?? sessionId.slice(0, 8);
+  const titleController = new AbortController();
+  let titleTask: Promise<void> | undefined;
+  holder.cleanups.push(() => titleController.abort());
   let titleWaiting = false;
   const setTerminalTitle = (waiting = titleWaiting) => {
     titleWaiting = waiting;
@@ -1952,6 +1979,14 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     terminal.write(`\u001b]0;${title}\u0007`);
   };
   // SPEC-SES-015 step 2: results given to the calls left without one are recorded after the branch, never in place.
+  // Implements: SPEC-INT-018 (CA-02); SSH copies target the terminal user's clipboard, never the remote host's.
+  const copyForSession = async (source: string): Promise<boolean> => {
+    const safe = redactOutput(source);
+    if (env.public("SSH_CONNECTION") || env.public("SSH_TTY")) { if (!terminal) return false; terminal.write(`\u001b]52;c;${Buffer.from(safe).toString("base64")}\u0007`); return true; }
+    try { if (await (deps.copyText ?? copyText)(safe)) return true; } catch { /* terminal fallback below */ }
+    if (!terminal) return false;
+    terminal.write(`\u001b]52;c;${Buffer.from(safe).toString("base64")}\u0007`); return true;
+  };
   for (const repair of reopened?.history.repairs ?? []) transcript?.append("tool_result", { callId: repair.callId, isError: repair.isError, content: repair.content, synthetic: true });
   if (transcript) ledger.journal(state => {
     transcript.append("system", { event: "budget_state", state }); transcript.flush();
@@ -2606,6 +2641,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       maxEntries: settings.get<number>("ui.history.maxEntries"),
       retentionDays: settings.get<number>("ui.history.retentionDays"),
       enabled: settings.get<boolean>("ui.history.enabled"),
+      contentInlineThreshold: settings.get<number>("sessions.pasteInlineThreshold"),
       warn: (m) => err(`avertissement : ${m}`),
     });
     // SPEC-IHM-009: commands of the catalogue and files of the project, the index kept a few seconds (ENF-02).
@@ -2671,7 +2707,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         if (await launchExternal(program, [...args, path]) !== 0) throw new Error("Éditeur interrompu ou en échec.");
       } } : undefined,
       maxKeyword: buildFlag("thinking_max_keyword") ? () => ({ keyword: liveSettings.get<string>("thinking.maxKeyword"), supported: currentModel.capabilities.thinking !== "none" }) : undefined,
-      onApprovalWaiting: waiting => setTerminalTitle(waiting),
+      onApprovalWaiting: waiting => { setTerminalTitle(waiting); notifications.waiting(waiting); },
+      onFocus: focused => notifications.focus(focused), onActivity: () => notifications.activity(),
+      autoTheme: buildFlag("ui_auto_theme") ? () => liveSettings.get<string>("ui.theme") === "auto" && !themePreviewActive : undefined,
+      onAppearance: buildFlag("ui_auto_theme") ? light => { if (liveSettings.get<string>("ui.theme") === "auto" && !themePreviewActive) { activeTheme = light ? "light" : "dark"; app?.setTheme(resolveTheme(activeTheme, identity.get("BRAND_COLOR_PRIMARY")), renderOptions(liveSettings)); } } : undefined,
       terminal: terminal!,
       capabilities,
       settings: {
@@ -2716,7 +2755,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         }
       },
       messageActions: buildFlag("ui_message_menu") ? { enabled: settings.get<boolean>("ui.messageActions.enabled"), copy: async source => {
-        try { return await (deps.copyText ?? copyText)(redactOutput(source)); } catch { return false; }
+        return copyForSession(source);
       }, edit: async item => {
         if (!transcript || !item.recordId || app?.running) throw new Error("Ce message ne peut pas être repris.");
         const records = readTranscript(transcript.path).records, active = activeChain(records);
@@ -2766,6 +2805,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         detectHeuristic: settings.get<boolean>("ui.paste.detectHeuristic"),
       },
       attachments: (t, pasted) => attachable(t, attachmentOptions(), pasted),
+      clipboardImage: {
+        enabled: () => currentModel.capabilities.images,
+        read: async () => { const bytes = await (deps.readClipboardImage ?? (() => readClipboardImage(env.childEnvironment())))(); return bytes ? prepareImage(bytes, controller.signal) : undefined; },
+        maxCount: settings.get<number>("ui.attachments.maxCount"), maxBytes: settings.get<number>("ui.attachments.maxTotalBytes"),
+      },
     });
     app.setStatusNotice("keybindings", built.warnings.length ? `Raccourcis : ${built.warnings.join(" · ")}` : undefined);
   }
@@ -3154,6 +3198,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     try {
       history?.prune();
       const purged = purgeExpiredSessions(locations.sessionsDir, settings.get<number>("sessions.retentionDays"), Date.now(), new Set([sessionId]));
+      const contentRemoved = new ContentStore(join(locations.configDir, "content")).collect(locations.sessionsDir, join(locations.configDir, "input-history.jsonl"));
+      if (contentRemoved > 0) debug.log("maintenance", "unreferenced content removed", { count: contentRemoved });
       if (purged.removed.length > 0) debug.log("maintenance", "expired sessions purged", { count: purged.removed.length });
     } catch {
       // retried at the next launch
@@ -3433,6 +3479,18 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     if (transcript && results.length === 1 && !manualTitle && !(reopened && sessionTitle(reopened.records) !== undefined)) {
       const title = titleFrom(content);
       if (title) { transcript.append("system", { event: "title", title, source: "first_message" }); terminalSessionTitle = title; setTerminalTitle(); }
+      if (result.stopCause === "completed" && !nonInteractive && !minimal && settings.get<boolean>("sessions.autoTitle")) {
+        const small = deps.catalog.resolve("small", providerId, identity, resolveOptions);
+        if (!isResolveFailure(small) && allowedByList(small, "small")) {
+          const metadataModel = { ...small, capabilities: effectiveCapabilities(small.capabilities, providerId).capabilities };
+          const titleSignal = AbortSignal.any([controller.signal, titleController.signal, AbortSignal.timeout(10_000)]);
+          titleTask = sampleSideText({ provider, model: metadataModel, ledger, pricing: pricingOf(metadataModel), system: TITLE_PROMPT, text: redactOutput(maskSecrets(JSON.stringify({ request: content, answer: result.finalText }))).slice(0, 12_000), consumer: "session_title", signal: titleSignal }).then(value => {
+            const generated = validGeneratedTitle(value === undefined ? undefined : redactOutput(maskSecrets(value)));
+            if (!generated || manualTitle || app?.exiting || controller.signal.aborted) return;
+            transcript.append("system", { event: "title", title: generated, source: "automatic" }); transcript.flush(); terminalSessionTitle = generated; setTerminalTitle();
+          }).catch(error => debug.log("session", "title generation unavailable", { error: redactOutput(String(error)) }));
+        }
+      }
     }
     return { result };
   };
@@ -4309,9 +4367,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         const replies = conversation.messages.filter(message => message.role === "assistant" && message.text.trim());
         const reply = replies.at(-index);
         if (!reply || reply.role !== "assistant") return { refused: "Aucune réponse à cette position." };
-        const source = redactOutput(reply.text); let copied = false;
-        try { copied = await (deps.copyText ?? copyText)(source); } catch { /* fallback below */ }
-        if (!copied && terminal) { terminal.write(`\u001b]52;c;${Buffer.from(source).toString("base64")}\u0007`); copied = true; }
+        const source = redactOutput(reply.text), copied = await copyForSession(source);
         const report = copied ? `${source.length} caractères transmis au presse-papiers.` : `Presse-papiers inaccessible ; texte à copier :\n${source}`;
         return { shown: box(report.split("\n").map(line => text(line))), note: report };
       }
@@ -4609,7 +4665,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         const attached = attach(text, attachmentOptions(), meta.pasted ?? []);
         recordAttached(attached.read);
         for (const n of attached.notices) interactiveApp.notice("warning", n);
-        const content: string | ContentPart[] = attached.parts.length > 0 ? [{ type: "text", text: sent }, ...attached.parts.map((p) => ({ type: "text" as const, text: p }))] : sent;
+        const images = meta.images ?? [];
+        const content: string | ContentPart[] = attached.parts.length > 0 || images.length > 0 ? [{ type: "text", text: sent }, ...attached.parts.map((p) => ({ type: "text" as const, text: p })), ...images] : sent;
         const outcome = await processRequest(content, signal, meta.literal === true, meta.pasted ?? []);
         if (outcome.exit) return { kind: "exit" };
         if (outcome.silent) return { kind: "shown" };
@@ -4630,6 +4687,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     stateWriter?.flush();
     writeUsage(usagePath, completionUsage);
     interactiveApp.stop();
+    titleController.abort(); await titleTask;
     holder.errSink = undefined;
     await hooks.fire("session_closed", { reason: "exit" });
     fileWatch?.close(); await hooks.close();

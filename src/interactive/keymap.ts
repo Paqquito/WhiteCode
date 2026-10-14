@@ -61,6 +61,7 @@ export const ACTIONS: readonly ActionDef[] = [
   { id: "history.search", context: "input", label: "Rechercher dans l'historique des saisies", defaults: ["ctrl+r"] },
   { id: "paste.interpret", context: "input", label: "Interpréter un texte collé comme commande ou ligne shell", defaults: ["ctrl+o"] },
   { id: "paste.unfold", context: "input", label: "Déplier les textes collés repliés", defaults: ["alt+p"] },
+  { id: "clipboard.pasteImage", context: "input", label: "Joindre l’image du presse-papiers sans envoyer", defaults: ["ctrl+v", "alt+v"] },
   { id: "list.next", context: "list", label: "Proposition suivante", defaults: ["down", "ctrl+n"] },
   { id: "list.previous", context: "list", label: "Proposition précédente", defaults: ["up", "ctrl+p"] },
   { id: "list.accept", context: "list", label: "Insérer la proposition (sans envoyer)", defaults: ["tab", "enter"] },

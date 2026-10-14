@@ -5,6 +5,8 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { containsSecret } from "../shared/secrets";
+import { ContentStore } from "../session/content-store";
+import { join } from "node:path";
 // Implements: SPEC-SES-016 (shared project history and leading-space exclusion).
 
 export interface HistoryEntry {
@@ -23,6 +25,7 @@ export interface HistoryOptions {
   readonly enabled: boolean;
   readonly now?: () => number;
   readonly warn: (message: string) => void;
+  readonly contentInlineThreshold?: number;
 }
 
 export class InputHistory {
@@ -31,9 +34,11 @@ export class InputHistory {
   #entries: HistoryEntry[] = [];
   #stamp = "";
   #memoryOnly = false;
+  readonly #content: ContentStore;
 
   constructor(o: HistoryOptions) {
     this.#o = o;
+    this.#content = new ContentStore(join(dirname(o.path), "content"), o.contentInlineThreshold);
     this.#reload();
   }
 
@@ -64,6 +69,7 @@ export class InputHistory {
     for (const l of lines) {
       try {
         const v = JSON.parse(l) as { text?: unknown; dir?: unknown; at?: unknown };
+        v.text = this.#content.decode(v.text);
         if (typeof v.text === "string" && typeof v.dir === "string" && typeof v.at === "number") read.push({ text: v.text, dir: v.dir, at: v.at });
       } catch {
         // ENF-02: a line cut by an interrupted write is skipped.
@@ -94,7 +100,7 @@ export class InputHistory {
     if (this.#memoryOnly) return;
     try {
       mkdirSync(dirname(this.#o.path), { recursive: true, mode: 0o700 });
-      appendFileSync(this.#o.path, `${JSON.stringify(entry)}\n`, { mode: 0o600 }); // EF-08: appends add up
+      this.#content.publish(entry.text, text => appendFileSync(this.#o.path, `${JSON.stringify({ ...entry, text })}\n`, { mode: 0o600 })); // EF-08: appends add up
       const s = statSync(this.#o.path);
       this.#stamp = `${s.mtimeMs}:${s.size}`;
     } catch {
@@ -157,8 +163,10 @@ export class InputHistory {
   #write(entries: readonly HistoryEntry[]): void {
     mkdirSync(dirname(this.#o.path), { recursive: true, mode: 0o700 });
     const tmp = `${this.#o.path}.tmp-${process.pid}`;
-    writeFileSync(tmp, entries.map((e) => `${JSON.stringify(e)}\n`).join(""), { mode: 0o600 });
-    renameSync(tmp, this.#o.path);
+    this.#content.withLock(() => {
+      writeFileSync(tmp, entries.map((e) => `${JSON.stringify({ ...e, text: this.#content.encode(e.text) })}\n`).join(""), { mode: 0o600 });
+      renameSync(tmp, this.#o.path);
+    });
     const s = statSync(this.#o.path);
     this.#stamp = `${s.mtimeMs}:${s.size}`;
   }

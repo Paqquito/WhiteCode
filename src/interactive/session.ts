@@ -5,6 +5,7 @@
 // Supports: SPEC-SES-015 (CA-02: recovery releases only the explicitly accepted message), gap E-132.
 
 import type { TurnResult } from "../engine/events";
+import type { ImagePart } from "../providers/types";
 import type { Entry, InteractiveApp } from "./app";
 
 export type EntryOutcome =
@@ -18,6 +19,7 @@ export type EntryOutcome =
 export interface EntryMeta {
   readonly literal?: boolean;
   readonly pasted?: readonly string[];
+  readonly images?: readonly ImagePart[];
 }
 
 export interface InteractiveLoopOptions {
@@ -55,7 +57,7 @@ export async function runInteractiveLoop(o: InteractiveLoopOptions): Promise<{ t
       initialEntry = undefined;
       if (entry.kind === "exit") break;
       text = entry.text;
-      meta = { literal: entry.literal, pasted: entry.pasted };
+      meta = { literal: entry.literal, pasted: entry.pasted, images: entry.images };
     }
     if (app.exiting) break;
     const controller = new AbortController();
@@ -89,6 +91,7 @@ export async function runInteractiveLoop(o: InteractiveLoopOptions): Promise<{ t
     else if (cause === "interrupted" && app.queue.length > 0) {
       // FA-01, EF-04, CA-04: after an interruption, the user decides what becomes of the queue.
       release = await app.confirm(`${app.queue.length} message${app.queue.length > 1 ? "s" : ""} en attente : les envoyer maintenant ?`, "envoyer", "garder en attente");
+      if (!release && !app.exiting) app.restoreInterruptedQueue();
     } else if (cause !== "completed" && cause !== "interrupted" && app.queue.length > 0) {
       // FA-02: after an error, the queue is not sent by itself.
       app.notice("info", "Les messages en attente n'ont pas été envoyés : appuyez sur ↑ pour en reprendre un.");

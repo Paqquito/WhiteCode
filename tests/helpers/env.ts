@@ -130,6 +130,7 @@ function deepMerge(base: Record<string, unknown>, extra: Record<string, unknown>
 export const TEST_USER_CONFIG = {
   api: { provider: "openai_compatible", baseUrl: "http://127.0.0.1:9/v1" },
   models: { identifierMap: TEST_IDENTIFIER_MAP },
+  sessions: { autoTitle: false }, // Stable scripted conversations; dedicated title tests enable optional metadata traffic.
 };
 
 export async function cli(

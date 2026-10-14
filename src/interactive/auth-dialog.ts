@@ -29,6 +29,7 @@ export function authDialog(terminal: Terminal, title: string, secret: boolean, s
           if (secret && !/[\r\n\u0000]/.test(event.text) && value.length + event.text.length <= 2048) { value += event.text; draw(); }
           continue;
         }
+        if (event.kind !== "key") continue;
         if (event.name === "escape" || event.ctrl && ["c", "d"].includes(event.name)) return finish(undefined);
         if (!secret) {
           if (Date.now() < armedAt || event.ctrl || event.alt) continue;

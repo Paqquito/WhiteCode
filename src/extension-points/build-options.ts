@@ -6,6 +6,8 @@ const option = (value: boolean, description: string, specs: string[], absentMark
 export const BUILD_OPTIONS = {
   mode_brief: option(true, "Vue des messages adressés avec accès au détail.", ["SPEC-MOD-029", "SPEC-OUT-034", "SPEC-CMD-007"]),
   skill_discovery: option(true, "Sélection locale des compétences pertinentes.", ["SPEC-OUT-038"]),
+  push_notifications: option(true, "Notifications locales bornées demandées par l’agent.", ["SPEC-OUT-036"], ["Send a brief device notification only"]),
+  ui_auto_theme: option(true, "Suivi de la couleur de fond du terminal.", ["SPEC-IHM-020"], ["Automatique selon le terminal"]),
   review_artifact: option(true, "Décisions humaines sur les constats de revue.", ["SPEC-OUT-045"]),
   ui_fast_find: option(true, "Navigation par fichier et recherche locale au clavier.", ["SPEC-IHM-015", "SPEC-IHM-018"], ["Ouverture rapide", "Recherche globale"]),
   ui_history_browser: option(true, "Sélecteur filtrable de l’historique des saisies.", ["SPEC-IHM-016"], ["Filtrer mes saisies"]),

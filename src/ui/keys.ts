@@ -20,7 +20,7 @@ export interface PasteEvent {
   readonly text: string;
 }
 
-export type InputEvent = KeyEvent | PasteEvent;
+export type InputEvent = KeyEvent | PasteEvent | { readonly kind: "focus"; readonly focused: boolean } | { readonly kind: "appearance"; readonly light: boolean };
 
 const key = (name: string, mods: { ctrl?: boolean; alt?: boolean; shift?: boolean; super?: boolean } = {}, text?: string): KeyEvent => ({
   kind: "key",
@@ -60,6 +60,8 @@ function controlKey(c: string, alt: boolean): KeyEvent {
 
 /** Incremental parser: an escape sequence or a paste split across chunks is completed by the next chunk. */
 export class KeyParser {
+  #appearanceReports = false;
+  enableAppearanceReports(enabled: boolean): void { if (!enabled && this.#appearanceReports && this.#buffer.startsWith("\u001b]11;")) this.#buffer = ""; this.#appearanceReports = enabled; }
   #buffer = "";
   #paste: string | undefined;
 
@@ -136,9 +138,22 @@ export class KeyParser {
     return [key("escape"), ...this.feed(s.slice(1))];
   }
 
-  #escape(s: string, i: number): { event: KeyEvent; next: number } | "incomplete" {
+  #escape(s: string, i: number): { event: InputEvent; next: number } | "incomplete" {
     if (i + 1 >= s.length) return "incomplete";
     const n = s[i + 1]!;
+    if (this.#appearanceReports && n === "]") {
+      const remaining = s.slice(i), prefix = "\u001b]11;";
+      if (prefix.startsWith(remaining)) return "incomplete";
+      if (remaining.startsWith(prefix)) {
+        const end = /\u0007|\u001b\\/.exec(remaining);
+        if (!end) return remaining.length > 512 ? { event: key("unknown"), next: s.length } : "incomplete";
+        const rgb = /^rgb:([a-f\d]{1,4})\/([a-f\d]{1,4})\/([a-f\d]{1,4})$/i.exec(remaining.slice(prefix.length, end.index));
+        const next = i + end.index + end[0].length;
+        if (!rgb) return { event: key("unknown"), next };
+        const values = rgb.slice(1).map(component => parseInt(component, 16) / (16 ** component.length - 1));
+        return { event: { kind: "appearance", light: values[0]! * .2126 + values[1]! * .7152 + values[2]! * .0722 > .5 }, next };
+      }
+    }
     if (n === "[") {
       let k = i + 2;
       while (k < s.length && !(s.charCodeAt(k) >= 0x40 && s.charCodeAt(k) <= 0x7e)) k++;
@@ -146,6 +161,7 @@ export class KeyParser {
       const params = s.slice(i + 2, k);
       const final = s[k]!;
       const next = k + 1;
+      if (params === "" && (final === "I" || final === "O")) return { event: { kind: "focus", focused: final === "I" }, next };
       const parts = params.split(";");
       if (final === "~") {
         const name = CSI_TILDE[parts[0]!];

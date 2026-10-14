@@ -321,7 +321,9 @@ describe("SPEC-IHM-011 queue of messages", () => {
     await run.idle();
     await sleep(100);
     expect(p.requests.length).toBe(1);
-    expect(run.all().join("\n")).toContain("1 message en attente");
+    expect(run.screen().join("\n")).toContain("en attente");
+    expect(run.screen().join("\n")).not.toContain("1 message en attente");
+    run.type(KEY.ctrlU);
     run.type(KEY.altX);
     await quit(run);
   });
@@ -348,11 +350,6 @@ describe("SPEC-IHM-011 queue of messages", () => {
     await run.waitFor((t) => t.includes("Échap pour interrompre"), "turn");
     send(run, "jamais envoyé");
     await run.waitFor((t) => t.includes("1 message en attente"), "queued");
-    run.type(KEY.escape);
-    await run.waitFor((t) => t.includes("les envoyer maintenant ?"), "question after interruption");
-    await sleep(350);
-    run.type("n");
-    await run.idle();
     run.type(KEY.ctrlD);
     run.type(KEY.ctrlD);
     await run.waitFor((t) => t.includes("1 message en attente ne sera pas envoyé"), "exit confirmation");
@@ -437,8 +434,9 @@ describe("SPEC-IHM-027 permission dialog", () => {
 describe("TECH — keys", () => {
   test("TECH — SPEC-IHM-014/EF-07, SPEC-IHM-010 § 5.1 — sequences, modifiers and a paste split across chunks", () => {
     const k = new KeyParser();
-    const names = (data: string) => k.feed(data).map((e) => (e.kind === "paste" ? `paste:${e.text}` : `${e.ctrl ? "C-" : ""}${e.alt ? "M-" : ""}${e.shift && !e.text ? "S-" : ""}${e.name}`));
+    const names = (data: string) => k.feed(data).map((e) => (e.kind === "paste" ? `paste:${e.text}` : e.kind === "focus" ? `focus:${e.focused ? "in" : "out"}` : e.kind === "appearance" ? `appearance:${e.light}` : `${e.ctrl ? "C-" : ""}${e.alt ? "M-" : ""}${e.shift && !e.text ? "S-" : ""}${e.name}`));
     expect(names("a\r\u0003\u001b[A\u001b[1;5D\u001b\r\u001b[Z\u007f\u001b[3~")).toEqual(["a", "enter", "C-c", "up", "C-left", "M-enter", "S-tab", "backspace", "delete"]);
+    expect(names("\u001b[I\u001b[O")).toEqual(["focus:in", "focus:out"]);
     expect(names("\u001b[200~ligne 1\r\nli")).toEqual([]);
     expect(names("gne 2\u001b[20")).toEqual([]);
     expect(names("1~x")).toEqual(["paste:ligne 1\r\nligne 2", "x"]);

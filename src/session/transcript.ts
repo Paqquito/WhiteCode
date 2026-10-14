@@ -5,6 +5,7 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, wr
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { tryFileLock } from "../platform/file-lock";
+import { ContentStore } from "./content-store";
 
 export const TRANSCRIPT_FORMAT_VERSION = 1;
 
@@ -50,6 +51,7 @@ export interface TranscriptWriterOptions {
   /** Record the next one hangs from, when an existing transcript is continued (SPEC-SES-002 step 6, SPEC-SES-004 § 5.1). */
   readonly parentId?: string;
   readonly clock?: () => Date;
+  readonly contentInlineThreshold?: number;
 }
 
 export class TranscriptWriter {
@@ -61,6 +63,7 @@ export class TranscriptWriter {
   #lastId: string | null;
   #failed = false;
   readonly #clock: () => Date;
+  readonly #content: ContentStore;
   /** Warning raised when the transcript can no longer be written (FA-02, ERR-01). */
   warning: string | undefined;
 
@@ -70,6 +73,7 @@ export class TranscriptWriter {
     this.sessionDir = join(dir, this.sessionId);
     this.path = join(dir, `${this.sessionId}.jsonl`);
     this.#clock = options.clock ?? (() => new Date());
+    this.#content = new ContentStore(join(options.sessionsDir, "..", "content"), options.contentInlineThreshold);
     this.#lastId = options.parentId ?? null;
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     if (options.active) {
@@ -82,6 +86,13 @@ export class TranscriptWriter {
 
   /** Appends one record; returns its identifier. Never rewrites an existing line (RG-01). */
   append(type: RecordType, data: Record<string, unknown>): string {
+    if (type === "user") {
+      try { return this.#content.publish(data["content"], content => this.#append(type, { ...data, content })); }
+      catch { this.warning = "Le contenu joint reste dans la transcription : son magasin séparé est indisponible."; }
+    }
+    return this.#append(type, data);
+  }
+  #append(type: RecordType, data: Record<string, unknown>): string {
     const record: TranscriptRecord = {
       v: TRANSCRIPT_FORMAT_VERSION,
       type,
@@ -139,7 +150,8 @@ export function readTranscript(path: string): ReadResult {
   for (const line of readFileSync(path, "utf8").split("\n")) {
     if (line.trim() === "") continue;
     try {
-      records.push(JSON.parse(line) as TranscriptRecord);
+      const record = JSON.parse(line) as TranscriptRecord;
+      records.push(record.type === "user" ? { ...record, data: { ...record.data, content: ContentStore.forTranscript(path).decode(record.data["content"]) } } : record);
     } catch {
       skippedLines++;
     }

@@ -3,12 +3,14 @@
 // Palette application is local to an application; terminal control characters remain owned by the renderer.
 import { styleKey, type Color, type ColorDepth, type Style } from "./style";
 import { blank, type Cell, type Line } from "./text";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 export const THEMES = [
   { id: "dark", label: "Sombre", description: "Fond sombre, différences vertes et rouges." },
   { id: "light", label: "Clair", description: "Fond clair, différences vertes et rouges." },
   { id: "dark-accessible", label: "Sombre adapté au daltonisme", description: "Ajouts bleus (+), suppressions ambrées (-)." },
   { id: "light-accessible", label: "Clair adapté au daltonisme", description: "Ajouts bleus (+), suppressions ambrées (-)." },
+  ...(buildFlag("ui_auto_theme") ? [{ id: "auto", label: "Automatique selon le terminal", description: "Suit la couleur de fond ; sombre si le terminal ne répond pas." }] as const : []),
 ] as const;
 export type ThemeId = (typeof THEMES)[number]["id"];
 type RGB = readonly [number, number, number];

@@ -24,6 +24,7 @@ export function openTerminalSession(
     readonly onBroken?: (error: unknown) => void;
     readonly slowFrameMs?: number;
     readonly sequential?: boolean;
+    readonly focusReporting?: boolean;
   },
 ): TerminalSession {
   const screen = new Screen({ terminal, capabilities: o.capabilities, maxFramesPerSecond: o.maxFramesPerSecond, source: o.source, scheduler: o.scheduler, onBroken: o.onBroken, slowFrameMs: o.slowFrameMs, sequential: o.sequential });
@@ -33,10 +34,12 @@ export function openTerminalSession(
     if (closed) return;
     closed = true;
     for (const u of unsubscribe.splice(0)) u();
+    if (o.focusReporting && !o.sequential) terminal.write("\u001b[?1004l");
     screen.stop();
     terminal.setRawMode(false);
   };
   terminal.setRawMode(true);
+  if (o.focusReporting && !o.sequential) terminal.write("\u001b[?1004h");
   screen.start();
   unsubscribe.push(terminal.onProcessExit(close));
   unsubscribe.push(terminal.onResize(() => screen.resized()));
