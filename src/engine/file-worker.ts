@@ -1,3 +1,4 @@
+// Supports: SPEC-CMD-005 (read-only fork, private loop guard), gap E-171.
 // Supports: SPEC-AGT-010, SPEC-MOT-038, SPEC-MOT-040, gap E-163.
 import { Conversation } from "../engine/conversation";
 import { completeForkHistory } from "./forked-context";
@@ -8,11 +9,13 @@ import type { ModelPricing, ResolvedModel } from "../providers/catalog";
 import type { TurnResult } from "../engine/events";
 import { RunLimits } from "../engine/limits";
 import type { HookBus } from "../extension-points/hooks";
+import { LoopGuard } from "./loop-guard";
 
 /** A private fork can only invoke the supplied file tools, without touching the caller's history or terminal. */
-export async function runFileWorker(o: { readonly parent: LoopDeps; readonly id: string; readonly directive: string; readonly model: ResolvedModel; readonly pricing?: ModelPricing; readonly owns: (path: string) => boolean; readonly signal: AbortSignal; readonly context?: (ctx: ToolContext) => ToolContext; readonly afterWrite?: () => void; readonly readTool?: Tool<never>; readonly writeTool?: Tool<never>; readonly hooks?: HookBus }): Promise<TurnResult> {
+export async function runFileWorker(o: { readonly parent: LoopDeps; readonly id: string; readonly directive: string; readonly model: ResolvedModel; readonly pricing?: ModelPricing; readonly owns: (path: string) => boolean; readonly signal: AbortSignal; readonly readOnly?: boolean; readonly context?: (ctx: ToolContext) => ToolContext; readonly afterWrite?: () => void; readonly readTool?: Tool<never>; readonly writeTool?: Tool<never>; readonly hooks?: HookBus }): Promise<TurnResult> {
   const replacements = new Map<string, Tool<never>>();
   for (const name of ["read_file", "write_file"]) {
+    if (o.readOnly && name === "write_file") continue;
     const inherited = o.parent.executor.registry.get(name); if (!inherited) continue;
     const tool = name === "write_file" ? o.writeTool ?? inherited : o.readTool ?? inherited;
     replacements.set(name, { ...tool, validate: (input: never, ctx: ToolContext) => {
@@ -33,7 +36,7 @@ export async function runFileWorker(o: { readonly parent: LoopDeps; readonly id:
   };
   return runTurn({ ...o.parent, model: o.model, pricing: o.pricing, conversation, transcript: undefined, agentId: o.id, hooks, context: undefined, projectHistory: undefined, takeQueued: undefined, pendingNote: undefined, reminders: undefined, takeSubmittedResult: undefined, onUserMessage: undefined, fallback: undefined, limits: new RunLimits({ ledger: o.parent.limits?.ledger, maxIterations: 4 }), requestCounter: { count: 0 }, maxIterations: Math.min(o.parent.maxIterations ?? 4, 4), maxOutputTokens: Math.min(o.parent.maxOutputTokens, 4096),
     emit: event => { if (["usage", "warning", "permission", "retry"].includes(event.type)) o.parent.emit(event); },
-    executor: { ...o.parent.executor, registry: view, hooks, toolContext: signal => { const context = { ...o.parent.executor.toolContext(signal), readState, agentName: o.id }; return o.context ? o.context(context) : context; } },
+    executor: { ...o.parent.executor, loopGuard: o.parent.executor.loopGuard ? new LoopGuard(o.parent.executor.loopGuard.threshold, o.parent.executor.loopGuard.enabled) : undefined, registry: view, hooks, toolContext: signal => { const context = { ...o.parent.executor.toolContext(signal), readState, agentName: o.id }; return o.context ? o.context(context) : context; } },
     afterToolResults: (calls, results) => { if (calls.some(call => call.name === "write_file" && results.some(result => result.callId === call.callId && !result.isError))) o.afterWrite?.(); },
   }, o.directive, o.signal);
 }

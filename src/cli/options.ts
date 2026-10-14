@@ -39,6 +39,8 @@ export const OPTIONS: readonly OptionDef[] = [
   { name: "reopen", value: "optional", type: "string", group: "Session et exécution", description: "Reprend une session désignée (--reopen=<id>), ou propose une sélection.", delivered: true, owner: "SPEC-SES-002" },
   { name: "reopen-at", value: "required", type: "string", group: "Session et exécution", description: "Reprend à un point donné de l'historique.", delivered: true, owner: "SPEC-SES-004" },
   { name: "reopen-as-copy", value: "none", group: "Session et exécution", description: "Reprend en créant une session dérivée.", delivered: true, owner: "SPEC-SES-003" },
+  { name: "reopen-here", value: "none", group: "Session et exécution", description: "Copie explicitement une conversation d’un autre projet dans le dossier courant.", delivered: true, owner: "SPEC-SES-005" },
+  { name: "reopen-project", value: "required", type: "path", group: "Session et exécution", description: "Désigne le projet d’origine pour lever une ambiguïté entre identifiants de sessions.", delivered: true, owner: "SPEC-SES-005" },
   { name: "assign-session-id", value: "required", type: "string", group: "Session et exécution", description: "Impose l'identifiant de la session créée.", delivered: true, owner: "SPEC-SES-001" },
   { name: "ephemeral", value: "none", group: "Session et exécution", description: "N'enregistre pas la session.", delivered: true, owner: "SPEC-SES-012" },
   { name: "remote-session", value: "required", type: "string", group: "Session et exécution", description: "Crée une session distante.", delivered: false, owner: "SPEC-MOD-014" },

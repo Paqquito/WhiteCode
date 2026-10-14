@@ -1,9 +1,11 @@
+// Supports: SPEC-MCP-005 (session SDK declaration and negotiated MCP relay), gap E-171.
 // Implements: SPEC-MOD-006 (§ 5.2 and § 5.3 catalogues, § 5.4 steps 2 and 3, EF-01, EF-04, EF-06, ENF-03, RG-01, ERR-01, ERR-03)
 // Messages of the control channel, independent of the transport: one JSON object per message, in the same stream as the
 // events of the `jsonl` format (SPEC-MOD-003), distinguished by its type. The same objects travel over a network
 // connection (SPEC-MOD-007 EF-06).
 
 import type { PermissionMode } from "../config/settings-schema";
+import { parseSdkServers, type SdkServer } from "../connectors/sdk";
 
 /** Major.minor: a minor version stays compatible with the earlier hosts (ENF-03); another major is refused (EF-06). */
 export const CONTROL_PROTOCOL_VERSION = "1.0";
@@ -24,17 +26,17 @@ export const HOST_REQUESTS = [
 export type HostRequest = (typeof HOST_REQUESTS)[number];
 
 /** Demands of the engine to the host (§ 5.3). */
-export const ENGINE_DEMANDS = ["approval_request", "request_user_choice", "notify", "open_resource", "confirm_escalation"] as const;
+export const ENGINE_DEMANDS = ["approval_request", "request_user_choice", "notify", "open_resource", "confirm_escalation", "sdk_mcp_request"] as const;
 export type EngineDemand = (typeof ENGINE_DEMANDS)[number];
 
 /** Demands this version sends: the others are part of the protocol, but no function of the product emits them yet. */
-export const EMITTED_DEMANDS: readonly EngineDemand[] = ["approval_request", "request_user_choice", "notify", "confirm_escalation"];
+export const EMITTED_DEMANDS: readonly EngineDemand[] = ["approval_request", "request_user_choice", "notify", "confirm_escalation", "sdk_mcp_request"];
 
 /** Response delay bounds and default (§ 6). */
 export const RESPONSE_TIMEOUT_BOUNDS = { min: 1_000, max: 600_000 } as const;
 
 export type ControlMessage =
-  | { readonly type: "control_init"; readonly protocolVersion: string; readonly demands: readonly string[]; readonly responseTimeoutMs?: number; readonly decisionAuthority?: boolean; readonly toolProgress?: boolean }
+  | { readonly type: "control_init"; readonly protocolVersion: string; readonly demands: readonly string[]; readonly responseTimeoutMs?: number; readonly decisionAuthority?: boolean; readonly toolProgress?: boolean; readonly sdkServers?: readonly SdkServer[] }
   | { readonly type: "control_request"; readonly id: string; readonly request: string; readonly params: Readonly<Record<string, unknown>> }
   | { readonly type: "control_response"; readonly id: string; readonly ok: boolean; readonly result?: unknown; readonly error?: { readonly code: string; readonly message: string } };
 
@@ -62,17 +64,20 @@ export function parseControlMessage(value: Record<string, unknown>): ControlMess
   const type = value["type"];
   if (type === "control_init") {
     if (value["toolProgress"] !== undefined && typeof value["toolProgress"] !== "boolean") return { error: "toolProgress : booléen attendu" };
+    let sdkServers: readonly SdkServer[] | undefined;
+    try { if (value["sdkServers"] !== undefined) sdkServers = parseSdkServers(value["sdkServers"]); } catch (error) { return { error: (error as Error).message }; }
     const version = value["protocolVersion"];
     if (typeof version !== "string") return { error: "protocolVersion attendu" };
     const demands = value["demands"] ?? [];
     if (!Array.isArray(demands) || demands.some((d) => typeof d !== "string")) return { error: "demands : liste de noms attendue" };
+    if (sdkServers?.length && !demands.includes("sdk_mcp_request")) return { error: "sdkServers exige la capacité sdk_mcp_request" };
     const timeout = value["responseTimeoutMs"];
     if (timeout !== undefined && (!Number.isInteger(timeout) || (timeout as number) < RESPONSE_TIMEOUT_BOUNDS.min || (timeout as number) > RESPONSE_TIMEOUT_BOUNDS.max)) {
       return { error: `responseTimeoutMs : entier de ${RESPONSE_TIMEOUT_BOUNDS.min} à ${RESPONSE_TIMEOUT_BOUNDS.max} attendu` };
     }
     const authority = value["decisionAuthority"];
     if (authority !== undefined && typeof authority !== "boolean") return { error: "decisionAuthority : booléen attendu" };
-    return { type, protocolVersion: version, demands: demands as string[], ...(timeout !== undefined ? { responseTimeoutMs: timeout as number } : {}), ...(authority !== undefined ? { decisionAuthority: authority } : {}), ...(value["toolProgress"] === true ? { toolProgress: true } : {}) };
+    return { type, protocolVersion: version, demands: demands as string[], ...(timeout !== undefined ? { responseTimeoutMs: timeout as number } : {}), ...(authority !== undefined ? { decisionAuthority: authority } : {}), ...(value["toolProgress"] === true ? { toolProgress: true } : {}), ...(sdkServers ? { sdkServers } : {}) };
   }
   const id = value["id"];
   if (typeof id !== "string" || id === "" || id.length > 200) return { error: "identifiant attendu (texte non vide)" };

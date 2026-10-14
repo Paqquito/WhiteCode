@@ -4,6 +4,8 @@ export const BUILD_PROFILES = ["public", "internal", "development", "test"] as c
 export type BuildProfile = (typeof BUILD_PROFILES)[number];
 const option = (value: boolean, description: string, specs: string[], absentMarkers: string[] = []) => ({ description, specs, implemented: value, values: { public: value, internal: value, development: value, test: value }, absentMarkers });
 export const BUILD_OPTIONS = {
+  telemetry_memory_metrics: option(true, "Comptages de mémoire sans nom ni contenu, soumis au refus de télémétrie.", ["SPEC-OBS-006"]),
+  ui_merch: { ...option(true, "Lien de boutique ouvert uniquement à la demande explicite.", ["SPEC-CMD-043"]), values: { public: false, internal: true, development: false, test: true } },
   api_background_retry: option(true, "Attente bornée de capacité en exécution automatisée explicite.", ["SPEC-API-004"]),
   mode_experiment_baseline: option(true, "Mode de référence respectant les réglages explicites.", ["SPEC-MOD-031"], ["Mode de référence expérimental"]),
   mode_self_initiated: option(true, "Veille et réveils proactifs explicites par session.", ["SPEC-MOD-027", "SPEC-CMD-100", "SPEC-OUT-023"], ["Wait without a shell process", "Proactive wake at"]),

@@ -1,3 +1,4 @@
+// Supports: SPEC-CMD-005/010 (temporary aside and per-session input border), gap E-171.
 // Supports: SPEC-MOD-029, SPEC-OUT-034/045, SPEC-IHM-002/023/038, gap E-161.
 // Supports: SPEC-OBS-010, SPEC-IHM-039 (frame measurements and internal development bar), gap E-160.
 // Implements: SPEC-MOD-001 (§ 5.2 steps 2 to 7, § 5.4 states, FA-01, FA-02, FA-04, EF-02, EF-03, EF-05, EF-06, ERR-03, CA-01, CA-02, CA-03), SPEC-IHM-007 (§ 5.4, § 5.5, § 5.6, FA-01, FA-02, FA-05, EF-04 to EF-07, CA-01, CA-03, CA-06, CA-07, CA-12), SPEC-IHM-011 (§ 5.1 to § 5.5, EF-01 to EF-05, EF-07, ERR-01, ERR-02, CA-01 to CA-06), SPEC-IHM-027 (§ 5.1, § 5.3, FA-01, EF-01 to EF-04, RG-01, CA-01, CA-02)
@@ -221,6 +222,10 @@ export interface AppOptions {
 
 export class InteractiveApp {
   #suggestion = "";
+  #sessionColor?: number;
+  #aside?: { text: string; close: () => void };
+  setSessionColor(color: number | undefined): void { this.#sessionColor = color; this.#redraw(); }
+  showAside(value: string, close: () => void): void { this.#aside = { text: maskSecrets(value), close }; this.#redraw(); }
   /** A suggestion is staged only in an empty, idle input; Tab accepts it without sending. */
   setSuggestion(value: string): void { if (!value || !this.running && !this.autonomousInputBusy) { this.#suggestion = maskSecrets(value); this.#redraw(); } }
   readonly #o: AppOptions;
@@ -1197,6 +1202,7 @@ export class InteractiveApp {
       return;
     }
     const approval = this.#approvals[0];
+    if (e.name === "escape" && !approval && !this.humanDialogActive && this.#aside) { this.#aside.close(); this.#aside = undefined; this.#redraw(); return; }
     if (e.name === "escape" && !approval && !this.humanDialogActive && this.#o.teammateView?.()) { this.#o.leaveTeammate?.(); this.#redraw(); return; }
     if (e.name === "tab" && !e.shift && !e.ctrl && !e.alt && !e.super && this.#suggestion && this.#editor.isEmpty && !this.running && !this.humanDialogActive && !this.#capture) { this.#editor.set(this.#suggestion); this.#suggestion = ""; this.#saveState(); this.#redraw(); return; }
     if (e.name !== "tab" || e.shift || e.ctrl || e.alt || e.super) this.#suggestion = "";
@@ -1594,6 +1600,7 @@ export class InteractiveApp {
     }
     const panels: Node[] = [];
     const teammate = this.#o.teammateView?.();
+    if (this.#aside) panels.push(box([text("Question annexe · Échap : fermer"), text(this.#aside.text)], { border: {}, padding: { left: 1, right: 1 } }));
     if (teammate) panels.push(box([text(`Vue du coéquipier ${teammate.name} — saisie adressée à ${teammate.name} · Échap : chef`), ...teammate.lines.slice(-8).map(line => text(maskSecrets(line)))], { border: {} }));
     const notices = [...this.#statusNotices.values()];
     if (notices.length) panels.push(box([text(`Avis : ${notices.slice(0, 3).join(" · ")}${notices.length > 3 ? ` · ${notices.length - 3} autres` : ""}`, { overflow: "clip" })], { padding: { left: 2 } }));
@@ -1699,7 +1706,7 @@ export class InteractiveApp {
     const sent = shell || this.#literalLead ? undefined : this.#transformed(ed.text);
     if (sent !== undefined) extra.push(`Envoyé tel quel : ${sent.split("\n")[0]}`);
     const node = box([{ kind: "lines", lines: rows, cursor: cursor ? { row: cursor.row, col: cursor.col + 2 } : undefined }, ...extra.map((x) => text([{ text: x, style: { dim: true } }], { overflow: "clip" }))], {
-      border: { style: shell ? { fg: { ansi: 5 } } : { dim: true } },
+      border: { style: shell ? { fg: { ansi: 5 } } : this.#sessionColor !== undefined ? { fg: { ansi: this.#sessionColor } } : { dim: true } },
       padding: { left: 1, right: 1 },
     });
     return node;

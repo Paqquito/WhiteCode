@@ -1,3 +1,4 @@
+// Supports: SPEC-OBS-006 (CA-01, bounded memory counts subject to product telemetry refusal), gap E-171.
 // Supports: SPEC-CMD-107 (CA-01, displayed identifier shared by actual spans), gap E-161.
 // Implements: SPEC-OBS-001/002/004/011/020 (bounded exports, refusal, private diagnostics).
 // Supports: SPEC-CFG-008, SPEC-MOT-001, SPEC-SES-012, E-157.
@@ -14,7 +15,7 @@ import { currentPlatform } from "../platform/system";
 import { maskSecrets } from "../shared/secrets";
 
 const TOOLS = new Set(["read_file", "write_file", "edit_file", "run_shell", "run_powershell", "find_files", "search_content", "fetch_url", "spawn_agent", "configure", "submit_result", "background_output", "other"]);
-const EVENTS = ["session_started", "message_submitted", "api_request", "api_error", "tool_result", "permission", "session_ended", "render_summary"] as const;
+const EVENTS = ["session_started", "message_submitted", "api_request", "api_error", "tool_result", "permission", "session_ended", "render_summary", "memory_recall", "memory_write"] as const;
 type EventName = typeof EVENTS[number];
 type Attributes = Record<string, string | number | boolean>;
 type OtlpAttribute = { key: string; value: { stringValue: string } | { intValue: string } | { doubleValue: number } | { boolValue: boolean } };
@@ -26,10 +27,12 @@ const toolName = (name: string) => TOOLS.has(name) ? name : "other";
 export function productAttributes(input: Readonly<Record<string, unknown>>): Attributes {
   const out: Attributes = {};
   for (const [key, value] of Object.entries(input)) {
-    if (["length", "tokens", "duration_ms", "count"].includes(key) && typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1e12) out[key] = value;
+    if (["length", "tokens", "duration_ms", "count", "available", "selected", "age_days"].includes(key) && typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1e12) out[key] = value;
     if (key === "tool" && typeof value === "string" && TOOLS.has(value)) out[key] = value;
     if (key === "result" && ["ok", "error", "cancelled"].includes(String(value))) out[key] = String(value);
     if (key === "decision" && ["allow", "deny", "ask"].includes(String(value))) out[key] = String(value);
+    if (key === "scope" && ["project", "local", "user"].includes(String(value))) out[key] = String(value);
+    if (key === "operation" && ["upsert", "delete"].includes(String(value))) out[key] = String(value);
   }
   return out;
 }
@@ -209,6 +212,10 @@ export class SessionObserver {
       const data = { decision: event.decision }; this.#record("permission", data); this.#log("permission", data); this.#count("permission.usage", data, 1);
     } else if (event.type === "usage" && event.cost !== undefined) this.#count("cost.usage", {}, event.cost);
   }
+  memoryRecall(value: { available: number; selected: number; ageDays: number }): void {
+    if (buildFlag("telemetry_memory_metrics")) this.#record("memory_recall", { available: value.available, selected: value.selected, age_days: value.ageDays, scope: "project" });
+  }
+  memoryWrite(): void { if (buildFlag("telemetry_memory_metrics")) this.#record("memory_write", { count: 1, scope: "project", operation: "upsert" }); }
   hook(durationMs: number): void {
     const span = this.#span("hook"); if (span) { span.startTimeUnixNano = String(BigInt(Date.now() - Math.round(durationMs)) * 1_000_000n); span.endTimeUnixNano = nano(); }
     this.#duration("hook.duration", durationMs);

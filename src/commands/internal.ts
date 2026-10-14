@@ -8,9 +8,13 @@
 // Supports: SPEC-CMD-069, SPEC-SES-009 (persistent labels), gap E-149.
 
 import type { InternalCommand } from "./catalog";
-import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
+import { buildFlag, buildProfile } from "../extension-points/build-flags" with { type: "macro" };
 
 export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
+  ...(buildFlag("ui_merch") ? [{ name: "merch", description: "Ouvre la boutique configurée sur demande explicite.", kind: "action", widening: false, interactiveOnly: true }] as readonly InternalCommand[] : []),
+  { name: "aside", description: "Pose une question annexe en lecture seule sans interrompre le tour.", kind: "display", widening: false, usage: "<question>", interactiveOnly: true },
+  { name: "session-color", description: "Change la couleur de bordure de cette session seulement.", kind: "action", widening: false, usage: "[couleur|default]", interactiveOnly: true },
+  ...(["internal", "development", "test"].includes(buildProfile()) ? [{ name: "reindex-sessions", description: "Complète les titres manquants des sessions locales, après confirmation.", kind: "action", widening: false, interactiveOnly: true }] as readonly InternalCommand[] : []),
   { name: "generate-skills", description: "Propose une compétence de tests après analyse en lecture seule du dépôt.", kind: "action", widening: false },
   { name: "skill-improvements", description: "Relit, applique ou écarte une proposition d’amélioration de compétence.", kind: "action", widening: false, usage: "[apply|dismiss]" },
   { name: "agents", description: "Liste les agents ; create propose une définition avant enregistrement.", kind: "action", widening: false, usage: "[create <description>|copy <nom>]" },

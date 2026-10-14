@@ -31,6 +31,7 @@ export interface ChannelOptions {
 }
 
 export interface HostCapabilities {
+  readonly sdkServers?: readonly import("../connectors/sdk").SdkServer[];
   readonly toolProgress?: boolean;
   readonly demands: ReadonlySet<string>;
   readonly timeoutMs: number;
@@ -97,6 +98,7 @@ export class ControlChannel {
           timeoutMs: message.responseTimeoutMs ?? this.#o.defaultTimeoutMs,
           declaresAuthority: message.decisionAuthority === true,
           toolProgress: message.toolProgress === true,
+          sdkServers: message.sdkServers,
         };
         this.#o.trace("initialized", { demands: message.demands, timeoutMs: this.#host.timeoutMs, declaresAuthority: this.#host.declaresAuthority });
         this.#initialized();

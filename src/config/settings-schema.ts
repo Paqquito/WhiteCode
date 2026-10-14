@@ -54,6 +54,10 @@ const enumOf = (values: readonly string[]) => Type.Union(values.map((v) => Type.
 const mode = () => enumOf(PERMISSION_MODES);
 
 export const SETTINGS: readonly SettingDef[] = [
+  { key: "ui.merch.enabled", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-CMD-043", hot: true },
+  { key: "mcp.sdkToolTimeout", schema: int(1, 600000), default: 300000, scopes: [U, G], owner: "SPEC-MCP-005" },
+  { key: "sessions.searchCandidates", schema: int(1, 40), default: 40, scopes: [U, G], owner: "SPEC-SES-010" },
+  { key: "sessions.searchModelEnabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-SES-010", hot: true },
   { key: "ui.responseStyle", schema: Type.String({ pattern: "^[a-z][a-z0-9-]{0,47}$" }), default: "default", scopes: [U, P], owner: "SPEC-MOT-033", hot: true },
   { key: "ui.outputStyle", schema: Type.String({ pattern: "^[a-z][a-z0-9-]{0,47}$" }), default: "default", scopes: [U, P], owner: "SPEC-MOT-033", hot: true },
   { key: "permissions.delegateTimeoutMs", schema: int(1, 600000), default: 60000, scopes: [U], owner: "SPEC-PER-028" },
