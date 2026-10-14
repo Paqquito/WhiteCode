@@ -4,12 +4,14 @@
 // Supports: SPEC-INT-017 (CA-02: repository absence in environment without a repository section), gap E-133.
 
 import type { Identity } from "../identity/identity";
+import { styleInstructions, type OutputStyle } from "./output-styles";
 import type { ResolvedModel } from "../providers/catalog";
 import type { SystemBlock } from "../providers/types";
 import { REMINDER_EXPLANATION } from "./reminders";
 import { assembleContract, CONTRACT_VERSION, CURRENT_CONTRACT, FALLBACK_CONTRACT, selectFamily, type ContractText, type Variant } from "./behavior-contract";
 
 export interface InstructionsContext {
+  readonly outputStyle?: OutputStyle;
   readonly identity: Identity;
   readonly variant: Variant;
   readonly nonInteractive: boolean;
@@ -65,7 +67,7 @@ export function estimateTokens(text: string): number {
 }
 
 function contractSections(ctx: InstructionsContext, contract: ContractText) {
-  return assembleContract(contract, ctx.variant, ctx.nonInteractive);
+  return assembleContract(contract, ctx.variant, ctx.nonInteractive, ctx.outputStyle?.keepDefaultInstructions === false);
 }
 
 export function defaultSectionProviders(contract: () => ContractText = CURRENT_CONTRACT): SectionProvider[] {
@@ -82,6 +84,7 @@ export function defaultSectionProviders(contract: () => ContractText = CURRENT_C
     { id: 2, name: "rules", stable: true, required: true, reducible: false, produce: (ctx) => contractSections(ctx, contract()).rules },
     { id: 3, name: "method", stable: true, required: false, reducible: false, produce: (ctx) => contractSections(ctx, contract()).method },
     { id: 4, name: "tools", stable: true, required: true, reducible: false, produce: (ctx) => contractSections(ctx, contract()).tools },
+    { id: 5, name: "output-style", stable: false, required: false, reducible: false, produce: ctx => ctx.outputStyle ? styleInstructions(ctx.outputStyle) || undefined : undefined },
     // Section 8 (SPEC-EXT-019 § 5.4 step 3): names and descriptions only; reducible by shortening the descriptions.
     { id: 8, name: "skills", stable: false, required: false, reducible: true, produce: (ctx) => ctx.skills },
     {
@@ -124,7 +127,7 @@ export function defaultSectionProviders(contract: () => ContractText = CURRENT_C
  * Sections kept when the user replaces the default instructions (SPEC-MOT-003 FA-01, SPEC-MOT-004 EF-04, RG-03, gap E-075):
  * identity, rules of conduct, use of the tools, environment, and the added text (EF-03).
  */
-const KEPT_ON_REPLACEMENT = new Set([1, 2, 4, 9, 13]);
+const KEPT_ON_REPLACEMENT = new Set([1, 2, 4, 5, 9, 13]);
 
 const FALLBACK_PROVIDERS = (): Map<number, SectionProvider> =>
   new Map(defaultSectionProviders(FALLBACK_CONTRACT).filter((p) => p.required).map((p) => [p.id, p]));

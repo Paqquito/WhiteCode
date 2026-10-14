@@ -6,6 +6,7 @@ import type { PlatformName } from "../platform/system";
 import type { RuleSubject, ToolFlags } from "../tools/types";
 import { ruleMatches, suggestRule, type Rule } from "./rules";
 import { exactlyAllowed } from "./command-analysis";
+import { opaquePowerShell } from "./powershell-normalize";
 
 export type AskOrigin = "managed" | "explicit" | "tool_check" | "default";
 
@@ -84,7 +85,7 @@ export function decide(q: PermissionQuery, ctx: PermissionContext): Decision {
   // Step 5: tool-specific contribution.
   if (q.contribution === "allow") return { kind: "allow", step: 5, why: "tool check" };
   // SPEC-PER-009 § 5.3 step 2: only an `allow` rule naming exactly the command lifts the confirmation of a danger.
-  if (q.contribution === "ask" && q.subject.kind === "command") {
+  if (q.contribution === "ask" && q.subject.kind === "command" && !(ctx.mode === "auto_approve" && q.toolName === "run_powershell" && opaquePowerShell(q.subject.command))) {
     const command = q.subject.command;
     const exact = rules.find((r) => r.decision === "allow" && r.tool === q.toolName && r.pattern !== undefined && exactlyAllowed(command, [r.pattern]));
     if (exact) return { kind: "allow", step: 5, why: `rule ${exact.raw} naming the command` };

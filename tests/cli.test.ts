@@ -132,9 +132,11 @@ describe("SPEC-MOD-011 global options", () => {
   });
 
   test("TECH — a catalogued option whose feature is not delivered is refused, never ignored", async () => {
-    const r = await cli(["--non-interactive", "--wait-for-capacity", "x"], workspace());
+    const provider = new ScriptedProvider([]);
+    const r = await cli(["--non-interactive", "--extension-dir-watch", "x"], workspace(), { provider });
     expect(r.code).toBe(2);
     expect(r.stderr).toContain("non disponible dans cette version");
+    expect(provider.requests).toHaveLength(0);
   });
 });
 

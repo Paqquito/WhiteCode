@@ -17,6 +17,7 @@ export type StopCause =
   | "error";
 
 export type EngineEvent =
+  | { readonly type: "capacity_wait"; readonly delayMs: number; readonly elapsedMs: number; readonly maxWaitMs: number }
   | { readonly type: "addressed_message"; readonly message: string; readonly status: "normal" | "proactive"; readonly attachments: readonly import("../tools/message-user").AddressedAttachment[] }
   | { readonly type: "notification"; readonly message: string }
   | { readonly type: "token_goal"; readonly consumed: number; readonly goal: number }

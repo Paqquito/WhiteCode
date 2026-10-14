@@ -177,6 +177,17 @@ export class TaskList {
     return { ok: true, task: next };
   }
 
+  /** SPEC-AGT-011: unfinished work becomes available again when its teammate stops. */
+  release(owner: string): void {
+    let changed = false;
+    this.#tasks = this.#tasks.map(task => {
+      if (task.owner !== owner || task.status === "completed") return task;
+      changed = true;
+      return { ...task, owner: "", status: "pending" };
+    });
+    if (changed) this.#changed();
+  }
+
   #changed(): void {
     this.#version++;
     for (const l of this.#listeners) l(this.#tasks);

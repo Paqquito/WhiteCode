@@ -166,6 +166,20 @@ export class ConnectorManager {
     return [...this.#entries.values()].filter(e => e.state !== "disabled" && e.state !== "auth_required").flatMap((e) => [...e.tools.values()]);
   }
 
+  /** SPEC-PER-028: raw bounded control response; ordinary tool presentation never rewrites a decision. */
+  async controlCall(qualified: string, args: unknown, options: { readonly timeoutMs: number; readonly signal: AbortSignal }): Promise<unknown> {
+    options.signal.throwIfAborted();
+    const entry = [...this.#entries.values()].find(candidate => candidate.state === "connected" && candidate.live.has(qualified));
+    const origin = (entry?.tools.get(qualified) as (Tool<never> & { readonly origin?: string }) | undefined)?.origin;
+    if (!entry?.conn || !origin) throw new Error("The designated control tool is unavailable.");
+    const result = await entry.conn.callTool(origin, args, { ...options, timeoutMs: Math.min(options.timeoutMs, entry.d.timeoutMs ?? this.#o.toolTimeoutMs) });
+    options.signal.throwIfAborted();
+    if (result.isError || result.content.some(part => part.type !== "text")) throw new Error("The control component returned an invalid result.");
+    const value = result.structuredContent !== undefined ? JSON.stringify(result.structuredContent) : result.content.map(part => part.text ?? "").join("\n");
+    if (Buffer.byteLength(value) > 65536) throw new Error("The control component response exceeds 64 KiB.");
+    return JSON.parse(value) as unknown;
+  }
+
   canSignIn(): readonly string[] { return this.#o.authUi ? [...this.#entries.values()].filter(e => e.state === "auth_required" && e.oauth).map(e => e.d.name) : []; }
   async signIn(name: string, signal: AbortSignal): Promise<ConnectorStatus> {
     const e = this.#entries.get(name);

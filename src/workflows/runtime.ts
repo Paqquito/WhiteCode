@@ -13,14 +13,14 @@ export class WorkflowRunner {
     signal.throwIfAborted(); this.#running++;
     return () => { this.#running--; this.#waiters.shift()?.(); };
   }
-  async run(definition: Workflow, inputs: Readonly<Record<string, unknown>>, parentSignal: AbortSignal, execute: (step: WorkflowStep, task: string, signal: AbortSignal) => Promise<WorkflowResult>, progress: (state: string) => void, write: (text: string) => void): Promise<WorkflowResult> {
+  async run(definition: Workflow, inputs: Readonly<Record<string, unknown>>, parentSignal: AbortSignal, execute: (step: WorkflowStep, task: string, signal: AbortSignal) => Promise<WorkflowResult>, progress: (state: string, steps: readonly { readonly id: string; readonly state: string }[]) => void, write: (text: string) => void): Promise<WorkflowResult> {
     const controller = new AbortController(), signal = AbortSignal.any([parentSignal, controller.signal]), states = new Map(definition.steps.map(step => [step.id, "pending" as State])), outputs = new Map<string, string>(), active = new Set<Promise<void>>();
     let failed = false;
     const local = new WorkflowRunner(Math.min(definition.maxParallel ?? 4, this.limit));
     const resolve = (reference: string, item?: unknown): unknown => { if (reference === "item") return item; const [scope, key] = reference.split("."); if (scope === "inputs") return inputs[key!]; const output = outputs.get(key!); if (output === undefined) throw new Error(`Unavailable workflow output: ${key}.`); return output; };
     const fill = (text: string, item?: unknown) => workflowTemplate(text).replace(/\{%([^%]+)%\}/g, (_, reference: string) => { const value = resolve(reference, item); if (value === undefined) throw new Error(`Unavailable workflow parameter: ${reference}.`); return typeof value === "string" ? value : JSON.stringify(value); });
     const condition = (step: WorkflowStep): boolean => { if (step.when === undefined) return true; if (typeof step.when === "boolean") return step.when; const negative = step.when.startsWith("!"), reference = step.when.replace(/^!/, ""), value = reference.startsWith("steps.") ? states.get(reference.split(".")[1]!) === "succeeded" : resolve(reference); if (typeof value !== "boolean") throw new Error(`Workflow condition must be boolean: ${reference}.`); return negative ? !value : value; };
-    const update = (id: string, state: State) => { states.set(id, state); const label = [...states].map(([id, state]) => `${id}: ${state}`).join(" · "); progress(label); write(`${id}: ${state}\n`); };
+    const update = (id: string, state: State) => { states.set(id, state); const label = [...states].map(([id, state]) => `${id}: ${state}`).join(" · "); progress(label, [...states].map(([id, state]) => ({ id, state }))); write(`${id}: ${state}\n`); };
     const runStep = async (step: WorkflowStep) => {
       update(step.id, "running");
       try {

@@ -52,7 +52,7 @@ export interface HumanApprovalChannel {
 
 /** Non-interactive delegate designated for this run (SPEC-PER-028). */
 export interface DecisionDelegate {
-  decide(request: ApprovalRequest, signal: AbortSignal): Promise<"allow" | "deny" | undefined>;
+  decide(request: ApprovalRequest, signal: AbortSignal): Promise<"allow" | "deny" | HostDecision | undefined>;
 }
 
 /** Answer of a designated control host (SPEC-MOD-006 § 5.3): parameters replaced are evaluated again by the executor (EF-11). */
@@ -132,6 +132,7 @@ export async function resolveAsk(
       if (signal.aborted) return cancelled();
       if (d === "allow") return { decision: "allow", by: "delegate" };
       if (d === "deny") return { decision: "deny", by: "delegate", reason: "Denied by the designated delegate." };
+      const structured = structuredDelegate(d); if (structured) return structured;
     }
     return { decision: "deny", by: "none", reason: noAuthority(request, `${decision.reason} (no_prompt mode)`) };
   }
@@ -167,6 +168,7 @@ export async function resolveAsk(
     if (signal.aborted) return cancelled();
     if (d === "allow") return { decision: "allow", by: "delegate" };
     if (d === "deny") return { decision: "deny", by: "delegate", reason: "Denied by the designated delegate." };
+    const structured = structuredDelegate(d); if (structured) return structured;
   }
   return { decision: "deny", by: "none", reason: noAuthority(request, decision.reason) };
 }
@@ -201,6 +203,16 @@ async function askHuman(request: ApprovalRequest, human: HumanApprovalChannel, s
   }
 }
 
+function structuredDelegate(answer: unknown): Resolution | undefined {
+  if (answer === undefined) return undefined;
+  if (answer && typeof answer === "object" && !Array.isArray(answer)) {
+    const row = answer as Record<string, unknown>, keys = Object.keys(row);
+    if (row["decision"] === "allow" && keys.every(key => key === "decision")) return { decision: "allow", by: "delegate" };
+    if (row["decision"] === "deny" && typeof row["reason"] === "string" && keys.every(key => ["decision", "reason"].includes(key))) return { decision: "deny", by: "delegate", reason: row["reason"] };
+    if (row["decision"] === "allow_modified" && row["input"] && typeof row["input"] === "object" && !Array.isArray(row["input"]) && keys.every(key => ["decision", "input"].includes(key))) return { decision: "allow", by: "delegate", input: row["input"] as Record<string, unknown> };
+  }
+  return { decision: "deny", by: "delegate", reason: "The designated delegate returned an invalid decision." };
+}
 function cancelled(): Resolution {
   return { decision: "deny", by: "none", reason: "The call was cancelled; its approval is no longer valid." };
 }

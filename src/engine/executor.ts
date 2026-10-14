@@ -19,6 +19,8 @@ import type { ResultStore } from "../session/result-store";
 import { boundText } from "../tools/output-bounds";
 
 export interface ExecutorDeps {
+  /** SPEC-OUT-025: actual executions, with their reviewed difference, after the current plan approval. */
+  readonly recordExecution?: (call: ToolCall, outcome: ToolOutcome, difference?: string) => void;
   /** Active credential values are masked before hooks, large-result storage, events and model context. */
   readonly redactOutput?: (text: string) => string;
   /** Mandatory policy checked against the raw source before hooks and again after any approval or queue. */
@@ -28,6 +30,8 @@ export interface ExecutorDeps {
   readonly registry: ToolLookup;
   readonly hooks: HookBus;
   readonly authorities: Authorities;
+  /** Shared teammate queue; owns complete permission resolution, including persisted session grants. */
+  readonly permissionQueue?: { run<T>(signal: AbortSignal, action: (signal: AbortSignal) => Promise<T>): Promise<T | undefined>; expired?(signal: AbortSignal): boolean };
   /** Permission context read when each call is evaluated (the mode may change during a turn, RG-03 of SPEC-MOT-001). */
   permissionContext(): PermissionContext & { readonly mode: PermissionMode };
   toolContext(signal: AbortSignal): ToolContext;
@@ -239,6 +243,7 @@ export class ResponseExecution {
       // again, as if they came from the model (SPEC-MOD-006 FA-05, SPEC-PER-001 EF-11); its approval covers exactly them.
       let approvedByHost: { input: string; context: string } | undefined;
       let replacedByHost = false;
+      let replacedByDelegate = false;
       let preview: Awaited<ReturnType<NonNullable<typeof tool.preview>>> | undefined;
       let subject: RuleSubject;
       let query: PermissionQuery;
@@ -293,7 +298,7 @@ export class ResponseExecution {
           this.#deps.emit({ type: "permission", callId: call.callId, decision: "allow", reason: "approved by control_host (parameters replaced)", step: decision.step });
           break;
         }
-        const resolved = await this.#resolve(call, tool, decision, pctx.mode, preview && "diff" in preview ? preview : undefined, signal, subject);
+        const resolved = await this.#resolve(call, tool, decision, pctx.mode, preview && "diff" in preview ? preview : undefined, signal, subject, query);
         if (!resolved.allowed) return finish(preview && "humanOnly" in preview && preview.humanOnly ? textOutcome("Passage not found: the anchored edit was not confirmed by a human.", true, "invalid_input") : await this.#refuse(call, resolved.reason, decision.step), false);
         if (!resolved.input) break;
         if (round + 1 >= MAX_HOST_REVISIONS) return finish(await this.#refuse(call, "the control host replaced the parameters too many times.", decision.step), false);
@@ -303,8 +308,9 @@ export class ResponseExecution {
           return finish(textOutcome(`Blocked: the parameters given by the control host are invalid: ${[...errors, ...(business ? [business] : [])].join("; ")}.`, true, "invalid_input"), false);
         }
         call = { ...call, input: resolved.input };
-        approvedByHost = { input: canonical(resolved.input), context: evaluatedContext };
+        approvedByHost = resolved.replacementNeedsReview ? undefined : { input: canonical(resolved.input), context: evaluatedContext };
         replacedByHost = true;
+        replacedByDelegate ||= resolved.replacementNeedsReview === true;
       }
 
       // Scheduling (RG-01 to RG-03): a safe call waits for the last barrier; a barrier waits for every previous call.
@@ -326,7 +332,7 @@ export class ResponseExecution {
           const currentContext = canonical(now);
           if (again.kind !== "ask" || currentContext === evaluatedContext) break;
           if (revision >= MAX_HOST_REVISIONS) return finish(await this.#refuse(call, "The permission context keeps changing. Submit this call again after it stabilizes.", again.step), false);
-          const second = await this.#resolve(call, tool, again, now.mode, preview && "diff" in preview ? preview : undefined, signal, subject);
+          const second = await this.#resolve(call, tool, again, now.mode, preview && "diff" in preview ? preview : undefined, signal, subject, query);
           if (!second.allowed) return finish(await this.#refuse(call, second.reason, again.step), false);
           // A replacement at this late stage needs the complete hook, preview and business-validation pipeline.
           if (second.input) return finish(await this.#refuse(call, "The permission context changed and the new approval replaced the input. Submit those parameters as a fresh call for full validation.", again.step), false);
@@ -362,10 +368,11 @@ export class ResponseExecution {
         const afterExecution = this.#deps.policyRefusal?.();
         if (afterExecution) return finish({ ...outcome, content: [...outcome.content, { type: "text", text: `This tool completed before the policy check failed. No subsequent hook was run. ${afterExecution}` }] });
         const safeOutcome = this.#redacted(outcome);
+        this.#deps.recordExecution?.(call, safeOutcome, preview && "diff" in preview ? preview.diff : undefined);
         const after = await this.#deps.hooks.afterTool(call, safeOutcome.isError, safeOutcome.content.map((c) => (c.type === "text" ? c.text : `[${c.mediaType}]`)).join("\n"));
         if (after.stopTurn) this.#stopTurnRequested = true;
         // The model learns that the call ran with other parameters than its own (SPEC-MOD-006 FA-05).
-        const told = replacedByHost ? { ...safeOutcome, content: [{ type: "text" as const, text: `[The control host replaced the parameters of this call with: ${JSON.stringify(call.input)}]` }, ...safeOutcome.content] } : safeOutcome;
+        const told = replacedByHost ? { ...safeOutcome, content: [{ type: "text" as const, text: `[The ${replacedByDelegate ? "permission delegate" : "control host"} replaced the parameters of this call with: ${JSON.stringify(call.input)}]` }, ...safeOutcome.content] } : safeOutcome;
         return finish(this.#storeIfLarge(call, this.#redacted(told)));
       } finally {
         release();
@@ -405,8 +412,18 @@ export class ResponseExecution {
     shown: { readonly diff: string; readonly change?: FileChange; readonly humanOnly?: boolean } | undefined,
     signal: AbortSignal,
     subject: RuleSubject,
-  ): Promise<{ allowed: boolean; reason: string; input?: Record<string, unknown> }> {
+    query?: PermissionQuery,
+    queued = false,
+  ): Promise<{ allowed: boolean; reason: string; input?: Record<string, unknown>; replacementNeedsReview?: boolean }> {
     if (signal.aborted) return { allowed: false, reason: "The call was cancelled." };
+    if (decision.kind === "ask" && this.#deps.permissionQueue && !queued) {
+      return await this.#deps.permissionQueue.run(signal, active => {
+        const context = this.#deps.permissionContext();
+        let fresh = query ? decide(query, context) : decision;
+        if (shown?.humanOnly && fresh.kind !== "deny") fresh = { kind: "ask", step: 4, origin: "explicit", reason: "A block anchor requires human confirmation.", suggestions: [] };
+        return this.#resolve(call, tool, fresh, context.mode, shown, active, subject, query, true);
+      }) ?? { allowed: false, reason: "The teammate permission deadline expired or the call was cancelled." };
+    }
     if (decision.kind === "allow") {
       this.#deps.emit({ type: "permission", callId: call.callId, decision: "allow", reason: decision.why, step: decision.step });
       return { allowed: true, reason: decision.why };
@@ -434,7 +451,7 @@ export class ResponseExecution {
       signal,
     );
     const policyRefusal = this.#deps.policyRefusal?.();
-    if (signal.aborted) return { allowed: false, reason: "The call was cancelled; its approval is no longer valid." };
+    if (signal.aborted || this.#deps.permissionQueue?.expired?.(signal)) return { allowed: false, reason: "The call was cancelled or its permission deadline expired; its approval is no longer valid." };
     if (policyRefusal) return { allowed: false, reason: policyRefusal };
     if (resolution.decision === "deny") {
       if (resolution.stopTurn) this.#stopTurnRequested = true;
@@ -442,7 +459,7 @@ export class ResponseExecution {
     }
     if (resolution.persist && !shown?.humanOnly) this.#deps.persistRule?.(resolution.persist.scope, resolution.persist.rule);
     // Replaced parameters are not allowed yet: they are evaluated again first (FA-05 of SPEC-MOD-006).
-    if (resolution.input) return { allowed: true, reason: `parameters replaced by ${resolution.by}`, input: resolution.input };
+    if (resolution.input) return { allowed: true, reason: `parameters replaced by ${resolution.by}`, input: resolution.input, replacementNeedsReview: resolution.by === "delegate" && canonical(resolution.input) !== canonical(call.input) };
     const reason = `approved by ${resolution.by}`;
     this.#deps.emit({ type: "permission", callId: call.callId, decision: "allow", reason, step: decision.step });
     return { allowed: true, reason };

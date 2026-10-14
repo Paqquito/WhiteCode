@@ -293,7 +293,7 @@ describe("SPEC-OUT-009 run_powershell", () => {
     };
     const provider = new ScriptedProvider([{ toolCalls: [{ name: "run_powershell", input: { command: "Remove-Item -Recurse -Force build" } }] }, { text: "ok" }]);
     await cli(["--non-interactive", "--approval-mode", "auto_edit", "go"], ws, { provider, env: productEnv(ws), extra: { authorities: { human } } });
-    expect(asked).toEqual(["Run: Remove-Item -Recurse -Force build"]);
+    expect(asked).toEqual(["Run: remove-item -Recurse -Force build"]); // SPEC-PER-005: normalized cmdlet, arguments unchanged.
     expect(existsSync(join(ws.project, "build", "a.txt"))).toBe(true);
   }, 60_000);
 

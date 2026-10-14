@@ -4,6 +4,7 @@
 // Each writes its output to its own file; its end is announced to its owner exactly once, at the next request.
 // Supports: SPEC-AGT-017 (CA-02), SPEC-AGT-018 (CA-01), gap E-147.
 // Implements: SPEC-AGT-006 (CA-01, stable per-type colors), SPEC-AGT-024 (CA-01, delivered monitor counters), gap E-166.
+// Supports: SPEC-AGT-023 (live workflow tree and joined individual cancellation), gap E-169.
 
 import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -11,6 +12,8 @@ import type { Reminder, ReminderProducer } from "./reminders";
 
 export type TaskKind = "shell" | "agent" | "monitor" | "workflow";
 export type TaskStatus = "running" | "completed" | "failed" | "stopped" | "timed_out" | "rate_limited";
+export interface WorkflowAgent { id: string; status: TaskStatus }
+export interface WorkflowStepStatus { readonly id: string; state: string; readonly agents: WorkflowAgent[] }
 
 export interface BackgroundTask {
   readonly id: string;
@@ -31,6 +34,7 @@ export interface BackgroundTask {
   color?: number;
   eventCount?: number;
   lastEvent?: string;
+  workflowSteps?: WorkflowStepStatus[];
 }
 
 export interface BackgroundOptions {
@@ -67,6 +71,7 @@ export class BackgroundTasks {
   #next = 1;
   readonly #listeners: Array<() => void> = [];
   readonly #foreground = new Map<symbol, () => string | undefined>();
+  readonly #workflowAgents = new WeakMap<WorkflowAgent, { readonly controller: AbortController; readonly done: Promise<unknown> }>();
 
   constructor(options: BackgroundOptions) {
     this.#o = options;
@@ -141,6 +146,28 @@ export class BackgroundTasks {
   onChange(listener: () => void): () => void {
     this.#listeners.push(listener);
     return () => { const index = this.#listeners.indexOf(listener); if (index !== -1) this.#listeners.splice(index, 1); };
+  }
+
+  updateWorkflow(id: string, states: readonly { readonly id: string; readonly state: string }[]): void {
+    const task = this.#tasks.get(id); if (!task || task.kind !== "workflow" || task.status !== "running") return;
+    task.workflowSteps = states.map(state => ({ ...state, agents: task.workflowSteps?.find(step => step.id === state.id)?.agents ?? [] })); this.#changed();
+  }
+
+  async runWorkflowAgent<T extends { readonly isError: boolean }>(id: string, stepId: string, signal: AbortSignal, work: (signal: AbortSignal, identify: (id: string) => void) => Promise<T>): Promise<T> {
+    const step = this.#tasks.get(id)?.workflowSteps?.find(step => step.id === stepId);
+    if (!step) throw new Error("Workflow step is unavailable.");
+    const controller = new AbortController(), combined = AbortSignal.any([signal, controller.signal]);
+    const agent: WorkflowAgent = { id: `${stepId}-${step.agents.length + 1}`, status: "running" }; step.agents.push(agent);
+    const done = Promise.resolve().then(() => work(combined, value => { agent.id = value; this.#changed(); }))
+      .then(result => { agent.status = combined.aborted ? "stopped" : result.isError ? "failed" : "completed"; return result; }, error => { agent.status = combined.aborted ? "stopped" : "failed"; throw error; })
+      .finally(() => { this.#workflowAgents.delete(agent); this.#changed(); });
+    this.#workflowAgents.set(agent, { controller, done }); this.#changed(); return done;
+  }
+
+  async stopWorkflowAgent(taskId: string, agentId: string): Promise<boolean> {
+    const agent = this.#tasks.get(taskId)?.workflowSteps?.flatMap(step => step.agents).find(agent => agent.id === agentId);
+    const active = agent && this.#workflowAgents.get(agent); if (!active) return false;
+    active.controller.abort("stop"); await active.done.catch(() => undefined); return true;
   }
 
   /** EF-03, CA-01: the ends and the monitor lines, each delivered once, at the next request of the owner (FA-03). */

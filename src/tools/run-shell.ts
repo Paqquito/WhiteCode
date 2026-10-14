@@ -6,6 +6,8 @@ import descriptionPosix from "../../prompts/tools/run_shell.md" with { type: "te
 import descriptionPowerShell from "../../prompts/tools/run_powershell.md" with { type: "text" };
 import descriptionPowerShellLegacy from "../../prompts/tools/run_powershell_5_1.md" with { type: "text" };
 import { dangerousPowerShell } from "../permissions/powershell-danger";
+import { normalizePowerShellPart, opaquePowerShell } from "../permissions/powershell-normalize";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 import { formatShellResult, type ShellResult } from "./shell-runtime";
 import { startShellTask } from "./background-tools";
 import { analyseShellCommand, type ShellVerdict } from "../permissions/command-analysis";
@@ -49,6 +51,7 @@ function validate(input: ShellInput, ctx: ToolContext): string | undefined {
 function verdictOf(name: "run_shell" | "run_powershell", command: string, ctx: ToolContext | undefined): ShellVerdict {
   const dialect = name === "run_shell" ? "posix" : "powershell";
   if (dialect === "powershell") {
+    if (opaquePowerShell(command)) return { kind: "dynamic", reason: "An interpreter escape or encoded PowerShell command requires examination." };
     const danger = dangerousPowerShell(command); // SPEC-OUT-009 RG-01: the cmdlets that always ask
     if (danger) return { kind: "dangerous", reason: danger };
   }
@@ -79,7 +82,7 @@ function shellTool(name: "run_shell" | "run_powershell", run: (ctx: ToolContext,
     },
     validate,
     ruleSubject: (input) => ({ kind: "command", command: input.command }),
-    summary: (input) => input.description ?? `Run: ${input.command}`,
+    summary: (input) => input.description ?? `Run: ${name === "run_powershell" && buildFlag("permission_auto_approve_powershell") ? normalizePowerShellPart(input.command) : input.command}`,
     timeoutMs: (input, ctx) => timeoutOf(input, ctx),
     async execute(input, ctx) {
       if (!ctx.shell) return textOutcome("No shell is available in this session.", true, "unavailable");

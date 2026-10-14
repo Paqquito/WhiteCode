@@ -7,6 +7,7 @@ import type { Origin } from "../config/settings-schema";
 import { comparablePath, realPathOrSelf, type PlatformName } from "../platform/system";
 import type { RuleSubject } from "../tools/types";
 import { splitCommand } from "./command-split";
+import { normalizePowerShellPart } from "./powershell-normalize";
 
 export type RuleDecision = "allow" | "ask" | "deny";
 export type RuleScope = Exclude<Origin, "default"> | "session";
@@ -157,9 +158,10 @@ export function ruleMatches(rule: Rule, toolName: string, subject: RuleSubject, 
     // § 5.4: `allow` covers a compound command only if every sub-command is covered and every construction recognised;
     // `deny` and `ask` apply as soon as one sub-command, even nested, is covered (decision D-02, gap E-008).
     const split = splitCommand(subject.command, rule.tool === "run_powershell" ? "powershell" : "posix");
-    const pattern = rule.pattern;
-    if (rule.decision === "allow") return split.complete && split.parts.length > 0 && split.parts.every((p) => commandMatches(pattern, p));
-    return [...split.parts, ...split.nested].some((p) => commandMatches(pattern, p));
+    const normalize = rule.tool === "run_powershell" ? normalizePowerShellPart : (part: string) => part;
+    const pattern = normalize(rule.pattern);
+    if (rule.decision === "allow") return split.complete && split.parts.length > 0 && split.parts.every((p) => commandMatches(pattern, normalize(p)));
+    return [...split.parts, ...split.nested].some((p) => commandMatches(pattern, normalize(p)));
   }
   if (URL_TOOLS.has(rule.tool) && subject.kind === "url") return domainMatches(rule.pattern, subject.url);
   if (NAME_TOOLS.has(rule.tool) && subject.kind === "name") {

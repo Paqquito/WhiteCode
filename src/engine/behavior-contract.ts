@@ -54,7 +54,7 @@ export interface ContractSections {
 export class ContractCoverageError extends Error {}
 
 /** Assembles sections 2, 3 and 4 for a variant; fails when a clause of the variant is missing (EF-01). */
-export function assembleContract(contract: ContractText, variant: Variant, nonInteractive: boolean): ContractSections {
+export function assembleContract(contract: ContractText, variant: Variant, nonInteractive: boolean, replaceConcision = false): ContractSections {
   const wanted = VARIANT_CLAUSES[variant];
   const text = (id: string) => {
     const t = (nonInteractive && NON_INTERACTIVE_CLAUSES.includes(id) ? contract.nonInteractive.get(id) : undefined) ?? contract.clauses.get(id);
@@ -62,7 +62,7 @@ export function assembleContract(contract: ContractText, variant: Variant, nonIn
     if (nonInteractive && NON_INTERACTIVE_CLAUSES.includes(id) && !contract.nonInteractive.has(id)) {
       throw new ContractCoverageError(`Non-interactive form of ${id} missing from the behavior contract text.`);
     }
-    return t;
+    return id === "C-30" && replaceConcision ? "Follow the selected output style for presentation. When an action is needed, act during this response rather than merely announcing future work." : t;
   };
   const section = (title: string, ids: readonly string[]) => {
     const kept = ids.filter((id) => wanted.includes(id));

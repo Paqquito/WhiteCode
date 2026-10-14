@@ -64,14 +64,16 @@ test("TECH — stopping an outer workflow joins its nested workflow and every ac
 
 test("TECH — a shell-only workflow obeys max-duration after the parent finishes and never runs its dependent step", async () => {
   const ws = workspace(), pidFile = join(ws.project, "workflow.pid"), witness = join(ws.project, "dependent-step.txt");
-  const longCommand = script(ws, "long-step", `await Bun.write(${JSON.stringify(pidFile)}, String(process.pid)); await Bun.sleep(2_500);`);
+  // Publish readiness only after the entire PID is written; Bun.write can expose an empty file first.
+  const longCommand = script(ws, "long-step", `import { writeFileSync, renameSync } from "node:fs"; writeFileSync(${JSON.stringify(pidFile + ".ready")}, String(process.pid)); renameSync(${JSON.stringify(pidFile + ".ready")}, ${JSON.stringify(pidFile)}); await Bun.sleep(6_500);`);
   const nextCommand = script(ws, "dependent-step", `await Bun.write(${JSON.stringify(witness)}, "MUST_NOT_RUN_47"); await Bun.sleep(10_000);`);
   workflow(ws, "shell-lifetime", [{ id: "long", type: "shell", command: longCommand }, { id: "next", type: "shell", command: nextCommand, needs: ["long"] }]);
   const provider = new ScriptedProvider([
     { toolCalls: [{ name: "run_workflow", input: { workflow: "shell-lifetime" } }] },
     { text: "PARENT_FINISHED_47" },
   ]);
-  const host = new Host(ws, { provider, argv: ["--max-duration", "1", "--allow-rule", "run_workflow", "--allow-rule", "run_shell"], env: productEnv(ws) });
+  // Leave time for the real native shell and foreground model response under full-suite load.
+  const host = new Host(ws, { provider, argv: ["--max-duration", "3", "--allow-rule", "run_workflow", "--allow-rule", "run_shell"], env: productEnv(ws) });
   try {
     host.user("Launch the shell workflow.");
     await host.waitFor(message => JSON.stringify(message).includes("PARENT_FINISHED_47"));
@@ -79,10 +81,10 @@ test("TECH — a shell-only workflow obeys max-duration after the parent finishe
     const pid = Number(readFileSync(pidFile, "utf8"));
     // The deadline may have killed the child while the foreground turn was finishing.
     expect(Number.isSafeInteger(pid) && pid > 0).toBe(true);
-    await Bun.sleep(1_500);
+    await Bun.sleep(3_500);
     const runningAfterDeadline = alive(pid);
-    await Bun.sleep(1_700);
+    await Bun.sleep(3_700);
     expect({ runningAfterDeadline, dependentStepRan: existsSync(witness) }).toEqual({ runningAfterDeadline: false, dependentStepRan: false });
     expect(provider.requests.filter(request => request.purpose !== "subagent")).toHaveLength(2);
   } finally { host.feed.end(); await host.run; }
-}, 15_000);
+}, 20_000);

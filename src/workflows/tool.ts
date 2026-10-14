@@ -1,5 +1,6 @@
 // Implements: SPEC-OUT-042 (validated approval plan, background launch and cancellation).
 // Supports: SPEC-PLA-003, SPEC-CMD-077, gap E-165.
+// Implements: SPEC-AGT-023 (CA-01, live tree and partial or total stop), gap E-169.
 import type { Workflow } from "./definitions";
 import { workflowInputs, workflowPlan } from "./definitions";
 import { WorkflowRunner, type WorkflowResult } from "./runtime";
@@ -7,7 +8,7 @@ import type { Tool, ToolContext } from "../tools/types";
 import { textOutcome } from "../tools/types";
 import type { BackgroundTasks } from "../engine/background";
 export interface WorkflowInput { readonly workflow: string; readonly inputs?: Readonly<Record<string, unknown>> }
-export function createRunWorkflowTool(options: { readonly catalog: () => ReadonlyMap<string, Workflow>; readonly runner: WorkflowRunner; readonly depth: number; readonly maxDepth: number; readonly remainingMs?: () => number | undefined; readonly execute: (step: Workflow["steps"][number], task: string, signal: AbortSignal, background: BackgroundTasks) => Promise<WorkflowResult>; readonly redact: (text: string) => string }): Tool<WorkflowInput> {
+export function createRunWorkflowTool(options: { readonly catalog: () => ReadonlyMap<string, Workflow>; readonly runner: WorkflowRunner; readonly depth: number; readonly maxDepth: number; readonly remainingMs?: () => number | undefined; readonly execute: (step: Workflow["steps"][number], task: string, signal: AbortSignal, background: BackgroundTasks, identify: (id: string) => void) => Promise<WorkflowResult>; readonly redact: (text: string) => string }): Tool<WorkflowInput> {
   const prepared = new WeakMap<WorkflowInput, { definition: Workflow; inputs: Record<string, unknown> }>();
   const prepare = (input: WorkflowInput) => {
     const known = prepared.get(input); if (known) return known;
@@ -34,7 +35,13 @@ export function createRunWorkflowTool(options: { readonly catalog: () => Readonl
         const lifetime = new AbortController(), deadline = remaining === undefined ? undefined : AbortSignal.timeout(Math.max(1, Math.floor(remaining)));
         const combined = AbortSignal.any([signal, lifetime.signal, ...(deadline ? [deadline] : [])]), scope = ctx.background!.scope(combined);
         try {
-          const result = await options.runner.run(definition, inputs, combined, (step, prompt, childSignal) => options.execute(step, prompt, childSignal, scope.tasks), activity => ctx.background!.updateActivity(task.id, activity), text => write(options.redact(text)));
+          const result = await options.runner.run(definition, inputs, combined, (step, prompt, childSignal) => {
+            const execute = async (signal: AbortSignal, identify: (id: string) => void) => {
+              const children = scope.tasks.scope(signal);
+              try { return await options.execute(step, prompt, signal, children.tasks, identify); } finally { await children.close(); }
+            };
+            return step.type === "agent" ? ctx.background!.runWorkflowAgent(task.id, step.id, childSignal, execute) : execute(childSignal, () => {});
+          }, (activity, steps) => { ctx.background!.updateWorkflow(task.id, steps); ctx.background!.updateActivity(task.id, activity); }, text => write(options.redact(text)));
           return { status: deadline?.aborted ? "timed_out" : signal.aborted ? "stopped" : result.isError ? "failed" : "completed", summary: options.redact(result.text).slice(0, 16000) };
         } finally { lifetime.abort(); await scope.close(); }
       });

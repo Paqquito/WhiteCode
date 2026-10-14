@@ -10,6 +10,8 @@ import { textOutcome, type Tool } from "./types";
 import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 export interface SpawnAgentInput {
+  readonly team?: string;
+  readonly name?: string;
   readonly description: string;
   readonly prompt: string;
   readonly role?: string;
@@ -19,6 +21,7 @@ export interface SpawnAgentInput {
 }
 
 export interface SpawnAgentDeps {
+  readonly teammate?: (input: SpawnAgentInput) => string;
   readonly forked?: () => boolean;
   /** The agents available, read at each call (SPEC-AGT-005 EF-04). */
   readonly agents: () => ReadonlyMap<string, AgentDefinition>;
@@ -50,6 +53,8 @@ export function createSpawnAgentTool(deps: SpawnAgentDeps): Tool<SpawnAgentInput
         model: { type: "string", description: "Model alias for this agent (large, medium, small). Default: the one of the agent, otherwise yours." },
         resume: { type: "string", description: "Id of an agent of this session to continue with a new prompt." },
         detached: { type: "boolean", description: "Run the agent in the background: its task id comes back at once and its report reaches you as a notification." },
+        team: { type: "string", pattern: "^[a-z][a-z0-9-]{0,47}$", description: "Existing team to join as a persistent local teammate." },
+        name: { type: "string", pattern: "^[a-z][a-z0-9-]{0,47}$", description: "Unique teammate name, required together with team." },
       },
       required: ["description", "prompt"],
       additionalProperties: false,
@@ -59,13 +64,17 @@ export function createSpawnAgentTool(deps: SpawnAgentDeps): Tool<SpawnAgentInput
       return `${description.trim()}${buildFlag("agent_forked") && deps.forked?.() ? "\nWithout an explicit role, start a fork of the caller's complete conversation in the background. A typed role keeps the ordinary isolated agent behavior." : ""}\n\nAgents available:\n${listed.join("\n")}`;
     },
     // The call changes nothing by itself; what the agent does is decided call by call (EF-01, gap E-105).
-    flags: () => ({ readOnly: true, concurrencySafe: true, destructive: false, requiresPermission: true, openWorld: false }),
+    flags: input => ({ readOnly: input.team === undefined, concurrencySafe: input.team === undefined, destructive: false, requiresPermission: true, openWorld: false }),
     isEnabled: () => true,
     ruleSubject: (input) => ({ kind: "name", name: input.role ?? "general" }),
     permissionContribution: () => "allow",
     summary: (input) => `${input.role ?? "general"}: ${input.description}`,
 
     async execute(input, ctx) {
+      if (input.team !== undefined || input.name !== undefined) {
+        if (!input.team || !input.name || input.resume || input.detached === false || !deps.teammate) return textOutcome("A teammate needs both team and name, without resume or detached=false.", true, "invalid_input");
+        try { return textOutcome(deps.teammate(input)); } catch (error) { return textOutcome(error instanceof Error ? error.message : String(error), true, "unavailable"); }
+      }
       const agents = deps.agents();
       const definition = input.resume === undefined ? agents.get(input.role ?? "general") : undefined;
       if (input.resume === undefined && !definition) {

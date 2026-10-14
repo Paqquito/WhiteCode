@@ -48,7 +48,7 @@ export const OPTIONS: readonly OptionDef[] = [
   { name: "max-iterations", value: "required", type: "integer", group: "Session et exécution", description: "Nombre maximal d'itérations (allers-retours avec le modèle).", defaultText: "50 en exécution automatisée", delivered: true, owner: "SPEC-MOD-005" },
   { name: "max-cost", value: "required", type: "amount", group: "Session et exécution", description: "Plafond de coût de l'exécution, montant à point décimal sans devise (ex. 2.50).", delivered: true, owner: "SPEC-MOD-005" },
   { name: "max-duration", value: "required", type: "seconds", group: "Session et exécution", description: "Durée maximale, en secondes.", delivered: true, owner: "SPEC-MOD-005" },
-  { name: "wait-for-capacity", value: "none", group: "Session et exécution", description: "Patiente en cas de saturation au lieu d'échouer.", delivered: false, owner: "SPEC-API-004" },
+  { name: "wait-for-capacity", value: "none", group: "Session et exécution", description: "Patiente en cas de saturation au lieu d'échouer.", delivered: true, owner: "SPEC-API-004" },
   { name: "dry-run", value: "none", group: "Session et exécution", description: "Avec --reopen et --restore-files seulement : plan de restauration sans effet.", delivered: true, owner: "SPEC-SES-007" },
   { name: "restore-files", value: "required", type: "string", group: "Session et exécution", description: "Avec --reopen : rétablit l'état des fichiers au message indiqué.", delivered: true, owner: "SPEC-SES-007" },
   { name: "allow-external-overwrite", value: "required", type: "string", group: "Session et exécution", description: "Consentement à écraser les conflits externes du plan d'empreinte donnée.", danger: true, delivered: true, owner: "SPEC-SES-006" },
@@ -87,7 +87,7 @@ export const OPTIONS: readonly OptionDef[] = [
   { name: "deny-rule", value: "required", type: "rules", repeatable: true, group: "Outils, permissions et crochets", description: "Règles de refus pour la session.", delivered: true, owner: "SPEC-PER-002" },
   { name: "toolset", value: "required", type: "list", group: "Outils, permissions et crochets", description: "Restreint les outils exposés au modèle (\"\" : aucun ; default : tous).", defaultText: "tous", delivered: true, owner: "SPEC-OUT-001" },
   { name: "no-hooks", value: "none", group: "Outils, permissions et crochets", description: "Désactive les crochets facultatifs.", delivered: true, owner: "SPEC-HOK-012" },
-  { name: "permission-delegate", value: "required", type: "string", group: "Outils, permissions et crochets", description: "Outil qui décide des permissions en exécution automatisée.", delivered: false, owner: "SPEC-PER-028" },
+  { name: "permission-delegate", value: "required", type: "string", group: "Outils, permissions et crochets", description: "Outil qui décide des permissions en exécution automatisée.", delivered: true, owner: "SPEC-PER-028" },
   { name: "allow-project-trust", value: "none", group: "Outils, permissions et crochets", description: "Accorde la confiance au projet pour cette seule exécution (jamais mémorisée).", danger: true, delivered: true, owner: "SPEC-PER-016" },
 
   // Extensions, connectors and configuration

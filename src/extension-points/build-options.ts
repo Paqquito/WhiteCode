@@ -4,6 +4,7 @@ export const BUILD_PROFILES = ["public", "internal", "development", "test"] as c
 export type BuildProfile = (typeof BUILD_PROFILES)[number];
 const option = (value: boolean, description: string, specs: string[], absentMarkers: string[] = []) => ({ description, specs, implemented: value, values: { public: value, internal: value, development: value, test: value }, absentMarkers });
 export const BUILD_OPTIONS = {
+  api_background_retry: option(true, "Attente bornée de capacité en exécution automatisée explicite.", ["SPEC-API-004"]),
   mode_experiment_baseline: option(true, "Mode de référence respectant les réglages explicites.", ["SPEC-MOD-031"], ["Mode de référence expérimental"]),
   mode_self_initiated: option(true, "Veille et réveils proactifs explicites par session.", ["SPEC-MOD-027", "SPEC-CMD-100", "SPEC-OUT-023"], ["Wait without a shell process", "Proactive wake at"]),
   automation_scripts: option(true, "Flux déclaratifs avec permissions et tâches de fond.", ["SPEC-PLA-003", "SPEC-PLA-004", "SPEC-OUT-042", "SPEC-CMD-077"], ["Run a named, validated workflow"]),
@@ -23,7 +24,7 @@ export const BUILD_OPTIONS = {
   agent_explorer_planner: option(true, "Agents intégrés d’exploration et de planification en lecture seule.", ["SPEC-AGT-003"], ["You are the repository explorer", "You are the implementation planner"]),
   agent_verifier: option(true, "Agent intégré de vérification avec preuves observées.", ["SPEC-AGT-004"], ["You are the independent feature verifier"]),
   permission_auto_approve: option(true, "Approbation automatique avec consentement et classifieur.", ["SPEC-PER-004", "SPEC-PER-018"], ["You are the approval classifier for a coding session", "The complete action is too large for an approval decision"]),
-  permission_auto_approve_powershell: option(false, "Classifieur d’approbation pour PowerShell.", ["SPEC-PER-005"]),
+  permission_auto_approve_powershell: option(true, "Classifieur d’approbation pour PowerShell.", ["SPEC-PER-005"]),
   shell_classifier: option(false, "Classifieur de commandes shell.", ["SPEC-PER-006"]),
   shell_syntax_analysis: option(false, "Analyse syntaxique des commandes shell.", ["SPEC-PER-007"]),
   compaction_on_overflow: option(true, "Compaction après dépassement de contexte.", ["SPEC-MOT-016"]),

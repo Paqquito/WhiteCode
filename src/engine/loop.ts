@@ -29,6 +29,8 @@ export interface RetryPolicy {
   /** Interruptible wait (EF-04, FA-02); injectable for the tests. */
   readonly sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   readonly random?: () => number;
+  /** SPEC-API-004: supplied only for an explicitly opted-in unattended execution. */
+  readonly unattended?: { readonly maxWaitMs: number; readonly intervalMs: number };
 }
 
 export interface LoopDeps {
@@ -270,6 +272,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
     let requestModel = deps.model;
     let requestPricing = pricing;
     let overflowRecovered = false;
+    let capacityWaitStarted: number | undefined;
     for (let attempt = 0; ; attempt++) {
       const stop = requestStop();
       if (stop) return finish(stop.cause, stop.message);
@@ -298,6 +301,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
       }
       execution = new ResponseExecution({ ...deps.executor, emit: deps.emit }, turnSignal);
       let text = "";
+      let receivedTool = false;
       try {
         // No await separates the last check from this slot: concurrent agents cannot overbook the run.
         limits.countIteration();
@@ -315,6 +319,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
               deps.emit(event);
               break;
             case "tool_call":
+              receivedTool = true;
               if (!requestModel.capabilities.toolCalling) throw new ProviderError("malformed_response", "Le modèle n'a pas déclaré la capacité d'appels d'outils.");
               deps.emit({ type: "tool_call", callId: event.call.callId, name: event.call.name, input: event.call.input });
               execution.submit(event.call);
@@ -367,7 +372,20 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
           if (text !== "") deps.emit({ type: "response_restarted" });
           continue;
         }
-        const message = finalMessage(e, attempt + 1);
+        const unattended = deps.retry?.unattended;
+        if (unattended && ["rate_limit", "overloaded"].includes(e.kind) && text === "" && !receivedTool) {
+          capacityWaitStarted ??= now();
+          const left = unattended.maxWaitMs - (now() - capacityWaitStarted);
+          if (left > 0) {
+            const stop = requestStop(); if (stop) return finish(stop.cause, stop.message);
+            const delayMs = Math.min(left, Math.max(1, e.retryAfterMs ?? unattended.intervalMs));
+            deps.emit({ type: "capacity_wait", delayMs, elapsedMs: now() - capacityWaitStarted, maxWaitMs: unattended.maxWaitMs });
+            try { await (deps.retry?.sleep ?? defaultSleep)(delayMs, turnSignal); } catch { return interrupted(); }
+            if (turnSignal.aborted) return interrupted();
+            continue;
+          }
+        }
+        const message = capacityWaitStarted !== undefined && ["rate_limit", "overloaded"].includes(e.kind) ? "Capacité indisponible pendant la durée maximale d’attente." : finalMessage(e, attempt + 1);
         await deps.hooks.turnFailed(message);
         if (turnSignal.aborted) return interrupted();
         return finish("error", message, finalMessage(e, attempt + 1, true));

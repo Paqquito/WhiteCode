@@ -54,6 +54,9 @@ const enumOf = (values: readonly string[]) => Type.Union(values.map((v) => Type.
 const mode = () => enumOf(PERMISSION_MODES);
 
 export const SETTINGS: readonly SettingDef[] = [
+  { key: "ui.responseStyle", schema: Type.String({ pattern: "^[a-z][a-z0-9-]{0,47}$" }), default: "default", scopes: [U, P], owner: "SPEC-MOT-033", hot: true },
+  { key: "ui.outputStyle", schema: Type.String({ pattern: "^[a-z][a-z0-9-]{0,47}$" }), default: "default", scopes: [U, P], owner: "SPEC-MOT-033", hot: true },
+  { key: "permissions.delegateTimeoutMs", schema: int(1, 600000), default: 60000, scopes: [U], owner: "SPEC-PER-028" },
   { key: "telemetry.enabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-OBS-001", hot: true },
   { key: "telemetry.otel.includeSessionId", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-OBS-002" },
   { key: "debug.diagnosticLogs.retentionDays", schema: int(1, 3650), default: 7, scopes: [U], owner: "SPEC-OBS-020" },
@@ -227,6 +230,8 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "api.baseUrl", schema: str(), scopes: [U, G], owner: "SPEC-API-001" },
   { key: "api.streamIdleTimeout", schema: durationSchema(), kind: "duration", default: 90_000, scopes: [U, G], owner: "SPEC-API-002" },
   { key: "api.maxRetries", schema: int(0), default: 8, scopes: [U, G], owner: "SPEC-API-003" },
+  { key: "api.unattendedRetry.maxWait", schema: int(1, 86400000), default: 21600000, scopes: [U, G], owner: "SPEC-API-004" },
+  { key: "api.unattendedRetry.interval", schema: int(1, 3600000), default: 300000, scopes: [U, G], owner: "SPEC-API-004" },
   { key: "auth.credentialHelper", schema: str(), scopes: [U, G], owner: "SPEC-API-014" },
   { key: "auth.credentialHelperTtl", schema: durationSchema(), kind: "duration", default: 300000, scopes: [U, G], owner: "SPEC-API-014" },
   { key: "auth.loginMethod", schema: str(), scopes: [G], owner: "SPEC-API-012" },
@@ -340,6 +345,10 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "worktree.copyIgnored", schema: strList(), default: [], scopes: [P], owner: "SPEC-INT-007" },
   { key: "worktree.cleanupPrompt", schema: bool(), default: true, scopes: [U], owner: "SPEC-INT-007" },
   { key: "agents.messaging.crossSession", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-INT-016" },
+  { key: "agents.teams.enabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-AGT-011" },
+  { key: "agents.teams.maxMembers", schema: int(2, 32), default: 8, scopes: [U, G], owner: "SPEC-OUT-019" },
+  { key: "agents.teams.shutdownTimeoutSeconds", schema: int(1, 600), default: 60, scopes: [U], owner: "SPEC-AGT-011" },
+  { key: "agents.teams.permissionTimeoutSeconds", schema: int(1, 3600), default: 600, scopes: [U], owner: "SPEC-AGT-014" },
   { key: "agents.messaging.maxBytes", schema: int(1, 65536), default: 65536, scopes: [U], owner: "SPEC-OUT-017" },
   { key: "agents.maxDepth", schema: int(0, 10), default: 2, scopes: [U, G], owner: "SPEC-OUT-016" },
   { key: "agents.maxParallel", schema: int(1, 100), default: 10, scopes: [U, G], owner: "SPEC-OUT-016" },
