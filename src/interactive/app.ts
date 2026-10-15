@@ -151,6 +151,9 @@ export function principalElement(input: unknown): string | undefined {
 const SCOPE_LABEL: Readonly<Record<(typeof RULE_SCOPES)[number], string>> = { session: "session", local: "projet (local)", project: "projet (partagé)", user: "utilisateur" };
 
 export interface AppOptions {
+  readonly hyperlinks?: import("../ui/hyperlinks").Hyperlinks;
+  readonly browserTakeover?: () => void;
+  readonly voice?:{enabled:()=>boolean;indicator:()=>string;key:(phase:KeyEvent["phase"],available:boolean)=>void;cancel:()=>void};
   readonly beforeExit?: () => Promise<void>;
   /** A narrowly authorized local toggle may be consumed even while a model turn runs. */
   readonly immediateCommand?: (content: string) => boolean;
@@ -183,7 +186,7 @@ export interface AppOptions {
   readonly capabilities: Capabilities;
   readonly settings: AppSettings;
   /** Mode, model and other facts of the status line. */
-  readonly status: () => { readonly mode: string; readonly model: string; readonly scheduled?: string; readonly ide?:string; readonly remote?:string };
+  readonly status: () => { readonly mode: string; readonly model: string; readonly scheduled?: string; readonly ide?:string; readonly remote?:string; readonly forge?:string; readonly fast?:string };
   readonly cycleMode?: () => void;
   /** Background tasks still running, stopped by the exit (SPEC-CMD-023 CA-01). */
   readonly backgroundTasks?: () => number;
@@ -227,11 +230,21 @@ export interface AppOptions {
 }
 
 export class InteractiveApp {
+  #voiceProtocol=false;
+  /** Dictation is staged as literal human text, never interpreted as a slash or shell command. */
+  insertDictation(value:string,autoSubmit=false):void{
+    if(this.#exiting||this.humanDialogActive)return;
+    this.#editor.insert(value);this.#literalLead="certain";this.#saveState();this.#redraw();if(autoSubmit)this.#submit();
+  }
+  setVoiceProtocol(enabled:boolean):void{
+    if(enabled===this.#voiceProtocol||enabled&&this.#exiting)return;
+    this.#voiceProtocol=enabled;this.#o.terminal.write(enabled?"\u001b[>3u":"\u001b[<u");
+  }
   #suggestion = "";
   #sessionColor?: number;
-  #aside?: { text: string; close: () => void };
+  #aside?: { text: string; close: () => void; title:string };
   setSessionColor(color: number | undefined): void { this.#sessionColor = color; this.#redraw(); }
-  showAside(value: string, close: () => void): void { this.#aside = { text: maskSecrets(value), close }; this.#redraw(); }
+  showAside(value: string, close: () => void, title="Question annexe"): void { this.#aside = { text: maskSecrets(value), close,title }; this.#redraw(); }
   /** A suggestion is staged only in an empty, idle input; Tab accepts it without sending. */
   setSuggestion(value: string): void { if (!value || !this.running && !this.autonomousInputBusy) { this.#suggestion = maskSecrets(value); this.#redraw(); } }
   readonly #o: AppOptions;
@@ -388,10 +401,11 @@ export class InteractiveApp {
   async #withEditor(action: () => Promise<void>): Promise<void> {
     if (this.#externalEditing) return;
     this.#externalEditing = true;
+    this.#o.voice?.cancel();const voiceProtocol=this.#voiceProtocol;this.setVoiceProtocol(false);
     this.#session?.screen.suspend(); this.#o.terminal.setRawMode(false);
     try { await action(); }
     catch (error) { this.notice("warning", `Éditeur externe : ${(error as Error).message}. Brouillon conservé.`); }
-    finally { this.#externalEditing = false; if (!this.#exiting) { this.#o.terminal.setRawMode(true); this.#session?.screen.resume(); this.#saveState(); this.#redraw(); } }
+    finally { this.#externalEditing = false; if (!this.#exiting) { this.#o.terminal.setRawMode(true);if(voiceProtocol&&this.#o.voice?.enabled())this.setVoiceProtocol(true); this.#session?.screen.resume(); this.#saveState(); this.#redraw(); } }
   }
 
   /** Implements: SPEC-IHM-015/018. A local selector never sends its inserted reference. */
@@ -510,6 +524,8 @@ export class InteractiveApp {
     return this.#queue;
   }
 
+  prefillLink(value:string):void{this.#editor.set(value);this.#saveState();this.#redraw();}
+
   get draft(): string {
     return this.#editor.text;
   }
@@ -522,7 +538,7 @@ export class InteractiveApp {
       slowFrameMs: this.#o.settings.slowFrameMs,
       sequential: this.#o.screenReader,
       focusReporting: this.#o.capabilities.bracketedPaste,
-      source: (size) => this.#frame(size),
+      source: (size) => {const frame=this.#frame(size);return this.#o.hyperlinks?.frame(frame)??frame;},
       scheduler: this.#o.scheduler,
     });
     this.#unsubscribeInput = this.#o.terminal.onInput((data) => this.#input(data));
@@ -540,6 +556,7 @@ export class InteractiveApp {
 
   /** Restores the terminal; idempotent. */
   stop(): void {
+    this.#o.voice?.cancel();this.setVoiceProtocol(false);
     if (this.#tipTimer) clearTimeout(this.#tipTimer); this.#tipTimer = undefined;
     this.#exiting = true;
     clearInterval(this.#developmentTimer); this.#developmentTimer = undefined;
@@ -771,7 +788,8 @@ export class InteractiveApp {
   commit(node: Node): void {
     if (!this.#session) return;
     const columns = this.#o.terminal.columns > 0 ? this.#o.terminal.columns : 80;
-    this.#session.screen.commit(themeLines(layoutNode(node, columns, this.#ctx(columns)).lines, this.#theme, columns, this.#o.capabilities.colors));
+    const lines=themeLines(layoutNode(node, columns, this.#ctx(columns)).lines, this.#theme, columns, this.#o.capabilities.colors);
+    this.#session.screen.commit(this.#o.hyperlinks?lines.map(line=>this.#o.hyperlinks!.line(line)):lines);
   }
 
   /** A preview changes only this application, including the active stream and alternate transcript view. */
@@ -1178,6 +1196,7 @@ export class InteractiveApp {
       const events = this.#keys.feed(data);
       if (data === "\u001b") events.push(...this.#keys.flush());
       for (const e of events) {
+        if(e.kind==="key"&&e.phase==="release")continue;
         if (e.kind === "focus" || e.kind === "appearance") { this.#event(e); continue; }
         this.#lastInteractionAt = Date.now(); this.#o.onActivity?.();
         const global = e.kind === "key" ? this.#keymap.action(e, ["app"]) : undefined;
@@ -1200,8 +1219,14 @@ export class InteractiveApp {
 
   #queryAppearance(): void { if (!this.#externalEditing && !this.#exiting && this.#o.autoTheme?.() && this.#o.capabilities.bracketedPaste) this.#o.terminal.write("\u001b]11;?\u001b\\"); }
   #event(e: InputEvent, uncertain = false): void {
-    if (e.kind === "focus") { this.#o.onFocus?.(e.focused); return; }
+    if (e.kind === "focus") { if(!e.focused)this.#o.voice?.cancel();this.#o.onFocus?.(e.focused); return; }
     if (e.kind === "appearance") { if (this.#o.autoTheme?.()) this.#o.onAppearance?.(e.light); return; }
+    if(e.kind==="key"&&this.#keymap.action(e,["input","app"])==="voice.hold"&&this.#o.voice?.enabled()){
+      this.#o.voice.key(e.phase,!this.humanDialogActive&&!this.#externalEditing);return;
+    }
+    if(e.kind==="key"&&e.phase==="release")return;
+    if(e.kind==="key"&&this.#keymap.action(e,["app"])==="browser.takeover"){this.#o.browserTakeover?.();return;}
+    if(e.kind==="key")this.#o.voice?.cancel();
     this.#lastInteractionAt = Date.now();
     this.#o.onActivity?.();
     if (!this.running && !this.humanDialogActive && this.#o.survey?.key(e.kind === "key" ? e : { name: "paste" })) return;
@@ -1622,7 +1647,7 @@ export class InteractiveApp {
     }
     const panels: Node[] = [];
     const teammate = this.#o.teammateView?.();
-    if (this.#aside) panels.push(box([text("Question annexe · Échap : fermer"), text(this.#aside.text)], { border: {}, padding: { left: 1, right: 1 } }));
+    if (this.#aside) panels.push(box([text(this.#aside.title+" · Échap : fermer"), text(this.#aside.text)], { border: {}, padding: { left: 1, right: 1 } }));
     if (teammate) panels.push(box([text(`Vue du coéquipier ${teammate.name} — saisie adressée à ${teammate.name} · Échap : chef`), ...teammate.lines.slice(-8).map(line => text(maskSecrets(line)))], { border: {} }));
     const notices = [...this.#statusNotices.values()];
     if (notices.length) panels.push(box([text(`Avis : ${notices.slice(0, 3).join(" · ")}${notices.length > 3 ? ` · ${notices.length - 3} autres` : ""}`, { overflow: "clip" })], { padding: { left: 2 } }));
@@ -1747,8 +1772,9 @@ export class InteractiveApp {
   #statusNode(): Node {
     const s = this.#o.status();
     const custom = this.#o.footer?.();
-    if (custom) return text([{ text: `mode : ${s.mode}${this.#queue.length ? ` · ${this.#queue.length} en attente` : ""}${s.scheduled ? ` · planifié : ${s.scheduled}` : ""}${s.ide?` · ${s.ide}`:""}${s.remote?` · ${s.remote}`:""} · ${" ".repeat(custom.padding)}`, style: { dim: true } }, ...custom.spans, { text: " ".repeat(custom.padding) }], { overflow: "clip" });
-    const parts: Span[] = [{ text: `mode : ${s.mode}` }, { text: ` · ${s.model}` },...(s.ide?[{text:` · ${s.ide}`}]:[]),...(s.remote?[{text:` · ${s.remote}`}]:[])];
+    const voice=this.#o.voice?.indicator().replace("Ctrl+Espace",comboLabel(this.#keymap.effective("voice.hold")[0]??"ctrl+space"));
+    if (custom) return text([{ text: `${voice?voice+" · ":""}${s.forge?s.forge+" · ":""}${s.fast?"rapide : "+s.fast+" · ":""}mode : ${s.mode}${this.#queue.length ? ` · ${this.#queue.length} en attente` : ""}${s.scheduled ? ` · planifié : ${s.scheduled}` : ""}${s.ide?` · ${s.ide}`:""}${s.remote?` · ${s.remote}`:""} · ${" ".repeat(custom.padding)}`, style: { dim: true } }, ...custom.spans, { text: " ".repeat(custom.padding) }], { overflow: "clip" });
+    const parts: Span[] = [...(voice?[{text:voice+" · "}]:[]),...(s.forge?[{text:s.forge+" · "}]:[]),...(s.fast?[{text:"rapide : "+s.fast+" · "}]:[]),{ text: `mode : ${s.mode}` }, { text: ` · ${s.model}` },...(s.ide?[{text:` · ${s.ide}`}]:[]),...(s.remote?[{text:` · ${s.remote}`}]:[])];
     if (s.scheduled) parts.push({ text: ` · planifié : ${s.scheduled}` });
     // EF-05 of SPEC-IHM-011: the number of waiting messages is always visible when not zero.
     if (this.#queue.length > 0) parts.push({ text: ` · ${this.#queue.length} message${this.#queue.length > 1 ? "s" : ""} en attente`, style: { bold: true } });

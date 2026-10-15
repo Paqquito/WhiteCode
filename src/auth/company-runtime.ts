@@ -13,6 +13,7 @@ export function configuredCompanyAccount(identity: Identity, configDir: string, 
   const services: Partial<Record<CompanyService, string>> = { account: at(web, "api/account/"), connectors: at(web, "api/connectors/"), events: at(web, "api/events/"), share: at(web, "api/share/") };
   if (consoleUrl) for (const name of ["settings", "policy", "memory", "metrics"] as const) services[name] = at(consoleUrl, `api/${name}/`);
   if (identity.has("SERVICE_REMOTE_SESSIONS")) { services.sessions = identity.get("SERVICE_REMOTE_SESSIONS"); services.triggers = at(identity.get("SERVICE_REMOTE_SESSIONS"), "triggers/"); }
+  if(identity.has("SERVICE_SPEECH_TO_TEXT"))services.speech=identity.get("SERVICE_SPEECH_TO_TEXT");
   return new CompanyAccount({ configDir, vault, keychainService: identity.get("KEYCHAIN_SERVICE"), authorizeUrl: identity.get("SERVICE_OAUTH_AUTHORIZE"), tokenUrl: identity.get("SERVICE_OAUTH_TOKEN"), clientId: identity.get("OAUTH_CLIENT_ID"), services, fetch: network, forceOrganization: () => settings().get<string | undefined>("auth.forceOrganization") });
 }
 export function describeAccount(profile: AccountProfile | undefined): string {

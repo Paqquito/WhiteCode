@@ -1,15 +1,16 @@
 import { expect, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { cli, workspace } from "./helpers/env";
+import { cli, loadIdentity, workspace } from "./helpers/env";
 import { ScriptedProvider } from "./helpers/scripted-provider";
 import { configurationWritable } from "../src/config/persistence";
 import { interactive, KEY } from "./helpers/interactive";
 function snapshot(folder: string): string[] { return readdirSync(folder, { recursive: true, withFileTypes: true }).filter(file => file.isFile()).map(file => { const path = join(file.parentPath, file.name); return path + ":" + readFileSync(path).toString("base64"); }).sort(); }
 test("SPEC-MOD-010/CA-03 — a read-only configuration starts with a warning and no persisted session", async () => {
   const ws = workspace(), provider = new ScriptedProvider([{ text: "READ_ONLY_SESSION_STARTED_51" }]); let before: string[] = [];
-  const result = await cli(["--non-interactive", "--model=medium", "Hello"], ws, { provider, extra: { persistenceWritable: folder => { before = snapshot(folder); return false; } } });
+  const result = await cli(["--non-interactive", "--model=medium", "Hello"], ws, { provider, env: { [loadIdentity().get("ENV_PREFIX") + "ASSISTANT_WORKER"]: "1" }, userConfig: { memory: { assistant: { dailyLog: true } } }, extra: { persistenceWritable: folder => { before = snapshot(folder); return false; } } });
   expect(result.code).toBe(0); expect(result.stdout).toContain("READ_ONLY_SESSION_STARTED_51"); expect(result.stderr).toContain("lecture seule"); expect(existsSync(join(ws.configHome, "sessions"))).toBe(false); expect(snapshot(ws.configHome)).toEqual(before); expect(provider.requests).toHaveLength(1);
+  expect(provider.requests[0]!.tools.some(tool => tool.name === "append_journal")).toBe(false);
 });
 test("TECH — the native configuration write probe creates no leftover file or project file", () => {
   const ws = workspace(); expect(configurationWritable(ws.configHome)).toBe(true); expect(readdirSync(ws.configHome).filter(name => name.startsWith(".write-probe-"))).toEqual([]); expect(configurationWritable(ws.write("project/ordinary.txt", "ordinary"))).toBe(false); expect(readFileSync(join(ws.project, "ordinary.txt"), "utf8")).toBe("ordinary");

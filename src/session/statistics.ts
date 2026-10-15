@@ -13,7 +13,7 @@ const readdir = async (path: string) => encryptedStore(path) ? storeList(path) :
 const lstat = async (path: string) => encryptedStore(path) ? storeStat(path) : diskStat(path);
 
 /** Asynchronous disk reads yield to input handling; the report never needs an external service. */
-export async function loadSessionStatistics(directory: string): Promise<SessionStatistics> {
+export async function loadSessionStatistics(directory: string, year?: number): Promise<SessionStatistics> {
   const days = new Map<string, number>(), attempts: number[] = []; let userMessages = 0;
   let projects: string[]; try { projects = await readdir(directory); } catch { return { days, attempts, sessions: 0, userMessages }; }
   for (const project of projects) {
@@ -32,7 +32,7 @@ export async function loadSessionStatistics(directory: string): Promise<SessionS
             if (!/"type"\s*:\s*"user"/.test(line.slice(0, 200))) continue;
             try {
               const record = JSON.parse(line) as TranscriptRecord;
-              if (record.type === "user" && record.data && record.data["synthetic"] !== true && Number.isFinite(Date.parse(record.ts))) { count++; activeDays.add(dayKey(new Date(record.ts))); }
+              if (record.type === "user" && record.data && record.data["synthetic"] !== true && Number.isFinite(Date.parse(record.ts)) && (year === undefined || new Date(record.ts).getFullYear() === year)) { count++; activeDays.add(dayKey(new Date(record.ts))); }
             } catch { /* interrupted final line */ }
           }
         } finally { lines.close(); input.destroy(); }

@@ -9,10 +9,11 @@ import { compareVersions } from "../platform/semver";
 import { tryFileLock } from "../platform/file-lock";
 import { writeAtomic } from "../tools/text-file";
 import { verifyArtifactSignature } from "../platform/artifact-signature";
+import {buildFlag} from "../extension-points/build-flags" with {type:"macro"};
 
 export const isVersion = (v: unknown): v is string => typeof v === "string" && /^(?:0|[1-9]\d{0,5})\.(?:0|[1-9]\d{0,5})\.(?:0|[1-9]\d{0,5})(?:-[a-zA-Z0-9]+(?:[.-][a-zA-Z0-9]+)*)?$/.test(v);
 export interface Release { readonly version: string; readonly minimumAllowedVersion?: string; readonly notes: string; readonly artifact: { readonly url: string; readonly sha256: string; readonly size: number; readonly signature?: "platform" } }
-export interface NativeOptions { readonly root: string; readonly cli: string; readonly platform: PlatformName; readonly target: string; readonly service: string; readonly currentVersion: string; readonly minimum?: string; readonly systemRoot?: string; readonly fetch: typeof fetch; readonly signal?: AbortSignal; readonly report: (text: string) => void }
+export interface NativeOptions { readonly testDistribution?:{readonly service:string;readonly token:string}; readonly root: string; readonly cli: string; readonly platform: PlatformName; readonly target: string; readonly service: string; readonly currentVersion: string; readonly minimum?: string; readonly systemRoot?: string; readonly fetch: typeof fetch; readonly signal?: AbortSignal; readonly report: (text: string) => void }
 const fail = (message: string): Error => new Error(`Installation : ${message}`);
 const url = (value: string): URL => { const u = new URL(value); if (u.protocol !== "https:" || u.username || u.password || u.hash || u.search) throw fail("adresse HTTPS sans identifiants requise."); return u; };
 export class NativeStore {
@@ -32,20 +33,28 @@ export class NativeStore {
     while (!(release = tryFileLock(path))) { signal.throwIfAborted(); if (Date.now() >= end) throw fail("opération concurrente ; réessayez."); await new Promise(r => setTimeout(r, 25)); }
     try { signal.throwIfAborted(); return await action(); } finally { release(); }
   }
+  // Implements: SPEC-INS-006. The private branch and its environment names are erased outside the test profile.
+  #distribution(version:string):{service:string;headers:Record<string,string>;private:boolean}{
+    if(isVersion(version)&&Number(version.split('.')[0])>=900000){
+      if(buildFlag("installation_test_versions")){const source=this.o.testDistribution;if(!source?.service||!source.token||source.token.length>8192||/[\x00-\x20\x7f]/.test(source.token))throw fail("distribution privée de test non configurée.");url(source.service);return{service:source.service,headers:{Authorization:"Bearer "+source.token},private:true};}
+      throw fail("version réservée aux essais ; utilisez stable ou latest.");
+    }
+    return{service:this.o.service,headers:{},private:false};
+  }
   async release(target: string): Promise<Release> {
     if (!['stable','latest'].includes(target) && !isVersion(target)) throw fail("cible inconnue.");
-    if (isVersion(target) && Number(target.split('.')[0]) >= 900000) throw fail("version réservée aux essais ; utilisez stable ou latest.");
-    const base = url(this.o.service.endsWith('/') ? this.o.service : this.o.service+'/');
+    const distribution=this.#distribution(target);
+    const base = url(distribution.service.endsWith('/') ? distribution.service : distribution.service+'/');
     const address = new URL(`v1/${target}.json`, base);
     const signal = AbortSignal.any([...(this.o.signal ? [this.o.signal] : []), AbortSignal.timeout(10000)]);
-    const r = await this.o.fetch(address, { signal, redirect: 'error', headers: { Accept: 'application/json' } });
+    const r = await this.o.fetch(address, { signal, redirect: 'error', headers: { Accept: 'application/json',...distribution.headers } });
     if (!r.ok || !r.body) { await r.body?.cancel(); throw fail("manifeste indisponible ; vérifiez le réseau et le mandataire."); }
     const reader = r.body.getReader(), chunks: Uint8Array[] = []; let size = 0;
     try { for (;;) { const part = await reader.read(); if (part.done) break; size += part.value.byteLength; if (size > 131072) throw fail("manifeste trop volumineux."); chunks.push(part.value); } } finally { await reader.cancel().catch(() => {}); }
     let raw: unknown; try { raw = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw fail("manifeste invalide."); }
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw fail("manifeste invalide.");
     const m = raw as Record<string, unknown>; const artifacts = m.artifacts as Record<string, unknown> | undefined; const artifact = artifacts?.[this.o.target] as Record<string, unknown> | undefined;
-    if (m.schemaVersion !== 1 || !isVersion(m.version) || isVersion(target) && target !== m.version || Number(m.version.split('.')[0]) >= 900000 || m.minimumAllowedVersion !== undefined && !isVersion(m.minimumAllowedVersion) || !artifact || typeof artifact.url !== 'string' || typeof artifact.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(artifact.sha256) || typeof artifact.size !== 'number' || !Number.isInteger(artifact.size) || artifact.size < 1 || artifact.size > 536870912 || m.notes !== undefined && (typeof m.notes !== 'string' || m.notes.length > 16000)) throw fail("manifeste ou plateforme invalide.");
+    if (m.schemaVersion !== 1 || !isVersion(m.version) || isVersion(target) && target !== m.version || Number(m.version.split('.')[0]) >= 900000 && !distribution.private || m.minimumAllowedVersion !== undefined && !isVersion(m.minimumAllowedVersion) || !artifact || typeof artifact.url !== 'string' || typeof artifact.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(artifact.sha256) || typeof artifact.size !== 'number' || !Number.isInteger(artifact.size) || artifact.size < 1 || artifact.size > 536870912 || m.notes !== undefined && (typeof m.notes !== 'string' || m.notes.length > 16000)) throw fail("manifeste ou plateforme invalide.");
     if (artifact.signature !== undefined && artifact.signature !== 'platform') throw fail('signature de manifeste invalide.');
     const download = url(new URL(artifact.url, base).href); if (download.origin !== base.origin) throw fail("téléchargement sur une autre origine refusé.");
     return { version: m.version, ...(m.minimumAllowedVersion ? { minimumAllowedVersion: m.minimumAllowedVersion as string } : {}), notes: String(m.notes ?? '').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g,''), artifact: { url: download.href, sha256: artifact.sha256, size: artifact.size, ...(artifact.signature === 'platform' ? {signature:'platform' as const} : {}) } };
@@ -63,8 +72,9 @@ export class NativeStore {
   assertCurrent(release?: Release): void { const min = this.minimum(release); if (min && compareVersions(this.o.currentVersion, min) < 0) throw fail("cette version n’est plus prise en charge ; lancez installation update."); }
   binary(version: string): string { if (!isVersion(version)) throw fail("version invalide."); return join(this.versions, version, this.o.cli + (this.o.platform === 'windows' ? '.exe' : '')); }
   async install(release: Release, force = false): Promise<{ version: string; path: string; launcher: string }> {
-    if (!isVersion(release.version) || Number(release.version.split('.')[0]) >= 900000 || release.minimumAllowedVersion !== undefined && !isVersion(release.minimumAllowedVersion) || !release.artifact || !/^[a-f0-9]{64}$/.test(release.artifact.sha256) || !Number.isInteger(release.artifact.size) || release.artifact.size < 1 || release.artifact.size > 536870912) throw fail('version ou artefact invalide.');
-    if (url(release.artifact.url).origin !== url(this.o.service).origin) throw fail('téléchargement sur une autre origine refusé.');
+    const distribution=this.#distribution(release.version);
+    if (!isVersion(release.version) || release.minimumAllowedVersion !== undefined && !isVersion(release.minimumAllowedVersion) || !release.artifact || !/^[a-f0-9]{64}$/.test(release.artifact.sha256) || !Number.isInteger(release.artifact.size) || release.artifact.size < 1 || release.artifact.size > 536870912) throw fail('version ou artefact invalide.');
+    if (url(release.artifact.url).origin !== url(distribution.service).origin) throw fail('téléchargement sur une autre origine refusé.');
     if (release.artifact.signature !== undefined && release.artifact.signature !== 'platform') throw fail('signature de manifeste invalide.');
     const minimum = this.minimum(release); if (minimum && compareVersions(release.version, minimum) < 0) throw fail("version inférieure au minimum autorisé.");
     const signal = AbortSignal.any([...(this.o.signal ? [this.o.signal] : []), AbortSignal.timeout(60000)]);
@@ -76,7 +86,7 @@ export class NativeStore {
         const staging = join(this.versions, `.partial-${release.version}-${randomUUID()}`); this.#inside(staging); mkdirSync(staging, { mode: 0o700 }); const temp = join(staging, this.o.cli + (this.o.platform === 'windows' ? '.exe' : ''));
         try {
           this.o.report('Téléchargement et vérification de la version.');
-          const response = await this.o.fetch(url(release.artifact.url), { signal, redirect: 'error' }); if (!response.ok || !response.body) { await response.body?.cancel(); throw fail("téléchargement impossible ; vérifiez le réseau et le mandataire."); }
+          const response = await this.o.fetch(url(release.artifact.url), { signal, redirect: 'error',headers:distribution.headers }); if (!response.ok || !response.body) { await response.body?.cancel(); throw fail("téléchargement impossible ; vérifiez le réseau et le mandataire."); }
           const reader = response.body.getReader(), fd = openSync(temp, 'wx', 0o700), hash = createHash('sha256'); let size = 0;
           try { for (;;) { signal.throwIfAborted(); const part = await reader.read(); if (part.done) break; size += part.value.byteLength; if (size > release.artifact.size) throw fail('taille de téléchargement incorrecte.'); hash.update(part.value); let offset = 0; while (offset < part.value.byteLength) offset += writeSync(fd, part.value, offset); } fsyncSync(fd); }
           finally { closeSync(fd); await reader.cancel().catch(() => {}); }

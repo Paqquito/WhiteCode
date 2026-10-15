@@ -52,6 +52,7 @@ export function askPolicyConsent(terminal: Terminal, proposal: PolicyConsentProp
     const handle = (events: readonly InputEvent[]) => {
       for (const event of events) {
         if (event.kind !== "key") continue;
+        if(event.phase==="release")continue;
         if (event.ctrl && ["c", "d"].includes(event.name)) return finish(false);
         if (Date.now() < armedAt) continue;
         if (["escape", "n"].includes(event.name)) return finish(false);

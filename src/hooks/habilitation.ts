@@ -66,7 +66,7 @@ function identityOf(d: HookDeclaration): QualifiedIdentity {
  * or whose hook designates a file of the project (CA-31). A hook of another scope or location with the same identifier
  * never matches (CA-08, CA-26).
  */
-export function habilitate(snapshot: HookSnapshot, entries: readonly unknown[], projectDirs: readonly string[]): HookSnapshot {
+export function habilitate(snapshot: HookSnapshot, entries: readonly unknown[], projectDirs: readonly string[], eligibleExtensions:ReadonlySet<string>=new Set()): HookSnapshot {
   const habilitated = new Set<HookDeclaration>();
   const warnings: string[] = [];
   const candidates = snapshot.declarations.filter((d) => d.event === "approval_needed");
@@ -75,7 +75,7 @@ export function habilitate(snapshot: HookSnapshot, entries: readonly unknown[], 
     const shown = JSON.stringify(raw);
     const fields = { scope: e.scope, file: e.file, id: e.id, fingerprint: e.fingerprint };
     const known = (["scope", "file", "id", "fingerprint"] as const).filter((k) => typeof fields[k] === "string");
-    if (typeof e.scope === "string" && !ELIGIBLE_SCOPES.has(e.scope)) {
+    if (typeof e.scope === "string" && !ELIGIBLE_SCOPES.has(e.scope) && !(e.scope==="extension"&&typeof e.file==="string"&&eligibleExtensions.has(e.file))) {
       warnings.push(`permissions.decisionHooks : ${shown} ignorée : seul un crochet déclaré hors du projet (portée utilisateur ou gérée) peut être habilité.`);
       continue;
     }

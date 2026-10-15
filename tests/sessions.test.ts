@@ -9,6 +9,7 @@ import { projectKey, TranscriptWriter, type TranscriptRecord } from "../src/sess
 import { cli, workspace, type Workspace } from "./helpers/env";
 import { ScriptedProvider } from "./helpers/scripted-provider";
 import { interactive, KEY, sleep } from "./helpers/interactive";
+import { liveSession } from "./helpers/live-session";
 
 const sessionsDir = (ws: Workspace) => join(ws.configHome, "sessions");
 const transcriptPath = (ws: Workspace, id: string) => join(sessionsDir(ws), projectKey(realpathSync(ws.project)), `${id}.jsonl`);
@@ -170,23 +171,27 @@ describe("SPEC-SES-011 concurrent sessions", () => {
 
   test("SPEC-SES-011/CA-01 — a session active in the folder: a second one warns and suggests an isolated working copy", async () => {
     const ws = workspace();
-    presence(ws, "11111111-1111-4111-8111-111111111111", realpathSync(ws.project), 1_000);
+    const id = await session(ws, "first", "ready"), live = await liveSession(ws, id);
+    try {
     const r = await cli(["--non-interactive", "x"], ws, { provider: new ScriptedProvider([{ text: "ok" }]) });
     expect(r.code).toBe(0);
     expect(r.stderr).toContain("une autre session est active dans ce dossier");
     expect(r.stderr).toContain("copie de travail isolée");
-    expect(readdirSync(join(ws.configHome, "presence"))).toEqual(["11111111-1111-4111-8111-111111111111.json"]); // own presence withdrawn at exit
+    expect(readdirSync(join(ws.configHome, "presence"))).toEqual([id+".json"]); // own presence withdrawn at exit
+    } finally { await live.close(); }
   });
 
   test("SPEC-SES-011/CA-02 — a session already open elsewhere: reopening it is refused with ERR-01, a copy is possible", async () => {
     const ws = workspace();
     const id = await session(ws, "q", "a");
-    presence(ws, id, realpathSync(ws.project), 1_000);
+    const live = await liveSession(ws, id);
+    try {
     const r = await cli(["--non-interactive", `--reopen=${id}`, "x"], ws, { provider: new ScriptedProvider([]) });
     expect(r.code).toBe(2);
     expect(r.stderr).toContain("Cette conversation est déjà ouverte dans une autre fenêtre");
     const copy = await cli(["--non-interactive", `--reopen=${id}`, "--reopen-as-copy", "x"], ws, { provider: new ScriptedProvider([{ text: "ok" }]) });
     expect(copy.code).toBe(0);
+    } finally { await live.close(); }
   });
 
   test("SPEC-SES-011/CA-03 — a session killed long ago: its presence is purged without warning", async () => {

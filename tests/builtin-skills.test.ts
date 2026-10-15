@@ -33,7 +33,7 @@ function git(cwd: string, ...args: string[]): void {
 
 test("TECH — the built-in skills of the product have a valid header", () => {
   const skills = builtinSkills();
-  expect(skills.map((s) => s.name).sort()).toEqual(["ai-api-guide", "batch", "config-guide", "debug", "filler-text", "loop", "memory-consolidation", "promote-memory", "schedule", "shortcut-help", "simplify", "skill-from-session", "verify"]);
+  expect(skills.map((s) => s.name).sort()).toEqual(["ai-api-guide", "batch", "config-guide", "debug", "defect-scan", "filler-text", "loop", "memory-consolidation", "promote-memory", "schedule", "shortcut-help", "simplify", "skill-from-session", "verify"]);
   for (const s of skills) expect(s.description.length).toBeGreaterThan(40);
   expect(skills.filter((s) => s.invocation === "user").map((s) => s.name).sort()).toEqual(["debug", "filler-text", "skill-from-session"]);
 });

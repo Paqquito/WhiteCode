@@ -12,6 +12,7 @@ import type { Settings } from "../config/settings";
 import { comparablePath } from "../platform/system";
 import { configuredNetwork } from "../config/network";
 import { compareVersions } from "../platform/semver";
+import {buildFlag} from "../extension-points/build-flags" with {type:"macro"};
 
 export function nativeTarget(system: SystemInfo): string {
   if (!["windows","macos","linux"].includes(system.platform) || !["x64","arm64"].includes(system.arch)) throw new Error('Plateforme non prise en charge.');
@@ -37,7 +38,7 @@ export function multipleInstallations(path: string, cli: string, platform: Syste
   } } return [...results.values()];
 }
 export function configuredInstallation(o: { identity: Identity; env: EnvironmentView; system: SystemInfo; configDir: string; settings: Settings; signal?: AbortSignal; report: (text: string)=>void; fetch?: typeof fetch }): NativeStore {
-  return new NativeStore({ root: join(o.configDir,'installation'), cli: o.identity.get('PRODUCT_CLI'), platform: o.system.platform, target: nativeTarget(o.system), service: o.identity.has('SERVICE_DOWNLOADS') ? o.identity.get('SERVICE_DOWNLOADS') : '', currentVersion: o.identity.version, minimum: o.settings.get<string | undefined>('updates.minimumAllowedVersion'), systemRoot:o.env.public('SystemRoot'), fetch: o.fetch ?? configuredNetwork(o.env), signal: o.signal, report: o.report });
+  return new NativeStore({ ...(buildFlag("installation_test_versions")?{testDistribution:{service:o.env.own("TEST_INSTALL_SERVICE")??"",token:o.env.own("TEST_INSTALL_TOKEN")??""}}:{}),root: join(o.configDir,'installation'), cli: o.identity.get('PRODUCT_CLI'), platform: o.system.platform, target: nativeTarget(o.system), service: o.identity.has('SERVICE_DOWNLOADS') ? o.identity.get('SERVICE_DOWNLOADS') : '', currentVersion: o.identity.version, minimum: o.settings.get<string | undefined>('updates.minimumAllowedVersion'), systemRoot:o.env.public('SystemRoot'), fetch: o.fetch ?? configuredNetwork(o.env), signal: o.signal, report: o.report });
 }
 export class InstallationMaintenance {
   #timer?: ReturnType<typeof setTimeout>; #running?: Promise<void>; readonly #stop=new AbortController();

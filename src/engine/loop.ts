@@ -281,6 +281,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
       requestPricing = deps.pricingForModel ? deps.pricingForModel(requestModel) : requestModel === deps.model ? pricing : requestModel.pricing;
       const tools = conv.toolsForModel(requestModel.capabilities.toolCalling);
       const base: ModelRequest = {
+        ...(conv.intentionalCacheReset ? { intentionalCacheReset: true } : {}),
         model: requestModel,
         system: conv.system,
         tools,
@@ -331,6 +332,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
           }
         }
         if (!complete) throw new ProviderError("malformed_response", "Réponse inattendue du service du modèle.");
+        conv.cacheRequestCompleted();
         break;
       } catch (error) {
         // The calls of an incomplete response are cancelled; their results are never used (RG-01, gap E-056).
@@ -394,7 +396,8 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
 
     const response = complete!;
     deps.fallback?.succeeded();
-    const responseCost = costOf(requestPricing, response.usage);
+    const baseResponseCost = costOf(requestPricing, response.usage);
+    const responseCost = baseResponseCost === undefined ? undefined : baseResponseCost * (response.serviceCostMultiplier ?? 1);
     if (responseCost === undefined) costUnknown = true;
     else cost += responseCost;
     const stopReason: StopReason = response.stopReason;
@@ -424,7 +427,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
       usage: response.usage,
       model: requestModel.id,
       ...(response.usageReported !== false && responseCost !== undefined ? { cost: responseCost } : {}),
-      tariff: { version: fingerprint({ model: requestModel.id, pricing: requestPricing ?? null, currency: ledger?.snapshot.currency ?? "unknown" }), pricing: requestPricing ?? null, currency: ledger?.snapshot.currency ?? "unknown" },
+      tariff: { version: fingerprint({ model: requestModel.id, pricing: requestPricing ?? null, currency: ledger?.snapshot.currency ?? "unknown", serviceMultiplier:response.serviceCostMultiplier??1 }), pricing: requestPricing ?? null, currency: ledger?.snapshot.currency ?? "unknown", serviceMultiplier:response.serviceCostMultiplier??1 },
       providerRequestId: response.providerRequestId,
     });
     deps.postSampling?.(assistant, deps.agentId);

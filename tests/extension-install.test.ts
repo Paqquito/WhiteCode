@@ -120,7 +120,7 @@ describe("SPEC-EXT-002 and SPEC-EXT-003 installation and activation", () => {
     mkdirSync(other, { recursive: true });
     for (const cwd of [undefined, other]) expect((await session(ws, [], cwd)).system).toContain("- revue:check: Checks a change against the team rules.");
     const list = JSON.parse((await admin(ws, ["extension", "list", "--json"])).stdout);
-    expect(list).toEqual([{ name: "revue", catalog: "team", versions: ["1.0.0"], active: true }]);
+    expect(list).toEqual([{ name: "review-kit", catalog: "bundled", versions: ["1.0.0"], active: false, bundled:true },{ name: "revue", catalog: "team", versions: ["1.0.0"], active: true }]);
   });
 
   test("SPEC-EXT-002/CA-02 — a network failure during the installation: no trace is left", async () => {

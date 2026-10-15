@@ -277,15 +277,19 @@ export class Screen {
   #cells(line: Line, from: number, to: number): string {
     let out = "";
     let key: string | undefined;
+    let href: string | undefined;
     for (let i = from; i < to; i++) {
       const c = line[i]!;
       if (c.w === 0) continue;
+      const next = this.#caps.hyperlinks && c.style?.href && !/[\u0000-\u0020\u007f-\u009f]/.test(c.style.href) ? c.style.href : undefined;
+      if (next !== href) { if(href)out+="\u001b]8;;\u001b\\";if(next)out+="\u001b]8;;"+next+"\u001b\\";href=next; }
       if (c.key !== key) {
         out += sgr(c.style, this.#caps.colors);
         key = c.key;
       }
       out += c.ch;
     }
+    if(href)out+="\u001b]8;;\u001b\\";
     if (key !== undefined && key !== DEFAULT_KEY) out += `${ESC}0m`;
     return out;
   }

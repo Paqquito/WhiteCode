@@ -24,7 +24,7 @@ export interface ControlOperations {
   /** Message of the policy when the mode is not available, otherwise `undefined` (ERR-04). */
   modeRefusal(mode: PermissionMode): string | undefined;
   setMode(mode: PermissionMode): void;
-  selectModel(value: string): string;
+  selectModel(value: string): string | Promise<string>;
   commands(): ReadonlyArray<Record<string, unknown>>;
   /** Whether the first word of a text names a widening command (SPEC-CMD-001 § 5.5); `undefined`: not a command. */
   widening(text: string): boolean | undefined;
@@ -112,7 +112,7 @@ export class ControlSession {
         set_approval_mode: (params) => this.#setMode(params),
         select_model: async (params) => {
           if (typeof params["model"] !== "string") throw invalid("model attendu");
-          return { model: this.#ops!.selectModel(params["model"]) };
+          return { model: await this.#ops!.selectModel(params["model"]) };
         },
         get_state: async () => ({ ...this.#ops!.state(), designated: this.designated, turnInProgress: this.#current !== undefined, queued: this.#queue.length }),
         list_commands: async () => ({ commands: this.#ops!.commands() }),
@@ -393,6 +393,7 @@ function approvalParams(r: ApprovalRequest): Record<string, unknown> {
     callId: r.callId,
     toolName: r.toolName,
     summary: r.summary,
+    ...(r.approvalMode ? {approvalMode:r.approvalMode} : {}),
     ...(r.action ? { action: r.action } : {}),
     input: r.input ?? {},
     reason: r.reason,

@@ -5,6 +5,7 @@
 import type { ColorDepth, UnicodeLevel } from "./style";
 
 export interface Capabilities {
+  readonly hyperlinks?: boolean;
   readonly colors: ColorDepth;
   readonly unicode: UnicodeLevel;
   /** Updates framed by the synchronised output mode, so that a frame appears at once. */
@@ -31,6 +32,7 @@ export function detectCapabilities(i: CapabilityInputs): Capabilities {
   const term = (i.variable("TERM") ?? "").toLowerCase();
   const dumb = term === "dumb";
   return {
+    hyperlinks: !dumb && (i.variable("WT_SESSION") !== undefined || i.variable("VTE_VERSION") !== undefined || /^(?:iTerm.app|WezTerm|vscode|ghostty)$/.test(i.variable("TERM_PROGRAM") ?? "")),
     colors: colorDepth(i, term, dumb),
     unicode: dumb ? "ascii" : i.unicodeLevel,
     synchronizedOutput: !dumb && term !== "linux",

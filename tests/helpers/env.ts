@@ -131,6 +131,8 @@ export const TEST_USER_CONFIG = {
   api: { provider: "openai_compatible", baseUrl: "http://127.0.0.1:9/v1" },
   models: { identifierMap: TEST_IDENTIFIER_MAP },
   extensions: { autoUpdate: "off" },
+  deepLinks:{registration:"disabled"}, // OS URL registration belongs only to its dedicated native tests.
+  integrations:{keepAwake:false}, // Native power changes are exercised only by their dedicated integration tests.
   sessions: { autoTitle: false }, // Stable scripted conversations; dedicated title tests enable optional metadata traffic.
   memory: { automatic: { enabled: false }, autoExtraction: { enabled: false }, session: { enabled: false } }, // Dedicated memory tests activate their owned stores and side requests.
 };

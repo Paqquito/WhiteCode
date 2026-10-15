@@ -95,6 +95,7 @@ export function buildChatRequest(request: ModelRequest): OpenAI.Chat.ChatComplet
   const toggle = caps.thinking === "optional" ? opts[on ? "thinkingOn" : "thinkingOff"] : undefined;
   if (toggle && typeof toggle === "object") Object.assign(body, toggle);
   if (opts["extraBody"] && typeof opts["extraBody"] === "object") Object.assign(body, opts["extraBody"]);
+  if (request.serviceOptions) body["service_tier"] = request.serviceOptions.service_tier;
   return body as unknown as OpenAI.Chat.ChatCompletionCreateParamsStreaming;
 }
 

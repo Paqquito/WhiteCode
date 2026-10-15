@@ -17,6 +17,7 @@ export const privateDirectories = new Set([
   "content",
   "memory",
   "agent-memory",
+  "assistant-memory",
   "team-memory",
   "teams",
   "background-sessions",

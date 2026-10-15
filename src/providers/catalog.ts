@@ -49,6 +49,7 @@ export const ModelEntrySchema = Type.Object(
     family: Type.String({ minLength: 1 }),
     aliases: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
     label: Type.String({ minLength: 1 }),
+    extended: Type.Optional(Type.Object({ model: Type.String({ minLength: 1, maxLength: 240 }), eligibility: Type.Union([Type.Literal("public"), Type.Literal("account")]) }, { additionalProperties: false })),
     contextWindow: Type.Integer({ minimum: 1 }),
     maxOutputTokens: Type.Integer({ minimum: 1 }),
     capabilities: Type.Optional(CapabilitiesSchema),

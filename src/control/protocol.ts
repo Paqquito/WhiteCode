@@ -26,11 +26,11 @@ export const HOST_REQUESTS = [
 export type HostRequest = (typeof HOST_REQUESTS)[number];
 
 /** Demands of the engine to the host (§ 5.3). */
-export const ENGINE_DEMANDS = ["approval_request", "request_user_choice", "notify", "open_resource", "confirm_escalation", "sdk_mcp_request"] as const;
+export const ENGINE_DEMANDS = ["approval_request", "request_user_choice", "notify", "open_resource", "confirm_escalation", "sdk_mcp_request", "deliver_file"] as const;
 export type EngineDemand = (typeof ENGINE_DEMANDS)[number];
 
 /** Demands this version sends: the others are part of the protocol, but no function of the product emits them yet. */
-export const EMITTED_DEMANDS: readonly EngineDemand[] = ["approval_request", "request_user_choice", "notify", "confirm_escalation", "sdk_mcp_request"];
+export const EMITTED_DEMANDS: readonly EngineDemand[] = ["approval_request", "request_user_choice", "notify", "confirm_escalation", "sdk_mcp_request", "deliver_file"];
 
 /** Response delay bounds and default (§ 6). */
 export const RESPONSE_TIMEOUT_BOUNDS = { min: 1_000, max: 600_000 } as const;

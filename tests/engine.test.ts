@@ -13,6 +13,15 @@ import { ScriptedProvider, type ScriptedResponse } from "./helpers/scripted-prov
 
 const model = testModel("default");
 
+test("TECH — permission revocation during asynchronous classification is checked again immediately before execution",async()=>{
+  const trace:Trace={log:[]};let prepared=0,revoked=false;
+  const f=setup([{toolCalls:[{name:"revocable",input:{id:"must-not-run"}}]},{text:"Permission revoked."}],{tools:[probe("revocable",false,trace)as Tool<never>]});
+  const base=f.deps.executor;
+  const deps:LoopDeps={...f.deps,executor:{...base,prepareDescriptiveRules:async()=>{prepared++;if(prepared===2){await Promise.resolve();revoked=true;}},permissionContext:()=>({...base.permissionContext(),rules:revoked?[{tool:"revocable",decision:"deny",raw:"revocable",scope:"user",anchor:"/"}as Rule]:[]})}};
+  await runTurn(deps,"Execute the probe.",new AbortController().signal);
+  expect(prepared).toBeGreaterThanOrEqual(2);expect(trace.log).toEqual([]);expect(f.events.some(e=>e.type==="permission"&&e.decision==="deny")).toBe(true);
+});
+
 interface Trace {
   readonly log: string[];
 }

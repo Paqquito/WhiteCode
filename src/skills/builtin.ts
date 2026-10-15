@@ -2,6 +2,7 @@
 // built into the product: their definitions, their invocation and their tools)
 // Supports: SPEC-EXT-019 (same header and same invocation as the other skills), gap E-117
 
+import defectScan from "../../prompts/skills/defect-scan.md" with { type:"text" };
 import schedule from "../../prompts/skills/schedule.md" with { type:"text" };
 import filler from "../../prompts/skills/filler-text.md" with { type:"text" };
 import rescue from "../../prompts/skills/session-rescue.md" with { type:"text" };
@@ -19,7 +20,7 @@ import memoryConsolidation from "../../prompts/skills/memory-consolidation.md" w
 import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 import { splitHeader, type Invocation, type Skill } from "./registry";
 
-const SOURCES = [...(buildFlag("scheduled_triggers_remote")?[schedule]:[]),...(buildFlag("skill_filler_text")?[filler]:[]),...(buildFlag("skill_session_rescue")?[rescue]:[]),batch, configGuide, debug, promoteMemory, simplify, skillFromSession, verify, shortcutHelp, apiGuide, ...(buildFlag("scheduled_triggers") ? [loop] : []), ...(buildFlag("memory_consolidation") ? [memoryConsolidation] : [])];
+const SOURCES = [...(buildFlag("defect_scan")?[defectScan]:[]),...(buildFlag("scheduled_triggers_remote")?[schedule]:[]),...(buildFlag("skill_filler_text")?[filler]:[]),...(buildFlag("skill_session_rescue")?[rescue]:[]),batch, configGuide, debug, promoteMemory, simplify, skillFromSession, verify, shortcutHelp, apiGuide, ...(buildFlag("scheduled_triggers") ? [loop] : []), ...(buildFlag("memory_consolidation") ? [memoryConsolidation] : [])];
 
 /** The skills of the product, scope `product`: a skill of the same name of any other scope replaces it. */
 export function builtinSkills(): Skill[] {

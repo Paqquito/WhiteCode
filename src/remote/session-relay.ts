@@ -22,6 +22,7 @@ interface Account {
   ): Promise<unknown>;
 }
 interface Options {
+  readonly mobileEnabled?: () => boolean;
   readonly account: Account;
   readonly webUrl: string;
   readonly mirror: boolean;
@@ -47,6 +48,22 @@ export function autoAttach(o: {
 }
 /** The service never grants tools or modes. Every injected message enters the ordinary local request queue. */
 export class SessionRelay {
+  readonly #pushes = new Set<Promise<void>>();
+  #lastPush = 0;
+  /** Fixed event kinds only: prompts, code and tool output cannot become push text. */
+  notifyMobile(kind: "task_completed" | "approval_required"): Promise<void> {
+    if (!this.#id || this.#state !== "connected" || !this.options.mobileEnabled?.() || this.#pushes.size >= 4 || Date.now() - this.#lastPush < 1000) return Promise.resolve();
+    this.#lastPush = Date.now();
+    const id = this.#id, signal = AbortSignal.any([this.#controller.signal, AbortSignal.timeout(2000)]);
+    const task = (async () => {
+      try {
+        const owner = await this.#current(signal);
+        if (!this.options.mobileEnabled?.() || this.#state !== "connected") return;
+        await this.options.account.request("sessions", `local/${id}/notifications`, { idempotencyKey: randomUUID(), kind, audience: "mobile" }, signal, owner);
+      } catch { this.options.trace("mobile_notification_unavailable"); }
+    })().finally(() => this.#pushes.delete(task));
+    this.#pushes.add(task); return task;
+  }
   #id?: string;
   #url?: string;
   #owner?: Owner;
@@ -362,6 +379,7 @@ export class SessionRelay {
     );
   }
   async close(): Promise<void> {
+    await Promise.allSettled([...this.#pushes]);
     if (this.#state === "closed") return;
     this.#state = "closed";
     clearTimeout(this.#timer);

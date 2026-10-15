@@ -4,6 +4,8 @@
 // Supports: SPEC-PER-021 (EF-01 standalone Escape timing cannot convert paste contents into consent keys), gap E-129.
 
 export interface KeyEvent {
+  /** Enhanced keyboard protocols explicitly report release; a legacy key has no phase. */
+  readonly phase?:"press"|"repeat"|"release";
   readonly kind: "key";
   /** `enter`, `tab`, `backspace`, `delete`, `escape`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `insert`, `f1`…, or a character. */
   readonly name: string;
@@ -170,10 +172,13 @@ export class KeyParser {
       if (final === "u") {
         // CSI u (code ; modifiers): keys the legacy encoding cannot tell apart, such as shift+enter.
         const code = Number(parts[0]);
-        const mods = modifiers(parts[1]);
-        const name = code === 13 ? "enter" : code === 9 ? "tab" : code === 27 ? "escape" : code === 127 ? "backspace" : String.fromCodePoint(code).toLowerCase();
+        if(!Number.isInteger(code)||code<0||code>0x10ffff||code>=0xd800&&code<=0xdfff)return{event:key("unknown"),next};
+        const [modifier,eventType]=parts[1]?.split(":")??[];
+        if(eventType!==undefined&&!["1","2","3"].includes(eventType))return{event:key("unknown"),next};
+        const mods = modifiers(modifier);
+        const name = code===32&&mods.ctrl?"space":code === 13 ? "enter" : code === 9 ? "tab" : code === 27 ? "escape" : code === 127 ? "backspace" : String.fromCodePoint(code).toLowerCase();
         const printable = code >= 0x20 && code !== 127 && !mods.ctrl && !mods.alt && !mods.super;
-        return { event: key(name, mods, printable ? String.fromCodePoint(code) : undefined), next };
+        return { event: {...key(name, mods, printable ? String.fromCodePoint(code) : undefined),...(eventType?{phase:({"1":"press","2":"repeat","3":"release"} as const)[eventType as "1"|"2"|"3"]}:{})}, next };
       }
       if (final === "Z") return { event: key("tab", { shift: true }), next };
       const name = CSI_LETTER[final];

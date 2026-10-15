@@ -10,7 +10,7 @@ import { writeAtomic } from "../tools/text-file";
 import {remoteEvents} from "../remote/events";
 
 export interface AccountProfile { readonly method: "company"; readonly account: string; readonly organization: { readonly id: string; readonly name: string }; readonly roles: readonly string[]; readonly expiresAt: number; readonly updatedAt: number }
-export type CompanyService = "account" | "settings" | "policy" | "memory" | "metrics" | "sessions" | "triggers" | "connectors" | "events" | "share";
+export type CompanyService = "account" | "settings" | "policy" | "memory" | "metrics" | "sessions" | "triggers" | "connectors" | "events" | "share" | "speech";
 interface Options {
   readonly configDir: string; readonly vault: CredentialVault; readonly keychainService: string;
   readonly authorizeUrl: string; readonly tokenUrl: string; readonly revokeUrl?: string; readonly clientId: string;
@@ -54,6 +54,8 @@ export class CompanyAccount {
     if (removed) { ordinaryPrivateFile(this.#profileFile, 32768); if (existsSync(this.#profileFile)) { if (generation === undefined) unlinkSync(this.#profileFile); else { const raw: unknown = JSON.parse(readPrivateText(this.#profileFile, 32768)); if (object(raw) && raw.generation === generation) unlinkSync(this.#profileFile); } } }
   }
   async profile(): Promise<AccountProfile | undefined> { return (await this.#cachedProfile())?.profile; }
+  /** Non-secret login generation used to invalidate session eligibility after an account change. */
+  async sessionBinding(): Promise<string | undefined> { const current = await this.#cachedProfile(); return current ? JSON.stringify([current.generation, current.profile.account, current.profile.organization.id]) : undefined; }
   async #cachedProfile(): Promise<{ profile: AccountProfile; generation: string } | undefined> {
     const token = await this.#oauth.info(); if (!token) return undefined;
     if (!existsSync(this.#profileFile)) return undefined;

@@ -15,6 +15,7 @@ import type { ActiveExtension } from "./load";
 import { blockedReason, flagOf } from "./policy";
 import { parseRef } from "./ref";
 import { engineProblem, installedDir, installedVersions } from "./store";
+import {ensureBundled} from "./bundled";
 
 export { parseRef } from "./ref";
 
@@ -60,6 +61,7 @@ async function installImposed(i: ActivationInputs, key: string): Promise<string 
 
 /** § 5.3 for a session: the active installed extensions, and the report of those left out with the reason (§ 5.3 step 4 of SPEC-EXT-009). */
 export async function activeInstalled(i: ActivationInputs): Promise<Activations> {
+  if(i.installMissing!==false)ensureBundled(i.configDir);
   const enabled = i.settings.get<Record<string, unknown>>("extensions.enabled");
   const imposed = imposedKeys(i.settings);
   const managedOnly = i.settings.get<boolean>("extensions.managedOnly");

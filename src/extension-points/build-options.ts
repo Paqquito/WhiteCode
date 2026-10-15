@@ -4,6 +4,12 @@ export const BUILD_PROFILES = ["public", "internal", "development", "test"] as c
 export type BuildProfile = (typeof BUILD_PROFILES)[number];
 const option = (value: boolean, description: string, specs: string[], absentMarkers: string[] = []) => ({ description, specs, implemented: value, values: { public: value, internal: value, development: value, test: value }, absentMarkers });
 export const BUILD_OPTIONS = {
+  ui_year_review:{...option(true,"Rétrospective locale à activation explicite et extension officielle.",["SPEC-IHM-033","SPEC-CMD-078"],["Local annual statistics (no code or conversation content):"]),values:{public:false,internal:true,development:true,test:true}},
+  internal_discreet:{...option(true,"Attribution supprimée et bannière persistante en profil interne.",["SPEC-IHM-040"],["Mode discret ·","Discreet mode is active."]),values:{public:false,internal:true,development:false,test:false}},
+  defect_scan:option(true,"Campagnes locales de recherche de défauts vérifiés.",["SPEC-EXT-036"],["Start a bounded local background defect campaign"]),
+  state_capture:{...option(true,"Instantanés internes des seuls dépôts de société autorisés.",["SPEC-SES-014"],["STATE_CAPTURE_PAYLOAD_V1","state-captures"]),values:{public:false,internal:true,development:false,test:false}},
+  voice_input:option(true,"Dictée avec consentement, capture native et service de société.",["SPEC-VOX-001","SPEC-VOX-002","SPEC-VOX-003","SPEC-VOX-004","SPEC-CMD-076"],["AUDIO_READY","MicrophoneInput","Dictée ·"]),
+  installation_test_versions: {...option(true,"Distribution privée réservée aux constructions de test.",["SPEC-INS-006"],["TEST_INSTALL_SERVICE","TEST_INSTALL_TOKEN"]),values:{public:false,internal:false,development:false,test:true}},
   remote_provided_environment: option(true, "Exécuteur local de sessions avec identifiant de machine distinct.", ["SPEC-MOD-023"]),
   remote_self_hosted_runner: option(true, "Exécuteur local de travaux compatibles et révocation contrôlée.", ["SPEC-MOD-024"]),
   remote_control: option(true, "Relais sortant de session locale et de décisions humaines.", ["SPEC-MOD-013", "SPEC-CMD-055"]),
@@ -51,7 +57,7 @@ export const BUILD_OPTIONS = {
   agent_verifier: option(true, "Agent intégré de vérification avec preuves observées.", ["SPEC-AGT-004"], ["You are the independent feature verifier"]),
   permission_auto_approve: option(true, "Approbation automatique avec consentement et classifieur.", ["SPEC-PER-004", "SPEC-PER-018"], ["You are the approval classifier for a coding session", "The complete action is too large for an approval decision"]),
   permission_auto_approve_powershell: option(true, "Classifieur d’approbation pour PowerShell.", ["SPEC-PER-005"]),
-  shell_classifier: option(false, "Classifieur de commandes shell.", ["SPEC-PER-006"]),
+  shell_classifier: option(true, "Classement des règles descriptives de commandes shell.", ["SPEC-PER-006"], ["Determine whether the exact shell command matches"]),
   shell_syntax_analysis: option(true, "Observation syntaxique des commandes shell sans influence sur la décision.", ["SPEC-PER-007"]),
   prompt_hints: option(true, "Suggestions de saisie filtrées et facultatives.", ["SPEC-MOT-028"], ["Predict one short next user request"]),
   mode_template_jobs: option(true, "Classification bornée de la fin du tour principal.", ["SPEC-MOT-043"], ["Classify the whole main-agent turn", "Job workspace must be an ordinary directory"]),
@@ -82,8 +88,9 @@ export function resolveBuildOptions(profile: string, overrides: unknown = {}): B
   for (const [name, value] of Object.entries(overrides)) {
     if (!Object.hasOwn(BUILD_OPTIONS, name)) throw new Error(`Option de build inconnue : ${name}.`);
     if (typeof value !== "boolean") throw new Error(`Valeur booléenne attendue pour ${name}.`);
-    if (value && profile === "public" && ["telemetry_orchestrator_role", "ui_dev_bar", "strict_failure", "system_instructions_export"].includes(name)) throw new Error(`Option réservée aux profils internes : ${name}.`);
-    if (value && profile !== "test" && ["permission_test", "context_overflow_probe"].includes(name)) throw new Error(`Option réservée au profil de test : ${name}.`);
+    if (value && profile !== "internal" && ["state_capture","internal_discreet"].includes(name))throw new Error(`Option réservée au profil interne : ${name}.`);
+    if (value && profile === "public" && ["ui_year_review", "telemetry_orchestrator_role", "ui_dev_bar", "strict_failure", "system_instructions_export"].includes(name)) throw new Error(`Option réservée aux profils internes : ${name}.`);
+    if (value && profile !== "test" && ["installation_test_versions", "permission_test", "context_overflow_probe"].includes(name)) throw new Error(`Option réservée au profil de test : ${name}.`);
     if (value && !BUILD_OPTIONS[name as BuildFlagName].implemented) throw new Error(`Option de build réservée, fonctionnalité non livrée : ${name}.`);
     values[name as BuildFlagName] = value;
   }

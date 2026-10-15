@@ -37,6 +37,31 @@ function fixture() {
   return { root, ws, build, manifest, run };
 }
 
+test("TECH — the included test-profile year review asks before installation, plays cached frames and stays hidden when disabled",async()=>{
+ const f=fixture();cpSync(join(ROOT,"tests/helpers"),join(f.root,"tests/helpers"),{recursive:true});cpSync(join(ROOT,"tests/fixtures"),join(f.root,"tests/fixtures"),{recursive:true});
+ const generated=await runToCompletion(BUN,["scripts/generate.ts","--profile","test"],{cwd:f.root,env:productEnv(f.ws),timeoutMs:15000});expect(generated.code).toBe(0);
+ const probe=await runToCompletion(BUN,[join(f.root,"tests/fixtures/year-review-probe.ts")],{cwd:f.root,env:productEnv(f.ws),timeoutMs:25000});if(probe.code!==0)throw Error(probe.stderr+probe.stdout);expect(probe.stdout).toContain("YEAR_REVIEW_PROBE_PASSED");
+},60000);
+
+test("SPEC-IHM-040/CA-01 — an actual internal-profile interactive commit omits attribution and keeps its discreet banner visible",async()=>{
+ const f=fixture();cpSync(join(ROOT,"tests/helpers"),join(f.root,"tests/helpers"),{recursive:true});cpSync(join(ROOT,"tests/fixtures"),join(f.root,"tests/fixtures"),{recursive:true});
+ const generated=await runToCompletion(BUN,["scripts/generate.ts","--profile","internal"],{cwd:f.root,env:productEnv(f.ws),timeoutMs:15000});expect(generated.code).toBe(0);
+ const output=join(f.root,"git-discreet-probe.js"),built=await runToCompletion(BUN,["build",join(f.root,"tests/fixtures/git-discreet-probe.ts"),"--target=bun","--minify","--outfile",output],{cwd:f.root,env:productEnv(f.ws),timeoutMs:25000});if(built.code!==0)throw Error(built.stderr);expect(built.code).toBe(0);
+ const probe=await runToCompletion(BUN,[output],{cwd:f.root,env:productEnv(f.ws),timeoutMs:25000});if(probe.code!==0)throw Error(probe.stderr+probe.stdout);expect(probe.stdout).toContain("GIT_DISCREET_PROBE_PASSED");
+},60000);
+test("TECH — an actual internal-profile CLI captures authorized repository state and honors its environment disable switch",async()=>{
+ const f=fixture();cpSync(join(ROOT,"tests/helpers"),join(f.root,"tests/helpers"),{recursive:true});cpSync(join(ROOT,"tests/fixtures"),join(f.root,"tests/fixtures"),{recursive:true});
+ const generated=await runToCompletion(BUN,["scripts/generate.ts","--profile","internal"],{cwd:f.root,env:productEnv(f.ws),timeoutMs:15000});expect(generated.code).toBe(0);
+ const output=join(f.root,"state-capture-probe.js"),built=await runToCompletion(BUN,["build",join(f.root,"tests/fixtures/state-capture-probe.ts"),"--target=bun","--minify","--outfile",output],{cwd:f.root,env:productEnv(f.ws),timeoutMs:25000});if(built.code!==0)throw Error(built.stderr);expect(built.code).toBe(0);expect(readFileSync(output,"utf8")).toContain("state-captures");
+ const probe=await runToCompletion(BUN,[output],{cwd:f.root,env:productEnv(f.ws),timeoutMs:15000});if(probe.code!==0)throw Error(probe.stderr+probe.stdout);expect(probe.stdout).toContain("INTERNAL_STATE_CAPTURE_PROBE_PASSED");
+},60000);
+test("SPEC-INS-006/CA-02 — an actual test-profile bundle downloads a reserved release from its authenticated private distribution",async()=>{
+ const f=fixture();cpSync(join(ROOT,"tests/helpers"),join(f.root,"tests/helpers"),{recursive:true});cpSync(join(ROOT,"tests/fixtures"),join(f.root,"tests/fixtures"),{recursive:true});
+ const generated=await runToCompletion(BUN,["scripts/generate.ts","--profile","test"],{cwd:f.root,env:productEnv(f.ws),timeoutMs:15000});expect(generated.code).toBe(0);
+ const entry=join(f.root,"tests/fixtures/test-installation-probe.ts"),output=join(f.root,"private-install-probe.js"),built=await runToCompletion(BUN,["build",entry,"--target=bun","--minify","--outfile",output],{cwd:f.root,env:productEnv(f.ws),timeoutMs:25000});if(built.code!==0)throw Error(built.stderr);expect(built.code).toBe(0);
+ const probe=await runToCompletion(BUN,[output],{cwd:f.root,env:productEnv(f.ws),timeoutMs:15000});if(probe.code!==0)throw Error(probe.stderr+probe.stdout);expect(probe.stdout).toContain("PRIVATE_TEST_INSTALLATION_PASSED");
+},60000);
+
 test("SPEC-CAD-002/CA-21 — apostrophes and quotes in the actual package manifest and both installer scripts remain syntactically valid", async () => {
   const f = fixture(), brand = `L'outil "Clair"`, input = JSON.parse(readFileSync(join(f.root, "identity/dev.identity.json"), "utf8"));
   input.identity.PRODUCT = brand;
@@ -64,7 +89,7 @@ test("SPEC-BLD-006/CA-01 — SPEC-BLD-008/CA-01 — two identities generate thei
   }
 }, 30_000);
 
-test("SPEC-BLD-009/CA-01 — SPEC-BLD-009/CA-02 — SPEC-IHM-032/CA-04 — the public executable ignores profile overrides and excludes internal and companion resources", async () => {
+test("SPEC-BLD-009/CA-01 — SPEC-BLD-009/CA-02 — SPEC-IHM-032/CA-04 — SPEC-SES-014/CA-04 — the public executable ignores profile overrides and excludes internal and companion resources", async () => {
   const f = fixture(); expect((await f.build()).code).toBe(0);
   const file = f.manifest().deliverables.find((d: { target: string }) => d.target === "current").file;
   const prefix = loadIdentity().get("ENV_PREFIX");
@@ -72,7 +97,7 @@ test("SPEC-BLD-009/CA-01 — SPEC-BLD-009/CA-02 — SPEC-IHM-032/CA-04 — the p
   expect(result.code).not.toBe(0); expect(result.stderr).toContain("inconnue");
   for (const d of f.manifest().deliverables.filter((d: { target: string }) => ["bundle", "current"].includes(d.target))) {
     const content = readFileSync(join(f.root, "dist", d.file));
-    for (const marker of ["STRICT-FAILURE:", "orchestrator.role", "Export non masqu", "Développement ·", "Compagnon éclos", "companion-v1:", "session-rescue"]) expect(content.includes(Buffer.from(marker))).toBe(false);
+    for (const marker of ["state-captures","Snapshot contains too many files.","STRICT-FAILURE:", "orchestrator.role", "Export non masqu", "Développement ·", "Compagnon éclos", "companion-v1:", "session-rescue"]) expect(content.includes(Buffer.from(marker))).toBe(false);
   }
   writeFileSync(join(f.ws.configHome,"config.json"),JSON.stringify({api:{provider:"openai_compatible",baseUrl:"http://127.0.0.1:9/v1"},models:{selected:"fixture-model"},ui:{companion:{enabled:true}}}));
   const unavailable=await f.run(file,["--non-interactive","--ephemeral","/companion"]);

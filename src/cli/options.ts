@@ -45,7 +45,7 @@ export const OPTIONS: readonly OptionDef[] = [
   { name: "ephemeral", value: "none", group: "Session et exécution", description: "N'enregistre pas la session.", delivered: true, owner: "SPEC-SES-012" },
   { name: "remote-session", value: "required", type: "string", group: "Session et exécution", description: "Crée et suit une session distante avec une clé confiée au service.", delivered: buildFlag("remote_sessions"), owner: "SPEC-MOD-014" },
   { name: "reopen-remote", value: "required", type: "string", group: "Session et exécution", description: "Rapatrie une session distante terminée dans un clone propre du même dépôt.", delivered: buildFlag("remote_sessions"), owner: "SPEC-MOD-015" },
-  { name: "background", value: "required", type: "string", group: "Session et exécution", description: "Lance une session d'arrière-plan.", delivered: false, owner: "SPEC-MOD-022" },
+  { name: "background", value: "required", type: "string", group: "Session et exécution", description: "Lance une session d'arrière-plan.", delivered: true, owner: "SPEC-MOD-022" },
   { name: "orchestrator", value: "none", group: "Session et exécution", description: "Active le mode coordinateur.", delivered: false, owner: "SPEC-MOD-028" },
   { name: "max-iterations", value: "required", type: "integer", group: "Session et exécution", description: "Nombre maximal d'itérations (allers-retours avec le modèle).", defaultText: "50 en exécution automatisée", delivered: true, owner: "SPEC-MOD-005" },
   { name: "max-cost", value: "required", type: "amount", group: "Session et exécution", description: "Plafond de coût de l'exécution, montant à point décimal sans devise (ex. 2.50).", delivered: true, owner: "SPEC-MOD-005" },
@@ -107,6 +107,8 @@ export const OPTIONS: readonly OptionDef[] = [
   // Miscellaneous
   { name: "help", value: "none", group: "Divers", description: "Affiche l'aide.", delivered: true, owner: "SPEC-MOD-011" },
   { name: "version", value: "none", group: "Divers", description: "Affiche la version.", delivered: true, owner: "SPEC-MOD-011" },
+  {name:"open-link",value:"required",type:"string",group:"Divers",description:"Ouvre un lien du produit dans un terminal, sans envoi automatique.",delivered:true,hidden:true,owner:"SPEC-MOD-030"},
+  {name:"link-input",value:"required",type:"string",group:"Divers",description:"Pré-remplit une demande provenant d’un lien.",delivered:true,hidden:true,owner:"SPEC-MOD-030"},
   { name: "cwd", value: "required", type: "path", group: "Divers", description: "Dossier de travail.", defaultText: "dossier courant", delivered: true, owner: "SPEC-MOD-011" },
   { name: "debug", value: "optional", type: "list", group: "Divers", description: "Active le journal de débogage (--debug <domaines>, préfixe ! pour exclure).", delivered: true, owner: "SPEC-OBS-012" },
   { name: "debug-output", value: "required", type: "string", group: "Divers", description: "Destination du journal de débogage (chemin, ou stderr).", defaultText: "fichier de la session", delivered: true, owner: "SPEC-OBS-012" },
@@ -117,7 +119,7 @@ export const OPTIONS: readonly OptionDef[] = [
   { name: "connect-editor", value: "none", group: "Intégrations", description: "Se connecte à l'IDE compatible.", delivered: buildFlag("ide_bridge"), owner: "SPEC-INT-001" },
   { name: "isolated-copy", value: "optional", type: "string", group: "Intégrations", description: "Démarre dans une copie de travail isolée.", delivered: true, owner: "SPEC-INT-007" },
   { name: "multiplexer", value: "none", group: "Intégrations", description: "Avec --isolated-copy, ouvre la session dans le multiplexeur de terminal.", delivered: false, owner: "SPEC-INT-007" },
-  { name: "from-merge-request", value: "required", type: "string", group: "Intégrations", description: "Reprend la session liée à une demande de fusion.", delivered: false, owner: "SPEC-INT-009" },
+  { name: "from-merge-request", value: "required", type: "string", group: "Intégrations", description: "Reprend la session liée à une demande de fusion.", delivered: true, owner: "SPEC-INT-009" },
   { name: "browser", value: "none", group: "Intégrations", description: "Active le pilotage du navigateur.", delivered: false, owner: "SPEC-INT-011" },
 ];
 

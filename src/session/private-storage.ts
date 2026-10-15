@@ -488,9 +488,9 @@ export function protectTemporaryStore(root: string): () => void {
   return () => store.close();
 }
 /** Native servers invoke callbacks in their own async context: capture the session explicitly. */
-export function bindPrivateStorage<T>(action: () => T): () => T {
+export function bindPrivateStorage<Args extends unknown[], T>(action: (...args: Args) => T): (...args: Args) => T {
   const ctx = context.getStore();
-  return ctx ? () => context.run(ctx, action) : action;
+  return ctx ? (...args: Args) => context.run(ctx, () => action(...args)) : action;
 }
 export function storeRemove(path: string, recursive = false): void {
   const store = access(path);

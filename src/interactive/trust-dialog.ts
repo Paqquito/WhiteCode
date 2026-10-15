@@ -42,6 +42,7 @@ export function askTrust(terminal: Terminal, folder: string, inventory: readonly
     const unsubscribe = terminal.onInput((data) => {
       for (const e of parser.feed(data)) {
         if (e.kind !== "key") continue;
+        if(e.phase==="release")continue;
         if (e.ctrl && (e.name === "c" || e.name === "d")) return finish("quit");
         if (e.name === "up") selected = (selected + CHOICES.length - 1) % CHOICES.length;
         else if (e.name === "down") selected = (selected + 1) % CHOICES.length;

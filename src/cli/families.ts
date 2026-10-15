@@ -132,23 +132,23 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
   {
     name: "service",
     role: "Superviseur local",
-    operations: [op("start", "Démarre le superviseur local."), op("stop", "Arrête le superviseur local."), op("show", "Affiche l'état du superviseur local."), op("show-log", "Affiche le journal du superviseur local.")],
+    operations: [op("start", "Démarre le superviseur local.", {delivered:true,options:["foreground","json"]}), op("stop", "Arrête le superviseur local.", {delivered:true,options:["json"]}), op("show", "Affiche l'état du superviseur local.", {delivered:true,options:["json"]}), op("show-log", "Affiche le journal du superviseur local.", {delivered:true,options:["json"]})],
   },
   {
     name: "background-session",
     role: "Sessions détachées",
     operations: [
-      op("list", "Liste les sessions détachées."),
-      op("show-log", "Affiche le journal d'une session détachée.", { args: "<id>" }),
-      op("attach", "Se rattache à une session détachée.", { args: "<id>" }),
-      op("stop", "Arrête une session détachée.", { args: "<id>" }),
+      op("list", "Liste les sessions détachées.", {delivered:true,options:["json"]}),
+      op("show-log", "Affiche le journal d'une session détachée.", { args: "<id>",delivered:true,options:["json"] }),
+      op("attach", "Se rattache à une session détachée.", { args: "<id>",delivered:true }),
+      op("stop", "Arrête une session détachée.", { args: "<id>",delivered:true,options:["json"] }),
     ],
   },
   { name: "resident-agent", role: "Assistant persistant", operations: [op("attach", "Se rattache à l'assistant persistant.", { args: "[<id>]" })] },
   {
     name: "job",
     role: "Travaux",
-    operations: [op("create", "Crée un travail à partir d'un modèle.", { args: "<modèle> [consigne]" }), op("list", "Liste les travaux."), op("reply", "Répond à un travail.", { args: "<id> <message>" })],
+    operations: [op("create", "Crée un travail à partir d'un modèle.", { args: "<modèle> [consigne]",delivered:true,options:["json"] }), op("list", "Liste les travaux.",{delivered:true,options:["json"]}), op("reply", "Répond à un travail.", { args: "<id> <message>",delivered:true,options:["json"] })],
   },
   { name: "session-runner", role: "Exécuteur de sessions", operations: [op("start", "Lance un exécuteur de sessions affectées à un environnement.", { delivered: buildFlag("remote_self_hosted_runner"), options: ["organization", "environment", "credential-file", "root", "concurrent-sessions"] })] },
   { name: "job-runner", role: "Exécuteur de travaux", operations: [op("start", "Lance un exécuteur de travaux affectés.", { delivered: buildFlag("remote_provided_environment"), options: ["organization", "environment", "credential-file", "root", "concurrent-sessions"] })] },
@@ -158,7 +158,7 @@ export const FAMILY_BY_NAME: ReadonlyMap<string, FamilyDef> = new Map(FAMILY_CAT
 
 /** Common options of the sub-commands (§ 5.4): `true` when the option takes a value. */
 /** § 5.4 of SPEC-MOD-012, plus the options proper to an operation: `--lean-context` (SPEC-EXT-004), `--installable` (SPEC-EXT-002). */
-export const COMMON_OPTIONS: Readonly<Record<string, boolean>> = { organization: true, environment: true, "credential-file": true, "concurrent-sessions": true, auto: false, "notify-only": false, "approval-pipe": false, json: false, scope: true, force: false, "preserve-data": false, name: true, verbose: false, help: false, "lean-context": true, installable: false, capabilities: true, root: true, transport: true, "approval-mode": true, listen: true, orchestrator: false, env: true, header: true, declaration: true, check: false, channel: true, version: true, company: false, refresh: false, resolve: true, restore: true };
+export const COMMON_OPTIONS: Readonly<Record<string, boolean>> = { foreground: false, organization: true, environment: true, "credential-file": true, "concurrent-sessions": true, auto: false, "notify-only": false, "approval-pipe": false, json: false, scope: true, force: false, "preserve-data": false, name: true, verbose: false, help: false, "lean-context": true, installable: false, capabilities: true, root: true, transport: true, "approval-mode": true, listen: true, orchestrator: false, env: true, header: true, declaration: true, check: false, channel: true, version: true, company: false, refresh: false, resolve: true, restore: true };
 
 export interface ParsedSubcommand {
   readonly family: string;

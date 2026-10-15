@@ -19,8 +19,9 @@ import type { ResultStore } from "../session/result-store";
 import { boundText } from "../tools/output-bounds";
 
 export interface ExecutorDeps {
+  readonly prepareDescriptiveRules?: (query: PermissionQuery, context: PermissionContext, signal: AbortSignal) => Promise<void>;
   /** SPEC-OUT-025: actual executions, with their reviewed difference, after the current plan approval. */
-  readonly recordExecution?: (call: ToolCall, outcome: ToolOutcome, difference?: string) => void;
+  readonly recordExecution?: (call: ToolCall, outcome: ToolOutcome, difference?: string, change?: FileChange) => void;
   /** Active credential values are masked before hooks, large-result storage, events and model context. */
   readonly redactOutput?: (text: string) => string;
   /** Mandatory policy checked against the raw source before hooks and again after any approval or queue. */
@@ -292,6 +293,8 @@ export class ResponseExecution {
           available: true,
           fileWriteInsideAllowed: target.kind === "paths" && target.access === "write" && target.paths.every((p) => insideAllowed(p, ctx.allowedDirectories, ctx.platform)),
         };
+        await this.#deps.prepareDescriptiveRules?.(query,pctx,signal);
+        pctx=this.#deps.permissionContext();evaluatedContext=canonical(pctx);
         decision = decide(query, pctx);
         if (preview && "humanOnly" in preview && preview.humanOnly && decision.kind !== "deny") decision = { kind: "ask", step: 4, origin: "explicit", reason: "A block anchor requires confirmation of the actual replacement by a human.", suggestions: [] };
         // The host already approved these very parameters: a decision `ask` on them is its answer (RG-06 of SPEC-MOD-006).
@@ -324,7 +327,9 @@ export class ResponseExecution {
         // Any security-context change is relevant, including rules changed without a mode change.
         // An unchanged approval remains bound to this call; changed contexts are resolved again, at most three times.
         for (let revision = 0; ; revision++) {
-          const now = this.#deps.permissionContext();
+          let now = this.#deps.permissionContext();
+          await this.#deps.prepareDescriptiveRules?.(query,now,signal);
+          now = this.#deps.permissionContext();
           let again = decide(query, now);
           if (preview && "humanOnly" in preview && preview.humanOnly) {
             if (now.mode !== "ask" && now.mode !== "auto_approve") return finish(textOutcome("Passage not found: the permission mode changed before the anchored edit.", true, "invalid_input"), false);
@@ -370,7 +375,7 @@ export class ResponseExecution {
         const afterExecution = this.#deps.policyRefusal?.();
         if (afterExecution) return finish({ ...outcome, content: [...outcome.content, { type: "text", text: `This tool completed before the policy check failed. No subsequent hook was run. ${afterExecution}` }] });
         const safeOutcome = this.#redacted(outcome);
-        this.#deps.recordExecution?.(call, safeOutcome, preview && "diff" in preview ? preview.diff : undefined);
+        this.#deps.recordExecution?.(call, safeOutcome, preview && "diff" in preview ? preview.diff : undefined, preview && "change" in preview ? preview.change : undefined);
         const after = await this.#deps.hooks.afterTool(call, safeOutcome.isError, safeOutcome.content.map((c) => (c.type === "text" ? c.text : `[${c.mediaType}]`)).join("\n"));
         if (after.stopTurn) this.#stopTurnRequested = true;
         // The model learns that the call ran with other parameters than its own (SPEC-MOD-006 FA-05).
@@ -441,6 +446,7 @@ export class ResponseExecution {
         action: actionOf(tool.name, subject),
         reason: decision.reason,
         origin: decision.origin,
+        approvalMode: mode,
         ...(tool.flags(call.input as never).explicitApproval ? { planApproval: true } : {}),
         ...(shown?.humanOnly ? { humanOnly: true } : {}),
         suggestions: decision.suggestions,

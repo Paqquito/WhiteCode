@@ -12,6 +12,11 @@ export interface ImageInfo {
 export const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 export const IMAGE_MAX_DIMENSION = 8000;
 
+/** Supports: SPEC-OUT-035. Refuse excessive decoded raster surfaces before a client starts decoding. */
+export function inlineImageInfo(bytes:Buffer):ImageInfo|undefined{
+  const info=imageInfo(bytes);return info&&info.width>0&&info.height>0&&info.width<=IMAGE_MAX_DIMENSION&&info.height<=IMAGE_MAX_DIMENSION&&info.width*info.height<=32000000?info:undefined;
+}
+
 function jpegSize(b: Buffer): { width: number; height: number } | undefined {
   let i = 2;
   while (i + 9 < b.length) {

@@ -61,6 +61,9 @@ export interface ThinkingRequest {
 }
 
 export interface ModelRequest {
+  readonly serviceOptions?: { readonly service_tier: string };
+  /** Supports: SPEC-CMD-084. A deliberate prefix change, excluded from cache anomaly counts. */
+  readonly intentionalCacheReset?: boolean;
   readonly model: ResolvedModel;
   readonly system: readonly SystemBlock[];
   readonly tools: readonly ToolDefinition[];
@@ -114,6 +117,7 @@ export type ModelEvent =
       readonly usage: Usage;
       /** False when the provider sent no usage information: the cost is then unknown (SPEC-MOD-005 CA-11). */
       readonly usageReported?: boolean;
+      readonly serviceCostMultiplier?: number;
       /** Service-side clearing: applied edits, or the strategy was rejected and the request sent again without it (ERR-01 of SPEC-MOT-014). */
       readonly contextEditing?: { readonly rejected?: boolean; readonly clearedToolUses?: number; readonly clearedInputTokens?: number };
       readonly assistant: Extract<HistoryMessage, { role: "assistant" }>;

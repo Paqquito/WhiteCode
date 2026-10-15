@@ -64,7 +64,11 @@ test("SPEC-OUT-043/CA-02 — a user message cannot be pruned and the tool explai
   expect(JSON.stringify(b.toolResults())).toContain("ignored"); expect(JSON.stringify(b.provider.requests[1]?.history)).toContain("keep my words");
 });
 test("SPEC-MOT-019/CA-01 — growth beyond the configured step produces a pruning reminder on the real CLI request", async () => {
-  const ws = workspace(), provider = new ScriptedProvider([{ usage: { input: 10_000, output: 10 }, toolCalls: [{ name: "read_file", input: { path: join(ws.project, "a.txt") } }] }, { text: "done" }]); writeFileSync(join(ws.project, "a.txt"), "a ".repeat(1000));
+  const ws = workspace(), provider = new ScriptedProvider([request => {
+    // Keep the reported baseline consistent with the actual request as the tool catalogue grows.
+    const input = new ContextMeter({ model: request.model, outputReserveTokens: 0 }).occupation(request.system, request.tools, request.history, request.segment ?? 0).tokens;
+    return { usage: { input, output: 10 }, toolCalls: [{ name: "read_file", input: { path: join(ws.project, "a.txt") } }] };
+  }, { text: "done" }]); writeFileSync(join(ws.project, "a.txt"), "a ".repeat(1000));
   const run = await cli(["--non-interactive", "read it", "--approval-mode", "no_prompt"], ws, { provider, userConfig: { context: { pruning: { enabled: true, nudgeEveryTokens: 100 }, microCompact: { enabled: false } } } }); expect(run.stderr).toBe(""); expect(run.code).toBe(0);
   expect(JSON.stringify(provider.requests[1]?.history)).toContain("prune_history"); expect(provider.requests[0]?.tools.some(t => t.name === "prune_history")).toBe(true);
 });

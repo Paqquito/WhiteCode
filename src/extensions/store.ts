@@ -9,6 +9,9 @@ import { compareVersions, satisfies } from "../platform/semver";
 import { cloneGit, fetchSource, type Catalog, type CatalogEntry, type GitRunner } from "./catalog";
 import { describeExtension, type Extension } from "./extension";
 import { validateExtension, type ValidationReport } from "./validate";
+import {writeAtomic} from "../tools/text-file";
+import {currentPlatform,isWithin} from "../platform/system";
+import {ordinaryPrivateFile} from "../shared/private-text";
 
 export const installedRoot = (configDir: string) => join(configDir, "extensions");
 export const installedDir = (configDir: string, catalog: string, name: string, version: string) => join(installedRoot(configDir), catalog, name, version);
@@ -85,10 +88,20 @@ export function fetchExtension(configDir: string, catalog: Catalog, entry: Catal
 /** Step 5: moved into place in one rename (EF-02); an installed copy of the same version is replaced. */
 export function commitInstall(configDir: string, catalog: string, fetched: Fetched): string {
   const final = installedDir(configDir, catalog, fetched.extension.name, fetched.extension.version);
+  if(!isWithin(final,installedRoot(configDir))||resolve(final)===resolve(installedRoot(configDir)))throw Error("Invalid extension installation target.");
+  ordinaryPrivateFile(join(final,".installation-id"),128);
+  const generation=invalidateExtensionAuthority(configDir,catalog,fetched.extension.name);
+  const marker=join(fetched.temp,".installation-id");ordinaryPrivateFile(marker,128);writeAtomic(marker,Buffer.from(generation),currentPlatform(),true);
   mkdirSync(join(final, ".."), { recursive: true });
   if (existsSync(final)) rmSync(final, { recursive: true, force: true });
   renameSync(fetched.temp, final);
   return final;
+}
+
+/** One generation covers every retained version, including pinned versions still running in an open session. */
+export function invalidateExtensionAuthority(configDir:string,catalog:string,name:string):string{
+  const root=resolve(installedRoot(configDir),catalog,name);if(!isWithin(root,installedRoot(configDir))||root===resolve(installedRoot(configDir)))throw Error("Invalid extension authority target.");
+  const marker=join(root,".installation-id");ordinaryPrivateFile(marker,128);mkdirSync(root,{recursive:true});const generation=randomUUID();writeAtomic(marker,Buffer.from(generation),currentPlatform(),true);return generation;
 }
 
 /** Removes every installed version, and the data unless kept (FA-03). */

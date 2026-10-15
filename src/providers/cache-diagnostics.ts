@@ -16,7 +16,7 @@ export function withCacheDiagnostics(provider: ModelProvider, options: { maxThre
         // Conservative five-minute lifetime; larger provider lifetimes may be configured in a future calibration.
         if (previous && previous.model === current.model && current.time - previous.time < 300_000 && previous.cache - current.cache >= 1000 && current.cache < previous.cache / 2) {
           const cause = previous.system !== current.system ? "instructions" : previous.tools !== current.tools ? "tools" : previous.history !== hash(request.history.slice(0, previous.length)) ? "history" : "unexplained";
-          try { options.log({ cause, lostTokens: previous.cache - current.cache, expected: request.purpose === "compaction" }); } catch { /* Diagnostics never interrupt a model response. */ }
+          try { options.log({ cause, lostTokens: previous.cache - current.cache, expected: request.intentionalCacheReset === true || request.purpose === "compaction" }); } catch { /* Diagnostics never interrupt a model response. */ }
         }
         threads.delete(key); threads.set(key, current);
         while (threads.size > Math.max(1, Math.min(100, options.maxThreads))) threads.delete(threads.keys().next().value!);

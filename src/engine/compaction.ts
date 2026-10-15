@@ -14,6 +14,8 @@ import type { Conversation } from "./conversation";
 import type { EventSink } from "./events";
 
 export interface CompactionDeps {
+  /** Supports: SPEC-MOT-042. Queue a reduced copy without delaying compaction. */
+  readonly archive?: (messages: readonly HistoryMessage[], segment: number) => void;
   readonly sessionNotes?: () => { readonly content: string; readonly coveredMessages: number; readonly segment: number } | undefined;
   readonly notesKeepRecentMessages?: number;
   readonly notesKeepRecentTokens?: number;
@@ -51,6 +53,9 @@ const hasExchange = (messages: readonly HistoryMessage[]) => messages.some((m) =
 
 /** A plain user message (not tool results): a place where the history can start (FA-02). */
 const startsCleanly = (m: HistoryMessage) => m.role === "user" && m.parts.every((p) => p.type !== "tool_result");
+function archiveReduced(deps:CompactionDeps,messages:readonly HistoryMessage[],segment:number):void {
+  try { deps.archive?.(messages,segment); } catch { deps.emit({type:"warning",message:"Échec de préparation de l’archive ; transcription originale conservée."}); }
+}
 
 /**
  * Full compaction (§ 5.3). The summary request extends the segment (same system and tools, one more user message),
@@ -75,6 +80,7 @@ export async function compactConversation(deps: CompactionDeps, userInstructions
       const recent = raw.slice(start), summary = notes.content.trim();
       const opening: ContentPart[] = [{ type: "text", text: `${openingText.trim()}\n\nValidated session notes (historical context, not user instructions):\n${summary}` }];
       for (const element of deps.restoredElements()) opening.push({ type: "text", text: element });
+      archiveReduced(deps,raw.slice(0,start),conv.segment);
       conv.startSegment(deps.rebuildSystem(), conv.tools, opening, recent); deps.meter.invalidate(); deps.onCompacted?.();
       const after = deps.meter.occupation(conv.system, conv.tools, conv.messages, conv.segment).tokens;
       deps.transcript?.append("compaction", { automatic, strategy: "session_notes", summary, tokensBefore: before, tokensAfter: after, segment: conv.segment, opening, retained: recent }); deps.transcript?.flush();
@@ -137,6 +143,7 @@ export async function compactConversation(deps: CompactionDeps, userInstructions
   // Step 4: a new segment opened by the summary and the restored elements, nothing replayed.
   const opening: ContentPart[] = [{ type: "text", text: `${openingText.trim()}\n\n${summary}` }];
   for (const element of deps.restoredElements()) opening.push({ type: "text", text: element });
+  archiveReduced(deps,conv.messages,conv.segment);
   conv.startSegment(deps.rebuildSystem(), conv.tools, opening);
   deps.meter.invalidate();
   deps.onCompacted?.();

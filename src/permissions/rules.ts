@@ -24,11 +24,13 @@ export const KNOWN_TOOL_NAMES: ReadonlySet<string> = new Set([
   "notify_device", "use_skill", "discover_skills", "configure", "code_intelligence", "submit_result", "run_workflow",
   "prune_history", "inspect_context", "review_artifact", "subscribe_merge_request", "suggest_background_merge_request",
   "overflow_test", "permission_test", "consult_advisor",
+  "append_journal",
+  "run_defect_scan",
 ]);
 
 const PATH_TOOLS = new Set(["read_file", "write_file", "edit_file", "update_notebook_cell", "find_files", "search_content", "code_intelligence"]);
 const COMMAND_TOOLS = new Set(["run_shell", "run_powershell"]);
-const URL_TOOLS = new Set(["fetch_url"]);
+const URL_TOOLS = new Set(["fetch_url", "browse_web"]);
 /** Tools whose rules designate an element by name, `*` standing for any run of characters (`use_skill(review-*)`). */
 const NAME_TOOLS = new Set(["use_skill", "spawn_agent", "list_connector_resources", "read_connector_resource", "run_workflow"]);
 
@@ -78,6 +80,7 @@ export function parseRule(raw: string, decision: RuleDecision, scope: RuleScope,
   if (!KNOWN_TOOL_NAMES.has(name) && !name.startsWith("cnx_")) return { code: "ERR-01", severity: "warning", message: `Règle ignorée : outil inconnu ${name}.` };
   const pattern = open === -1 ? undefined : text.slice(open + 1, -1).trim();
   if (pattern === "") return { code: "ERR-02", severity: "warning", message: `Règle mal formée : ${raw}.` };
+  if(pattern?.startsWith("prompt:")&&(!COMMAND_TOOLS.has(name)||!pattern.slice(7).trim()||pattern.length>2000))return{code:"ERR-02",severity:"warning",message:`Règle descriptive invalide : ${raw}.`};
   return { raw: text, decision, scope, tool: name, pattern, anchor };
 }
 

@@ -351,13 +351,13 @@ export class HookRuntime implements HookBus {
       if (this.#o.policyRefusal?.()) return "deny";
       const event = "approval_needed";
       const fields = { toolId: request.toolName, toolArguments: request.input ?? {}, suggestions: request.suggestions, reason: request.reason, origin: request.origin, ...(request.agent ? { agent: request.agent, approvalMode: request.approvalMode } : {}) };
-      const started = this.#start(event, fields, this.#select(event, fields));
+      const started = this.#start(event, fields, this.#select(event, fields).filter(d=>d.authorityCurrent?.()!==false));
       if (started.length === 0) return undefined;
       const habilitated = this.#snapshot.habilitated ?? new Set<HookDeclaration>();
       const outcomes = await Promise.all(
         started.map(async ({ d, outcome }): Promise<ActionOutcome> => {
           const o = await outcome;
-          if (habilitated.has(d) || o.failure !== undefined || o.response?.decision === undefined) return o;
+          if (habilitated.has(d) && d.authorityCurrent?.()!==false || o.failure !== undefined || o.response?.decision === undefined) return o;
           if (!this.#reportedUnhabilitated.has(d.label)) {
             this.#reportedUnhabilitated.add(d.label);
             this.#o.report(`avertissement : crochet ${d.label} : non habilité à répondre aux demandes (permissions.decisionHooks) ; sa décision est ignorée.`);

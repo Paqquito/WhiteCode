@@ -6,6 +6,7 @@ import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { comparablePath, type PlatformName } from "../platform/system";
 import { processExists } from "../platform/process";
+import { readPrivateText } from "../shared/private-text";
 
 export interface Presence {
   readonly sessionId: string;
@@ -49,10 +50,12 @@ export class PresenceRegistry {
       const path = join(this.#o.dir, name);
       let p: Presence;
       try {
-        p = JSON.parse(readFileSync(path, "utf8")) as Presence;
+        p = JSON.parse(readPrivateText(path, 4096)) as Presence;
+        if (typeof p.sessionId !== "string" || typeof p.cwd !== "string" || !Number.isInteger(p.pid) || p.pid <= 0 || typeof p.heartbeat !== "string" || !Number.isFinite(Date.parse(p.heartbeat))) continue;
       } catch {
         continue; // being written, or not ours
       }
+      if (!processExists(p.pid)) { rmSync(path, { force: true }); continue; }
       if (this.#now().getTime() - Date.parse(p.heartbeat) > this.#o.timeoutMs) {
         // A stalled but living process remains evidence for session-rescue; only dead presences are pruned.
         if(!processExists(p.pid))rmSync(path, { force: true });

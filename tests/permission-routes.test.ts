@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { cli, loadIdentity, workspace } from "./helpers/env";
 import { Host, type Message } from "./helpers/control";
@@ -17,17 +17,20 @@ const finish = async (host: Host) => { host.feed.end(); return host.finish(); };
 test("TECH — cancellation during before_tool cannot open a late dialogue or persist its approval", async () => {
   const ws = workspace();
   const started = join(ws.root, "hook-started");
-  const ended = join(ws.root, "hook-ended");
-  const command = hook(ws, "slow", `const fs = await import("node:fs"); fs.writeFileSync(${JSON.stringify(started)}, "started"); await Bun.sleep(500); fs.writeFileSync(${JSON.stringify(ended)}, "ended");`);
+  const released = join(ws.root, "hook-released");
+  const command = hook(ws, "slow", `const fs = await import("node:fs"); fs.writeFileSync(${JSON.stringify(started)}, "started"); while (!fs.existsSync(${JSON.stringify(released)})) await Bun.sleep(5);`);
   const target = join(ws.project, "cancelled-hook.txt");
   const provider = new ScriptedProvider([{ toolCalls: [write(target)] }, { toolCalls: [write(target)] }, { text: "Finished." }]);
-  const run = interactive([], ws, { provider, env: productEnv(ws), userConfig: { hooks: { before_tool: [{ match: "write_file", actions: [{ type: "command", command }] }] } } });
+  const controller = new AbortController();
+  const run = interactive([], ws, { signal: controller.signal, provider, env: productEnv(ws), userConfig: { hooks: { before_tool: [{ match: "write_file", actions: [{ type: "command", command }] }] } } });
+  try {
   await run.idle(); run.type("Write.\r");
   const limit = Date.now() + 3000;
   while (!existsSync(started) && Date.now() < limit) await sleep(10);
   expect(existsSync(started)).toBe(true);
   run.type(KEY.ctrlC);
-  while (!existsSync(ended) && Date.now() < limit) await sleep(10);
+  writeFileSync(released, "released");
+  // The interruption marker is rendered after the cancelled hook and tool execution have joined.
   await run.waitFor((text) => run.screen().join("\n").includes("Autorisation requise") || text.includes("Interrompu"));
   const late = run.screen().join("\n").includes("Autorisation requise");
   if (late) { await sleep(370); run.type("2"); }
@@ -43,7 +46,11 @@ test("TECH — cancellation during before_tool cannot open a late dialogue or pe
   expect(late).toBe(false);
   expect(fresh).toBe(true);
   expect(existsSync(target)).toBe(false);
-});
+  } finally {
+    writeFileSync(released, "released"); controller.abort(); await run.done;
+  }
+// Two native hook processes, two turns, human key guards and joined teardown exceed five seconds on a cold Windows run.
+}, 10_000);
 
 test("TECH — a nested agent retains the no_prompt restriction of its immediate caller", async () => {
   const ws = workspace();

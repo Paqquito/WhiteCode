@@ -43,6 +43,7 @@ import { officialSettings, officialCatalog, officialName } from "../extensions/o
 import { catalogAdd, catalogList, catalogRemove, catalogUpdate, extensionAdd, extensionEnable, extensionList, extensionRemove, extensionUpdate, extensionRollback, scopeOf, type ExtensionAdminContext } from "../extensions/admin";
 import { runConnectorAdmin } from "../connectors/admin";
 import { runInstallationAdmin } from "../installation/admin";
+import { runResidentAdmin } from "../services/admin";
 import { multipleInstallations } from "../installation/runtime";
 import { configuredCompanyAccount, describeAccount } from "../auth/company-runtime";
 import { configuredNetwork } from "../config/network";
@@ -144,6 +145,7 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
   const write = (document: unknown, text: () => string) => out(json ? JSON.stringify(document) : text()); // FA-04, CA-02: only the document
   if (family.name === "connector") return runConnectorAdmin(deps, parsed, write, out, err);
   if (family.name === "installation") return runInstallationAdmin(deps, parsed, write, out, err);
+  if (family.name === "service" || family.name === "background-session" || family.name === "job") return runResidentAdmin(deps, parsed);
   if (family.name === "session-runner" || family.name === "job-runner") return runExecutorAdmin(deps, parsed);
 
   switch (`${family.name} ${operation.name}`) {

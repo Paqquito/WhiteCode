@@ -8,6 +8,7 @@ import { ruleMatches, suggestRule, type Rule } from "./rules";
 import { exactlyAllowed } from "./command-analysis";
 import { opaquePowerShell } from "./powershell-normalize";
 import { splitCommand } from "./command-split";
+import { descriptiveRule, type DescriptionVerdict } from "./descriptive";
 
 export type AskOrigin = "managed" | "explicit" | "tool_check" | "default";
 
@@ -32,6 +33,9 @@ export interface PermissionQuery {
 }
 
 export interface PermissionContext {
+  readonly descriptiveRuleVerdict?: (rule: Rule, command: string, cwd: string) => DescriptionVerdict;
+  /** A revoked installed-hook generation invalidates an approval queued before an update. */
+  readonly decisionAuthorityVersion?:readonly string[];
   readonly shellShadow?: (value: { existing: RuleKind; candidate: RuleKind }) => void;
   readonly mode: PermissionMode;
   readonly rules: readonly Rule[];
@@ -65,7 +69,9 @@ export function decide(q: PermissionQuery, ctx: PermissionContext): Decision {
 }
 function decideExisting(q: PermissionQuery, ctx: PermissionContext): Decision {
   const rules = ctx.managedRulesOnly ? ctx.rules.filter((r) => r.scope === "managed") : ctx.rules;
-  const match = (r: Rule) => ruleMatches(r, q.toolName, q.subject, ctx);
+  const applies=(r:Rule)=>descriptiveRule(r)&&r.tool===q.toolName&&q.subject.kind==="command";
+  const verdict=(r:Rule)=>q.subject.kind==="command"?ctx.descriptiveRuleVerdict?.(r,q.subject.command,ctx.cwd)??"unknown":"no";
+  const match = (r: Rule) => applies(r)?verdict(r)==="yes":ruleMatches(r, q.toolName, q.subject, ctx);
 
   // Step 1: invariants. Nothing lifts these refusals (EF-02, EF-09).
   if (ctx.policyRefusal !== undefined) return { kind: "deny", step: 1, reason: ctx.policyRefusal };
@@ -76,6 +82,10 @@ function decideExisting(q: PermissionQuery, ctx: PermissionContext): Decision {
   if (ctx.mode === "planning" && !q.flags.readOnly && q.toolName !== PLANNING_EXIT_TOOL) {
     return { kind: "deny", step: 1, reason: "Planning mode: no modification is allowed." };
   }
+
+  // A missing/uncertain restrictive classifier can never be bypassed by an ordinary allow.
+  const uncertain=rules.find(r=>applies(r)&&r.decision!=="allow"&&verdict(r)==="unknown");
+  if(uncertain)return{kind:"ask",step:uncertain.scope==="managed"?2:4,origin:uncertain.scope==="managed"?"managed":"explicit",reason:`Descriptive rule could not be classified with confidence: ${uncertain.raw}.`,suggestions:[]};
 
   const suggestions = [suggestRule(q.toolName, q.subject, ctx.platform)];
 

@@ -15,7 +15,7 @@ export function requestFingerprint(request:ModelRequest): string {
   const ids=new Map<string,number>();const id=(value:string)=>{if(!ids.has(value))ids.set(value,ids.size+1);return ids.get(value)!;};
   const native=(value:unknown):unknown=>Array.isArray(value)?value.map(native):value && typeof value==='object'?Object.fromEntries(Object.entries(value).filter(([k])=>!['id','created','timestamp','request_id','signature'].includes(k)).map(([k,v])=>[k,k==='input'?v:native(v)])):value;
   const history=request.history.map(m=>m.role==='assistant'?{...m,toolCalls:m.toolCalls.map(c=>({...c,callId:id(c.callId)})),native:{provider:m.native.provider,content:native(m.native.content)}}:m.role==='user'?{...m,parts:m.parts.map(p=>p.type==='tool_result'?{...p,callId:id(p.callId)}:p)}:m);
-  const value={model:request.model.id,system:request.system.map(b=>({text:b.text})),tools:request.tools,history,maxOutputTokens:request.maxOutputTokens,thinking:request.thinking,effort:request.effort,contextEditing:request.contextEditing};
+  const value={model:request.model.id,system:request.system.map(b=>({text:b.text})),tools:request.tools,history,maxOutputTokens:request.maxOutputTokens,thinking:request.thinking,effort:request.effort,contextEditing:request.contextEditing,...(request.serviceOptions?{serviceOptions:request.serviceOptions}:{})};
   const stable=(v:unknown):unknown=>Array.isArray(v)?v.map(stable):v && typeof v==='object'?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a < b ? -1 : a > b ? 1 : 0).map(([k,item])=>[k,stable(item)])):v;
   return createHash('sha256').update(JSON.stringify(stable(value))).digest('hex');
 }
@@ -67,6 +67,7 @@ function validEvent(value: unknown): boolean {
   const call = (v: unknown) => object(v) && typeof v.callId === "string" && typeof v.name === "string" && Object.hasOwn(v, "input");
   if (e.type === "tool_call") return call(e.call);
   if (e.type !== "message_complete" || !["end_turn","tool_use","max_tokens","refusal","pause_turn","other"].includes(String(e.stopReason))) return false;
+  if (e.serviceCostMultiplier !== undefined && (typeof e.serviceCostMultiplier !== "number" || !Number.isFinite(e.serviceCostMultiplier) || e.serviceCostMultiplier < 1 || e.serviceCostMultiplier > 100)) return false;
   const a = e.assistant as Record<string, unknown> | undefined, u = e.usage as Record<string, unknown> | undefined;
   return !!a && a.role === "assistant" && typeof a.text === "string" && Array.isArray(a.toolCalls) && a.toolCalls.every(call) && object(a.native) && typeof a.native.provider === "string" && !!u && ["inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens"].every(k => typeof u[k] === "number" && Number.isSafeInteger(u[k]) && (u[k] as number) >= 0);
 }

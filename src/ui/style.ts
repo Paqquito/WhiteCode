@@ -7,6 +7,7 @@ export type ColorDepth = "none" | "16" | "256" | "truecolor";
 export type Color = { readonly ansi: number } | { readonly rgb: readonly [number, number, number] };
 
 export interface Style {
+  readonly href?: string;
   readonly fg?: Color;
   readonly bg?: Color;
   readonly bold?: boolean;
@@ -22,7 +23,7 @@ const colorKey = (c: Color | undefined) => (c === undefined ? "" : "ansi" in c ?
 /** Stable key of a style, to compare cells. */
 export function styleKey(s: Style | undefined): string {
   if (!s) return "";
-  return `${colorKey(s.fg)}/${colorKey(s.bg)}/${s.bold ? "b" : ""}${s.dim ? "d" : ""}${s.italic ? "i" : ""}${s.underline ? "u" : ""}${s.inverse ? "v" : ""}${s.strike ? "s" : ""}`;
+  return `${colorKey(s.fg)}/${colorKey(s.bg)}/${s.bold ? "b" : ""}${s.dim ? "d" : ""}${s.italic ? "i" : ""}${s.underline ? "u" : ""}${s.inverse ? "v" : ""}${s.strike ? "s" : ""}${s.href ? "/href:"+s.href : ""}`;
 }
 
 /** The 16 standard colours, as their usual RGB values, for the nearest match. */

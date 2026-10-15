@@ -38,6 +38,8 @@ export interface ModelAction {
 export type HookAction = CommandAction | HttpAction | ModelAction;
 
 export interface HookDeclaration {
+  /** Installed-extension decision authority is tied to its exact installation generation. */
+  readonly authorityCurrent?:()=>boolean;
   readonly event: string;
   /** Raw filter, as written. */
   readonly match?: string;
@@ -95,8 +97,8 @@ export function compileWatchMatch(match?: string): ((value: string | undefined) 
   catch { return undefined; }
 }
 
-export function fingerprintOf(event: string, declaration: unknown): string {
-  return fingerprint({ event, declaration });
+export function fingerprintOf(event: string, declaration: unknown, installation?:string): string {
+  return fingerprint({ event, declaration,...(installation?{installation}:{}) });
 }
 
 /** An `http` action (SPEC-HOK-004 § 5.1): `https`, or `http` to the local host only; checked again before each request. */
@@ -124,14 +126,14 @@ function httpAction(a: Record<string, unknown>, label: string, warnings: string[
 
 /** Steps 1 and 2: declarations of each scope, validated, then filtered by the controls of SPEC-HOK-012. */
 export function buildSnapshot(
-  byScope: ReadonlyArray<{ readonly origin: string; readonly value: unknown; readonly file?: string; /** Shown instead of the scope in labels (an extension). */ readonly labelScope?: string }>,
+  byScope: ReadonlyArray<{ readonly origin: string; readonly value: unknown; readonly file?: string; readonly installation?:string; readonly authorityCurrent?:()=>boolean; /** Shown instead of the scope in labels (an extension). */ readonly labelScope?: string }>,
   controls: SnapshotControls,
 ): HookSnapshot {
   const declarations: HookDeclaration[] = [];
   const ignored: Array<{ label: string; reason: string }> = [];
   const warnings: string[] = [];
   const sources = [...byScope].filter((s) => SCOPE_ORDER.includes(s.origin as HookScope)).sort((a, b) => SCOPE_ORDER.indexOf(a.origin as HookScope) - SCOPE_ORDER.indexOf(b.origin as HookScope));
-  for (const { origin, value, file, labelScope } of sources) {
+  for (const { origin, value, file, labelScope, installation,authorityCurrent } of sources) {
     const scope = origin as HookScope;
     if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
     const seen = new Set<string>();
@@ -201,10 +203,10 @@ export function buildSnapshot(
           return;
         }
         // EF-02: exact duplicates are merged within one scope only.
-        const key = fingerprintOf(event, raw);
+        const key = fingerprintOf(event, raw, installation);
         if (seen.has(key)) return;
         seen.add(key);
-        declarations.push({ event, match, matches, actions, id, mandatory, async: d["async"] === true ? true : undefined, scope, file: file ?? scope, fingerprint: fingerprintOf(event, raw), label });
+        declarations.push({ event, match, matches, actions, id, mandatory, async: d["async"] === true ? true : undefined, scope, file: file ?? scope, fingerprint: fingerprintOf(event, raw,installation), label, ...(authorityCurrent?{authorityCurrent}:{}) });
       });
     }
   }

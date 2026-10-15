@@ -4,6 +4,7 @@
 // Only appends, a new segment after a compaction, and the micro-compaction rewrite reserved to non append-only models.
 
 import type { ContentPart, HistoryMessage, SystemBlock, ToolDefinition, ToolResultPart } from "../providers/types";
+import { randomUUID } from "node:crypto";
 
 export class Conversation {
   #system: readonly SystemBlock[];
@@ -11,6 +12,18 @@ export class Conversation {
   readonly #messages: HistoryMessage[] = [];
   #segment = 0;
   #toolsEnabled?: boolean;
+  #cacheReset = false;
+  get intentionalCacheReset(): boolean { return this.#cacheReset; }
+  /** Implements: SPEC-CMD-084. Salt precedes every cached block; subsequent requests keep this epoch. */
+  resetCache(): void {
+    const epoch = randomUUID();
+    this.#system = [{ text: `Cache epoch: ${epoch}. This identifier has no task meaning.` }, ...this.#system.filter(b => !b.text.startsWith("Cache epoch: "))];
+    // Some protocols cache tools before system messages, so both prefixes must change.
+    this.#tools = this.#tools.map(tool => ({ ...tool, description: tool.description.replace(/\nCache epoch: [a-f0-9-]+\.$/, "") + `\nCache epoch: ${epoch}.` }));
+    this.#cacheReset = true;
+    this.#segment++;
+  }
+  cacheRequestCompleted(): void { this.#cacheReset = false; }
 
   constructor(system: readonly SystemBlock[], tools: readonly ToolDefinition[]) {
     this.#system = system;

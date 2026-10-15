@@ -32,6 +32,7 @@ export function authDialog(terminal: Terminal, title: string, secret: boolean, s
           continue;
         }
         if (event.kind !== "key") continue;
+        if(event.phase==="release")continue;
         if (event.name === "escape" || event.ctrl && ["c", "d"].includes(event.name)) return finish(undefined);
         if (!secret) {
           if (Date.now() < armedAt || event.ctrl || event.alt) continue;

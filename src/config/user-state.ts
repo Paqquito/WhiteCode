@@ -11,6 +11,10 @@ import { tryFileLock } from "../platform/file-lock";
 import { currentPlatform, type PlatformName } from "../platform/system";
 
 export interface UserState {
+  readonly deepLinkRepositories?:Readonly<Record<string,string>>;
+  readonly deepLinkTerminal?:string;
+  readonly voiceConsents?:readonly string[];
+  readonly ideWelcomes?: readonly string[];
   readonly onboardingStep?: import("../interactive/onboarding").WelcomeStep;
   readonly lastSurveyAt?: number;
   readonly preflightCompleted?: boolean;
@@ -35,7 +39,7 @@ function load(path: string): UserState {
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw error; }
   let value: unknown;
   try { value = JSON.parse(readFileSync(path, "utf8")); } catch (error) { if (error instanceof SyntaxError) throw new CorruptState(); throw error; }
-  if (!object(value) || ["trustedProjects", "restrictedProjects", "migrations", "extensionRecommendationsDismissed"].some((key) => value[key] !== undefined && (!Array.isArray(value[key]) || value[key].some((p) => typeof p !== "string"))) ||
+  if (!object(value) || ["voiceConsents", "ideWelcomes", "trustedProjects", "restrictedProjects", "migrations", "extensionRecommendationsDismissed"].some((key) => value[key] !== undefined && (!Array.isArray(value[key]) || value[key].some((p) => typeof p !== "string"))) ||
       (value["preflightCompleted"] !== undefined && typeof value["preflightCompleted"] !== "boolean") ||
       (value["onboardingStep"] !== undefined && !["theme", "connection", "safety", "terminal", "trust", "done"].includes(String(value["onboardingStep"]))) ||
       (value["lastSurveyAt"] !== undefined && (!Number.isSafeInteger(value["lastSurveyAt"]) || Number(value["lastSurveyAt"]) < 0)) ||
@@ -46,6 +50,8 @@ function load(path: string): UserState {
       (value["modelNotices"] !== undefined && (!object(value["modelNotices"]) || Object.values(value["modelNotices"]).some((p) => typeof p !== "string"))) ||
       (value["keyConfirmations"] !== undefined && (!object(value["keyConfirmations"]) || Object.entries(value["keyConfirmations"]).some(([key, answer]) => !/^[a-f0-9]{64}$/.test(key) || typeof answer !== "boolean"))) ||
       (value["projects"] !== undefined && (!object(value["projects"]) || Object.values(value["projects"]).some((p) => !object(p))))) throw new CorruptState();
+  if(value["deepLinkRepositories"]!==undefined&&(!object(value["deepLinkRepositories"])||Object.keys(value["deepLinkRepositories"]).length>1000||Object.entries(value["deepLinkRepositories"]).some(([key,path])=>key.length>512||typeof path!=="string"||path.length>4096)))throw new CorruptState();
+  if(value["deepLinkTerminal"]!==undefined&&(typeof value["deepLinkTerminal"]!=="string"||value["deepLinkTerminal"].length>4096))throw new CorruptState();
   return value as UserState;
 }
 
@@ -90,8 +96,11 @@ export async function recoverUserState(path: string, warn: (message: string) => 
 
 function merge(state: UserState, patch: Partial<UserState>): UserState {
   const next = { ...state, ...patch };
+  if (patch.ideWelcomes) next.ideWelcomes = [...new Set([...(state.ideWelcomes ?? []), ...patch.ideWelcomes])];
+  if(patch.voiceConsents)next.voiceConsents=[...new Set([...(state.voiceConsents??[]),...patch.voiceConsents])];
   for (const key of ["trustedProjects", "restrictedProjects"] as const) if (patch[key]) next[key] = [...new Set([...(state[key] ?? []), ...patch[key]])];
   if (patch.extensionRecommendationsDismissed) next.extensionRecommendationsDismissed = [...new Set([...(state.extensionRecommendationsDismissed ?? []), ...patch.extensionRecommendationsDismissed])];
+  if(patch.deepLinkRepositories)next.deepLinkRepositories=Object.fromEntries(Object.entries({...state.deepLinkRepositories,...patch.deepLinkRepositories}).slice(-1000));
   if (patch.modelNotices) next.modelNotices = { ...state.modelNotices, ...patch.modelNotices };
   if (patch.keyConfirmations) next.keyConfirmations = { ...state.keyConfirmations, ...patch.keyConfirmations };
   if (patch.projects) next.projects = mergeObjects(state.projects ?? {}, patch.projects);

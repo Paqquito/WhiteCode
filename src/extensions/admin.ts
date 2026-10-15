@@ -16,6 +16,8 @@ import { engineProblem, installedVersions, listInstalled, uninstall } from "./st
 import { installExtension, type InstallInputs } from "./install";
 import { blockedReason, flagOf } from "./policy";
 import { compareVersions } from "../platform/semver";
+import {ensureBundled} from "./bundled";
+import {invalidateExtensionAuthority} from "./store";
 
 export type WritableScope = "user" | "project" | "local";
 
@@ -60,6 +62,7 @@ export function catalogRefused(s: Settings, name: string, source: string): strin
 
 /** `catalog add <source> [--scope] [--lean-context <paths>] [--name <name>]` (§ 5.3 steps 1 to 5). */
 export function catalogAdd(ctx: ExtensionAdminContext, input: string, scope: WritableScope, lean: readonly string[] | undefined, rename: string | undefined): number {
+  if(rename==="bundled"){ctx.err("Nom réservé aux extensions intégrées.");return USAGE;}
   if (rename && (!/^[a-z][a-z0-9-]{0,63}$/.test(rename) || rename === ctx.reservedCatalogName)) { ctx.err(rename === ctx.reservedCatalogName ? "Nom réservé au catalogue officiel." : "Nom de catalogue invalide."); return USAGE; }
   const source = parseSource(input, ctx.cwd);
   const temp = join(catalogsDir(ctx.configDir), `.tmp-${randomUUID()}`);
@@ -72,6 +75,7 @@ export function catalogAdd(ctx: ExtensionAdminContext, input: string, scope: Wri
   };
   if (read.error || !read.catalog) return discard(read.error ?? "Aucun catalogue valide à cette adresse."); // ERR-01, ERR-04
   const name = rename ?? read.catalog.name;
+  if(name==="bundled")return discard("Nom réservé aux extensions intégrées.",USAGE);
   if (name === ctx.reservedCatalogName) return discard("Nom réservé au catalogue officiel.", USAGE);
   const stored = source.kind === "folder" ? source.path : source.kind === "git" ? source.url : source.value;
   const refused = catalogRefused(ctx.settings, name, stored);
@@ -166,6 +170,7 @@ function locate(ctx: ExtensionAdminContext, ref: string): { name: string; catalo
 
 /** `extension add <name>@<catalogue> [--scope] [--force]` (§ 5.3): with its dependencies (SPEC-EXT-007), activated in the scope. */
 export async function extensionAdd(ctx: ExtensionAdminContext, ref: string, scope: WritableScope, force: boolean): Promise<number> {
+  if(parseRef(ref).catalog==="bundled"){ctx.err("Les extensions intégrées sont livrées avec le produit ; utilisez extension enable.");return FAILED;}
   const found = locate(ctx, ref);
   if (typeof found === "string") {
     ctx.err(found);
@@ -212,6 +217,7 @@ export async function extensionUpdate(ctx: ExtensionAdminContext, ref: string | 
       return FAILED;
     }
     const { name, catalog } = parseRef(k);
+    if(catalog==="bundled"){ctx.out(`${k} est mise à jour avec le produit.`);continue;}
     if(ctx.settings.get<Record<string,string>>("extensions.pinnedVersions")[k]){ctx.out(`${k} est épinglée ; mise à jour automatique ignorée.`);continue;}
     const registration = ctx.settings.get<Record<string, CatalogRegistration>>("extensions.catalogs")[catalog!];
     const refreshed = registration ? refreshCatalog(ctx.configDir, catalog!, registration, ctx.cwd, ctx.runner) : { error: "catalogue non configuré" };
@@ -249,10 +255,11 @@ export async function extensionUpdate(ctx: ExtensionAdminContext, ref: string | 
   return code;
 }
 /** Implements: SPEC-EXT-006 CA-03. Retained immutable versions are selected by a checked user pin. */
-export function extensionRollback(ctx:ExtensionAdminContext,ref:string):number{const key=installedKey(ctx,ref);if(typeof key!=="string"){ctx.err(key.error);return FAILED;}const managed=ctx.settings.valuesByScope("extensions.pinnedVersions").find(value=>value.origin==="managed")?.value as Record<string,string>|undefined;if(managed?.[key]){ctx.err("Version imposée par votre organisation ; retour arrière interdit.");return FAILED;}const{name,catalog}=parseRef(key),versions=installedVersions(ctx.configDir,catalog!,name),current=ctx.settings.get<Record<string,string>>("extensions.pinnedVersions")[key]??versions[0],previous=versions[versions.indexOf(current!)+1];if(!previous){ctx.err("Aucune version précédente conservée.");return FAILED;}const extension=describeExtension(join(ctx.configDir,"extensions",catalog!,name,previous),false),problem=blockedReason(ctx.settings,name,catalog!)??engineProblem(extension,ctx.product.version,ctx.product.name);if(problem||flagOf(ctx.settings,ctx.configDir,name,catalog!,previous)?.severity==="critical"){ctx.err(problem??"Ancienne version signalée critique.");return FAILED;}setValueInSettingsFile(ctx.files.user,["extensions","pinnedVersions",key],previous,ctx.platform);ctx.out(`Extension ${key} : version ${previous} réactivée au prochain chargement.`);return OK;}
+export function extensionRollback(ctx:ExtensionAdminContext,ref:string):number{const key=installedKey(ctx,ref);if(typeof key!=="string"){ctx.err(key.error);return FAILED;}const managed=ctx.settings.valuesByScope("extensions.pinnedVersions").find(value=>value.origin==="managed")?.value as Record<string,string>|undefined;if(managed?.[key]){ctx.err("Version imposée par votre organisation ; retour arrière interdit.");return FAILED;}const{name,catalog}=parseRef(key),versions=installedVersions(ctx.configDir,catalog!,name),current=ctx.settings.get<Record<string,string>>("extensions.pinnedVersions")[key]??versions[0],previous=versions[versions.indexOf(current!)+1];if(!previous){ctx.err("Aucune version précédente conservée.");return FAILED;}const extension=describeExtension(join(ctx.configDir,"extensions",catalog!,name,previous),false),problem=blockedReason(ctx.settings,name,catalog!)??engineProblem(extension,ctx.product.version,ctx.product.name);if(problem||flagOf(ctx.settings,ctx.configDir,name,catalog!,previous)?.severity==="critical"){ctx.err(problem??"Ancienne version signalée critique.");return FAILED;}invalidateExtensionAuthority(ctx.configDir,catalog!,name);setValueInSettingsFile(ctx.files.user,["extensions","pinnedVersions",key],previous,ctx.platform);ctx.out(`Extension ${key} : version ${previous} réactivée au prochain chargement.`);return OK;}
 
 /** The installed extension a reference designates: `<name>@<catalogue>`, or a name installed from one catalogue only. */
 function installedKey(ctx: ExtensionAdminContext, ref: string): string | { error: string } {
+  ensureBundled(ctx.configDir);
   const { name, catalog } = parseRef(ref);
   const matches = listInstalled(ctx.configDir).filter((i) => i.name === name && (!catalog || i.catalog === catalog));
   if (matches.length === 0) return { error: `Extension non installée : ${ref}.` };
@@ -304,6 +311,7 @@ export async function extensionRemove(ctx: ExtensionAdminContext, ref: string, s
     ctx.err(key.error);
     return FAILED;
   }
+  if(key.endsWith("@bundled")){ctx.err("Les extensions intégrées peuvent seulement être désactivées.");return FAILED;}
   const byScope = ctx.settings.valuesByScope("extensions.enabled").filter((v) => (v.value as Record<string, unknown>)[key] !== undefined);
   if (byScope.some((v) => v.origin === "managed")) {
     ctx.err(`L'activation de ${key} est imposée par votre organisation : elle ne peut pas être désinstallée.`);
@@ -329,6 +337,7 @@ export async function extensionRemove(ctx: ExtensionAdminContext, ref: string, s
 
 /** `extension list [--installable]`: installed versions and activation in this project; or what the catalogues offer. */
 export function extensionList(ctx: ExtensionAdminContext, installable: boolean): number {
+  ensureBundled(ctx.configDir);
   const enabled = ctx.settings.get<Record<string, unknown>>("extensions.enabled");
   const installed = listInstalled(ctx.configDir);
   if (installable) {
@@ -339,7 +348,7 @@ export function extensionList(ctx: ExtensionAdminContext, installable: boolean):
     ctx.write(docs, () => (docs.length === 0 ? "Aucune extension installable." : docs.map((d) => `${d.name}@${d.catalog}${d.version ? ` ${d.version}` : ""}${d.description ? ` — ${d.description}` : ""}`).join("\n")));
     return OK;
   }
-  const docs = installed.map((i) => ({ name: i.name, catalog: i.catalog, versions: i.versions, active: enabled[`${i.name}@${i.catalog}`] === true }));
-  ctx.write(docs, () => (docs.length === 0 ? "Aucune extension installée." : docs.map((d) => `${d.name}@${d.catalog} ${d.versions[0]}${d.versions.length > 1 ? ` (aussi ${d.versions.slice(1).join(", ")})` : ""} — ${d.active ? "active" : "inactive"}`).join("\n")));
+  const docs = installed.map((i) => ({ name: i.name, catalog: i.catalog, versions: i.versions, active: enabled[`${i.name}@${i.catalog}`] === true, ...(i.catalog==="bundled"?{bundled:true}:{}) }));
+  ctx.write(docs, () => (docs.length === 0 ? "Aucune extension installée." : docs.map((d) => `${d.name}@${d.catalog}${d.bundled?" (intégrée)":""} ${d.versions[0]}${d.versions.length > 1 ? ` (aussi ${d.versions.slice(1).join(", ")})` : ""} — ${d.active ? "active" : "inactive"}`).join("\n")));
   return OK;
 }
