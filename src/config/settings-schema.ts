@@ -169,6 +169,9 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "engine.unknownModelContextWindow", schema: int(1), default: 128_000, scopes: [G], owner: "SPEC-MOT-010" },
 
   // Context
+  { key: "memory.consolidationEnabled", schema: bool(), default: true, scopes: [U], owner: "SPEC-MOT-039" },
+  { key: "memory.consolidation.minHours", schema: int(0, 8760), default: 48, scopes: [U], owner: "SPEC-MOT-039" },
+  { key: "memory.consolidation.minSessions", schema: int(1, 10000), default: 4, scopes: [U], owner: "SPEC-MOT-039" },
   { key: "context.systemInstructionsBudget", schema: int(2000), default: 20_000, scopes: [U, G], owner: "SPEC-MOT-003" },
   { key: "context.allowCustomSystemInstructions", schema: bool(), default: true, scopes: [G], owner: "SPEC-MOT-004" },
   { key: "context.instructions.excludes", schema: strList(), default: [], scopes: [U, P, L, G], owner: "SPEC-MOT-005", merge: "concat" },
@@ -194,6 +197,10 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "context.autoCompact.triggerRatio", schema: num(0, 1), default: 0.9, scopes: [U], owner: "SPEC-MOT-012" },
   { key: "context.autoCompact.maxFailures", schema: int(1), default: 3, scopes: [U], owner: "SPEC-MOT-012" },
   { key: "context.microCompact.enabled", schema: bool(), default: true, scopes: [U], owner: "SPEC-MOT-013" },
+  { key: "context.folding.enabled", schema: bool(), default: false, scopes: [U], owner: "SPEC-MOT-020" },
+  { key: "context.folding.prepareRatio", schema: num(0, 1), default: 0.6, scopes: [U], owner: "SPEC-MOT-020" },
+  { key: "context.folding.commitRatio", schema: num(0, 1), default: 0.85, scopes: [U], owner: "SPEC-MOT-020" },
+  { key: "context.folding.maxExpandTokens", schema: int(100, 16000), default: 4000, scopes: [U], owner: "SPEC-OUT-044" },
   { key: "context.microCompact.triggerRatio", schema: num(0, 1), default: 0.6, scopes: [U], owner: "SPEC-MOT-013" },
   { key: "context.microCompact.keepRecent", schema: int(0), default: 8, scopes: [U], owner: "SPEC-MOT-013" },
   { key: "context.microCompact.idleMinutes", schema: int(1), default: 60, scopes: [U], owner: "SPEC-MOT-013" },

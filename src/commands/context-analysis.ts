@@ -2,10 +2,11 @@
 // Supports: SPEC-CMD-014, SPEC-MOT-010, E-157.
 import { estimatePart, type ContextMeter } from "../engine/context-meter";
 import type { Conversation } from "../engine/conversation";
+import type { HistoryMessage } from "../providers/types";
 
-export function analyseContext(conversation: Conversation, meter: ContextMeter, autoCompact: boolean) {
-  const local = meter.breakdown(conversation.system, conversation.tools, conversation.messages);
-  const occupation = meter.occupation(conversation.system, conversation.tools, conversation.messages, conversation.segment);
+export function analyseContext(conversation: Conversation, meter: ContextMeter, autoCompact: boolean, history: readonly HistoryMessage[] = conversation.messages) {
+  const local = meter.breakdown(conversation.system, conversation.tools, history);
+  const occupation = meter.occupation(conversation.system, conversation.tools, history, conversation.segment);
   const localTotal = Object.values(local).reduce((a, b) => a + b, 0);
   // Provider totals are authoritative; local categories are a proportional estimate, with rounding conserved.
   let allocated = 0;
@@ -15,7 +16,7 @@ export function analyseContext(conversation: Conversation, meter: ContextMeter, 
     return { name, tokens: n, ratio: n / occupation.effectiveWindow };
   });
   const names = new Map<string, string>(), byTool = new Map<string, number>();
-  for (const m of conversation.messages) {
+  for (const m of history) {
     if (m.role === "assistant") for (const call of m.toolCalls) names.set(call.callId, call.name);
     if (m.role !== "user") continue;
     for (const part of m.parts) if (part.type === "tool_result") {

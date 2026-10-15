@@ -28,7 +28,7 @@ test("TECH — cancelling either coalesced caller preserves the other caller and
   }
 });
 test("TECH — closing an active helper stops and joins its process without retaining a value", async () => {
-  const ws = workspace(), pidFile = join(ws.root, "pid"), file = ws.write("helper.ts", `const fs = await import("node:fs"); fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`);
+  const ws = workspace(), pidFile = join(ws.root, "pid"), file = ws.write("helper.ts", `const fs = await import("node:fs"); const path = ${JSON.stringify(pidFile)}; fs.writeFileSync(path + ".ready", String(process.pid)); fs.renameSync(path + ".ready", path); setInterval(() => {}, 1000);`);
   const helper = new CredentialHelper({ command: `"${BUN}" "${file.replace(/\\/g, "/")}"`, cwd: ws.project, env: productEnv(ws), ttlMs: () => 100, remember: () => { throw new Error("Cancelled value retained"); }, diagnostic: () => {} });
   const outcome = helper.get(new AbortController().signal).then(() => "value", () => "stopped");
   try {

@@ -38,6 +38,7 @@ export class ContextManager {
     readonly settings: ContextSettings,
     private readonly compaction: Omit<CompactionDeps, "meter">,
     private readonly clock: () => number = Date.now,
+    private readonly folding?: { readonly commitRatio: number; commit(): boolean },
   ) {}
 
   /** Service-side clearing is used when the model declares it and the user did not disable it (EF-01, FA-01, CA-01). */
@@ -106,6 +107,8 @@ export class ContextManager {
     const conv = this.compaction.conversation;
     const emit = this.compaction.emit;
     const measure = () => this.meter.occupation(conv.system, conv.tools, this.compaction.projectedHistory?.() ?? conv.messages, conv.segment);
+
+    if (this.folding && measure().ratio >= this.folding.commitRatio && this.folding.commit()) this.meter.invalidate();
 
     // SPEC-MOT-013: by threshold, or after an idle period since the last response (main loop only, EF-04).
     if (this.localMicroCompaction) {

@@ -12,10 +12,11 @@ import verify from "../../prompts/skills/verify.md" with { type: "text" };
 import loop from "../../prompts/skills/loop.md" with { type: "text" };
 import shortcutHelp from "../../prompts/skills/shortcut-help.md" with { type: "text" };
 import apiGuide from "../../prompts/skills/ai-api-guide.md" with { type: "text" };
+import memoryConsolidation from "../../prompts/skills/memory-consolidation.md" with { type: "text" };
 import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 import { splitHeader, type Invocation, type Skill } from "./registry";
 
-const SOURCES = [batch, configGuide, debug, promoteMemory, simplify, skillFromSession, verify, shortcutHelp, apiGuide, ...(buildFlag("scheduled_triggers") ? [loop] : [])];
+const SOURCES = [batch, configGuide, debug, promoteMemory, simplify, skillFromSession, verify, shortcutHelp, apiGuide, ...(buildFlag("scheduled_triggers") ? [loop] : []), ...(buildFlag("memory_consolidation") ? [memoryConsolidation] : [])];
 
 /** The skills of the product, scope `product`: a skill of the same name of any other scope replaces it. */
 export function builtinSkills(): Skill[] {

@@ -4,6 +4,8 @@ export const BUILD_PROFILES = ["public", "internal", "development", "test"] as c
 export type BuildProfile = (typeof BUILD_PROFILES)[number];
 const option = (value: boolean, description: string, specs: string[], absentMarkers: string[] = []) => ({ description, specs, implemented: value, values: { public: value, internal: value, development: value, test: value }, absentMarkers });
 export const BUILD_OPTIONS = {
+  memory_consolidation: option(true, "Consolidation de mémoire sous verrou, copie préalable et tâche visible.", ["SPEC-MOT-039", "SPEC-AGT-022", "SPEC-EXT-035"]),
+  context_folding: option(true, "Préparation et repli de tours anciens avec inspection bornée.", ["SPEC-MOT-020", "SPEC-OUT-044"]),
   telemetry_memory_metrics: option(true, "Comptages de mémoire sans nom ni contenu, soumis au refus de télémétrie.", ["SPEC-OBS-006"]),
   ui_merch: { ...option(true, "Lien de boutique ouvert uniquement à la demande explicite.", ["SPEC-CMD-043"]), values: { public: false, internal: true, development: false, test: true } },
   api_background_retry: option(true, "Attente bornée de capacité en exécution automatisée explicite.", ["SPEC-API-004"]),
