@@ -4,6 +4,15 @@ export const BUILD_PROFILES = ["public", "internal", "development", "test"] as c
 export type BuildProfile = (typeof BUILD_PROFILES)[number];
 const option = (value: boolean, description: string, specs: string[], absentMarkers: string[] = []) => ({ description, specs, implemented: value, values: { public: value, internal: value, development: value, test: value }, absentMarkers });
 export const BUILD_OPTIONS = {
+  ide_bridge: option(true,"Liaison locale authentifiée à un IDE compatible.",["SPEC-INT-001","SPEC-MCP-023"]),
+  connector_websocket: option(true,"Transport WebSocket avec battement de vie.",["SPEC-MCP-004"]),
+  inbound_channels: option(true,"Canaux entrants déclarés et autorisés.",["SPEC-MCP-013"]),
+  script_mode: option(true,"Langage JSONC borné avec permissions par appel.",["SPEC-OUT-011"]),
+  remote_sessions: option(true,"Client de création et de suivi des sessions distantes.",["SPEC-MOD-014"]),
+  extension_maintenance: option(true,"Maintenance asynchrone, versions conservées et trousseau des options.",["SPEC-EXT-006","SPEC-EXT-015"]),
+  skill_filler_text: option(true,"Remplissage local du contexte sur demande.",["SPEC-EXT-025"]),
+  skill_session_rescue:{...option(true,"Inventaire local des sessions présumées figées.",["SPEC-EXT-030"],["État des autres sessions locales"]),values:{public:false,internal:true,development:true,test:true}},
+  ui_companion:{...option(true,"Compagnon décoratif local, absent de la distribution professionnelle standard.",["SPEC-IHM-032","SPEC-CMD-012"],["Compagnon éclos","companion-v1:"]),values:{public:false,internal:true,development:true,test:true}},
   company_account: option(true, "Compte de société indépendant des clés de modèles.", ["SPEC-API-028", "SPEC-API-023", "SPEC-API-012"]),
   settings_sync: option(true, "Synchronisation explicite de préférences sans secrets.", ["SPEC-CFG-006"]),
   organization_metrics: option(true, "Agrégats d’organisation soumis aux refus locaux et distants.", ["SPEC-OBS-003", "SPEC-API-025"]),

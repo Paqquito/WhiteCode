@@ -9,7 +9,8 @@ import { loadConfiguration } from "../config/load";
 import { readUserState, updateUserState } from "../config/trust";
 import { writeAtomic } from "../tools/text-file";
 import { tryFileLock } from "../platform/file-lock";
-import { configuredNetwork } from "../config/network";
+import { configuredNetwork, configuredNetworkSettings } from "../config/network";
+import { connectNetworkWebSocket } from "../platform/socket-network";
 import { detectPosixShell, detectPowerShell } from "../tools/shell-runtime";
 import { activeInstalled } from "../extensions/active";
 import { loadExtensions } from "../extensions/load";
@@ -101,7 +102,7 @@ export async function runConnectorAdmin(deps: AdminDependencies, parsed: ParsedS
     const variables: Record<string, string | undefined> = { ...environment, PROJECT_ROOT: locations.projectRoot };
     for (const match of JSON.stringify(selected).matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}/g)) variables[match[1]!] ??= deps.env.public(match[1]!);
     const manager = new ConnectorManager({ connectors: [selected], projectRoot: locations.projectRoot, platform: deps.system.platform, environment: declared => ({ ...environment, ...declared }), variables, connectTimeoutMs: settings.get("mcp.connectTimeout"), toolTimeoutMs: settings.get("mcp.toolTimeout"), maxParallel: 1, maxReconnects: 0, descriptionMax: settings.get("mcp.toolDescriptionMax"), outputInlineLimit: settings.get("mcp.outputInlineLimit"), clientInfo: { name: deps.identity.get("PRODUCT_SLUG"), version: deps.identity.version }, estimateTokens: text => Math.ceil(text.length / 4), store: () => { throw new Error("Résultats non disponibles pendant la validation."); }, report: err, changed: () => {}, fetch: network,
-      headerShell: deps.system.platform === "windows" && ps ? { path: ps.path, kind: "powershell" } : posix ? { path: posix.path, kind: "posix" } : undefined, headersTtlMs: settings.get("mcp.headersCommandTtl"), headersTimeoutMs: settings.get("mcp.headersCommandTimeout"), disabledConnectors: projectState?.disabledConnectors,
+      wsConnect:(url,headers,handlers)=>connectNetworkWebSocket(url,headers,handlers,configuredNetworkSettings(deps.env)),wsPingIntervalMs:settings.get("mcp.wsPingInterval"),headerShell: deps.system.platform === "windows" && ps ? { path: ps.path, kind: "powershell" } : posix ? { path: posix.path, kind: "posix" } : undefined, headersTtlMs: settings.get("mcp.headersCommandTtl"), headersTimeoutMs: settings.get("mcp.headersCommandTimeout"), disabledConnectors: projectState?.disabledConnectors,
       oauth: (d, url) => { const missing = new Set<string>(), secret = d.oauth?.clientSecret ? expand(d.oauth.clientSecret, variables, missing) : undefined; if (missing.size) throw new Error("Variable OAuth non définie."); return new ConnectorOAuth({ name: d.name, url, configuration: { ...d.oauth, ...(secret ? { clientSecret: secret } : {}) }, configDir: locations.configDir, service: deps.identity.get("KEYCHAIN_SERVICE"), vault: deps.credentialVault ?? nativeCredentialVault({ environment }), fetch: network, timeoutMs: settings.get("mcp.authTimeout") }); },
     });
     try { manager.start(); await manager.waitAll(Math.min(selected.timeoutMs ?? settings.get<number>("mcp.connectTimeout"), 60000) + 500, deps.signal); const status = manager.status()[0]!;

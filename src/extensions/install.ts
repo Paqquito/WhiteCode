@@ -7,8 +7,11 @@ import type { Catalog, CatalogEntry, GitRunner } from "./catalog";
 import { describePlan, discardPlan, planInstall, type PlanStep } from "./dependencies";
 import { blockedReason, flagOf } from "./policy";
 import { commitInstall, engineProblem, fetchExtension } from "./store";
+import { existsSync } from "node:fs";
+import { installedDir } from "./store";
 
 export interface InstallInputs {
+  readonly preserveInstalled?: boolean;
   readonly configDir: string;
   readonly settings: Settings;
   readonly runner: GitRunner;
@@ -28,7 +31,7 @@ export function activeKeys(settings: Settings): Set<string> {
  * Steps 1 to 5. `confirm` receives the summary (EF-01: components, executable code, plan) and answers; `false` leaves
  * nothing behind (FA-01).
  */
-export async function installExtension(inputs: InstallInputs, catalog: Catalog, entry: CatalogEntry, confirm: (summary: readonly string[]) => Promise<boolean>): Promise<InstallOutcome> {
+export async function installExtension(inputs: InstallInputs, catalog: Catalog, entry: CatalogEntry, confirm: (summary: readonly string[],risk:{readonly executable:boolean}) => Promise<boolean>): Promise<InstallOutcome> {
   const key = `${entry.name}@${catalog.name}`;
   const blocked = blockedReason(inputs.settings, entry.name, catalog.name);
   if (blocked) return { ok: false, error: blocked }; // ERR-02
@@ -45,6 +48,11 @@ export async function installExtension(inputs: InstallInputs, catalog: Catalog, 
     return { ok: false, error: planError! };
   }
   const c = fetched.report.components;
+  if(inputs.preserveInstalled){
+    const incompatible=plan.steps.find(step=>step.fetched&&engineProblem(step.fetched.extension,inputs.product.version,inputs.product.name));
+    const overlap=plan.steps.find(step=>step.fetched&&existsSync(installedDir(inputs.configDir,step.catalog,step.fetched.extension.name,step.version)));
+    if(incompatible||overlap){discardPlan(plan);return{ok:false,error:incompatible?"Mise à jour incompatible ; ancienne version conservée.":"Une version du plan est déjà installée ; mise à jour manuelle nécessaire."};}
+  }
   const executable = plan.steps.flatMap((s) => (s.fetched?.report.problems ?? []).filter((p) => p.level === "info" && p.message.startsWith("Code exécutable")).map((p) => `  ${s.key} : ${p.message.replace(/^Code exécutable : /, "")}`));
   const summary = [
     `Extension ${key} ${fetched.extension.version} — ${fetched.extension.description}`,
@@ -52,7 +60,7 @@ export async function installExtension(inputs: InstallInputs, catalog: Catalog, 
     ...(executable.length > 0 ? ["Code exécutable :", ...executable] : ["Aucun code exécutable."]),
     ...(plan.steps.length > 1 ? ["Plan :", ...describePlan(plan).map((l) => `  ${l}`)] : []),
   ];
-  if (!(await confirm(summary))) {
+  if (!(await confirm(summary,{executable:executable.length>0||plan.steps.some(step=>!!step.fetched&&(step.fetched.report.components.hooks>0||step.fetched.report.components.connectors.length>0))}))) {
     discardPlan(plan);
     return { ok: false, error: "Installation non confirmée : relancez avec --force après avoir lu le récapitulatif.", consent: true };
   }

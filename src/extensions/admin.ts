@@ -20,6 +20,7 @@ import { compareVersions } from "../platform/semver";
 export type WritableScope = "user" | "project" | "local";
 
 export interface ExtensionAdminContext {
+  readonly updateMode?:"auto"|"notify";
   readonly reservedCatalogName?: string;
   readonly officialCatalog?: { readonly name: string; readonly source: string };
   readonly configDir: string;
@@ -195,7 +196,7 @@ export async function extensionAdd(ctx: ExtensionAdminContext, ref: string, scop
 }
 
 function installInputs(ctx: ExtensionAdminContext): InstallInputs {
-  return { configDir: ctx.configDir, settings: ctx.settings, runner: ctx.runner, product: ctx.product };
+  return { configDir: ctx.configDir, settings: ctx.settings, runner: ctx.runner, product: ctx.product, preserveInstalled: ctx.updateMode !== undefined };
 }
 
 /**
@@ -211,6 +212,7 @@ export async function extensionUpdate(ctx: ExtensionAdminContext, ref: string | 
       return FAILED;
     }
     const { name, catalog } = parseRef(k);
+    if(ctx.settings.get<Record<string,string>>("extensions.pinnedVersions")[k]){ctx.out(`${k} est épinglée ; mise à jour automatique ignorée.`);continue;}
     const registration = ctx.settings.get<Record<string, CatalogRegistration>>("extensions.catalogs")[catalog!];
     const refreshed = registration ? refreshCatalog(ctx.configDir, catalog!, registration, ctx.cwd, ctx.runner) : { error: "catalogue non configuré" };
     if (refreshed.error) ctx.err(`avertissement : catalogue ${catalog} non rafraîchi (${refreshed.error}) ; dernière liste connue utilisée.`);
@@ -229,8 +231,10 @@ export async function extensionUpdate(ctx: ExtensionAdminContext, ref: string | 
       ctx.out(`${k} : la version ${entry.version} est une préversion ; ignorée (extensions.allowPrerelease).`);
       continue;
     }
-    const outcome = await installExtension(installInputs(ctx), c, entry, async (summary) => {
+    if(ctx.updateMode==="notify"){ctx.out(`Mise à jour disponible : ${k} ${current} → ${entry.version??"version du catalogue"}.`);continue;}
+    const outcome = await installExtension(installInputs(ctx), c, entry, async (summary,risk) => {
       ctx.out(summary.join("\n"));
+      if(ctx.updateMode==="auto"&&!risk.executable)return true;
       return force || ctx.confirm(`Mettre à jour ${k} ?`);
     });
     if (!outcome.ok) {
@@ -244,6 +248,8 @@ export async function extensionUpdate(ctx: ExtensionAdminContext, ref: string | 
   }
   return code;
 }
+/** Implements: SPEC-EXT-006 CA-03. Retained immutable versions are selected by a checked user pin. */
+export function extensionRollback(ctx:ExtensionAdminContext,ref:string):number{const key=installedKey(ctx,ref);if(typeof key!=="string"){ctx.err(key.error);return FAILED;}const managed=ctx.settings.valuesByScope("extensions.pinnedVersions").find(value=>value.origin==="managed")?.value as Record<string,string>|undefined;if(managed?.[key]){ctx.err("Version imposée par votre organisation ; retour arrière interdit.");return FAILED;}const{name,catalog}=parseRef(key),versions=installedVersions(ctx.configDir,catalog!,name),current=ctx.settings.get<Record<string,string>>("extensions.pinnedVersions")[key]??versions[0],previous=versions[versions.indexOf(current!)+1];if(!previous){ctx.err("Aucune version précédente conservée.");return FAILED;}const extension=describeExtension(join(ctx.configDir,"extensions",catalog!,name,previous),false),problem=blockedReason(ctx.settings,name,catalog!)??engineProblem(extension,ctx.product.version,ctx.product.name);if(problem||flagOf(ctx.settings,ctx.configDir,name,catalog!,previous)?.severity==="critical"){ctx.err(problem??"Ancienne version signalée critique.");return FAILED;}setValueInSettingsFile(ctx.files.user,["extensions","pinnedVersions",key],previous,ctx.platform);ctx.out(`Extension ${key} : version ${previous} réactivée au prochain chargement.`);return OK;}
 
 /** The installed extension a reference designates: `<name>@<catalogue>`, or a name installed from one catalogue only. */
 function installedKey(ctx: ExtensionAdminContext, ref: string): string | { error: string } {

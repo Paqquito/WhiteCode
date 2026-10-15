@@ -243,6 +243,7 @@ export class ResponseExecution {
       // again, as if they came from the model (SPEC-MOD-006 FA-05, SPEC-PER-001 EF-11); its approval covers exactly them.
       let approvedByHost: { input: string; context: string } | undefined;
       let replacedByHost = false;
+      let replacementSource="control host";
       let replacedByDelegate = false;
       let preview: Awaited<ReturnType<NonNullable<typeof tool.preview>>> | undefined;
       let subject: RuleSubject;
@@ -310,6 +311,7 @@ export class ResponseExecution {
         call = { ...call, input: resolved.input };
         approvedByHost = resolved.replacementNeedsReview ? undefined : { input: canonical(resolved.input), context: evaluatedContext };
         replacedByHost = true;
+        replacementSource=resolved.replacementSource??replacementSource;
         replacedByDelegate ||= resolved.replacementNeedsReview === true;
       }
 
@@ -372,7 +374,7 @@ export class ResponseExecution {
         const after = await this.#deps.hooks.afterTool(call, safeOutcome.isError, safeOutcome.content.map((c) => (c.type === "text" ? c.text : `[${c.mediaType}]`)).join("\n"));
         if (after.stopTurn) this.#stopTurnRequested = true;
         // The model learns that the call ran with other parameters than its own (SPEC-MOD-006 FA-05).
-        const told = replacedByHost ? { ...safeOutcome, content: [{ type: "text" as const, text: `[The ${replacedByDelegate ? "permission delegate" : "control host"} replaced the parameters of this call with: ${JSON.stringify(call.input)}]` }, ...safeOutcome.content] } : safeOutcome;
+        const told = replacedByHost ? { ...safeOutcome, content: [{ type: "text" as const, text: `[The ${replacedByDelegate ? "permission delegate" : replacementSource} replaced the parameters of this call with: ${JSON.stringify(call.input)}]` }, ...safeOutcome.content] } : safeOutcome;
         return finish(this.#storeIfLarge(call, this.#redacted(told)));
       } finally {
         release();
@@ -414,7 +416,7 @@ export class ResponseExecution {
     subject: RuleSubject,
     query?: PermissionQuery,
     queued = false,
-  ): Promise<{ allowed: boolean; reason: string; input?: Record<string, unknown>; replacementNeedsReview?: boolean }> {
+  ): Promise<{ allowed: boolean; reason: string; input?: Record<string, unknown>; replacementNeedsReview?: boolean; replacementSource?:string }> {
     if (signal.aborted) return { allowed: false, reason: "The call was cancelled." };
     if (decision.kind === "ask" && this.#deps.permissionQueue && !queued) {
       return await this.#deps.permissionQueue.run(signal, active => {
@@ -459,7 +461,7 @@ export class ResponseExecution {
     }
     if (resolution.persist && !shown?.humanOnly) this.#deps.persistRule?.(resolution.persist.scope, resolution.persist.rule);
     // Replaced parameters are not allowed yet: they are evaluated again first (FA-05 of SPEC-MOD-006).
-    if (resolution.input) return { allowed: true, reason: `parameters replaced by ${resolution.by}`, input: resolution.input, replacementNeedsReview: resolution.by === "delegate" && canonical(resolution.input) !== canonical(call.input) };
+    if (resolution.input) return { allowed: true, reason: `parameters replaced by ${resolution.by}`, input: resolution.input, replacementSource:resolution.by==="human"?"human in the IDE":resolution.by==="delegate"?"permission delegate":"control host",replacementNeedsReview: resolution.by === "delegate" && canonical(resolution.input) !== canonical(call.input) };
     const reason = `approved by ${resolution.by}`;
     this.#deps.emit({ type: "permission", callId: call.callId, decision: "allow", reason, step: decision.step });
     return { allowed: true, reason };

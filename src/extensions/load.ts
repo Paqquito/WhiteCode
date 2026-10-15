@@ -33,6 +33,7 @@ export interface ExtensionContributions {
 }
 
 export interface LoadInputs {
+  readonly secretOptions?: Readonly<Record<string,Readonly<Record<string,string>>>>;
   /** `extensions.options`: values by extension, then by option. */
   readonly options: Readonly<Record<string, unknown>>;
   /** Persistent data folder of an extension (`${EXTENSION_DATA}`). */
@@ -47,7 +48,7 @@ interface OptionValues {
 }
 
 /** SPEC-EXT-015: defaults of the schema, then the settings; invalid values refused (ERR-01); secret options never read from a file (EF-01). */
-function optionValues(ext: Extension, given: unknown): OptionValues {
+function optionValues(ext: Extension, given: unknown, secrets:Readonly<Record<string,string>>={}): OptionValues {
   const notes: string[] = [];
   const schema = ext.optionsSchema ?? {};
   const properties = (schema["properties"] ?? {}) as Record<string, Record<string, unknown>>;
@@ -55,12 +56,9 @@ function optionValues(ext: Extension, given: unknown): OptionValues {
   const values: Record<string, unknown> = {};
   const input = (typeof given === "object" && given !== null ? given : {}) as Record<string, unknown>;
   for (const [name, def] of Object.entries(properties)) {
+    if(def["secret"]===true){if(input[name]!==undefined)notes.push(`option secrète ${name} ignorée : jamais lue d'un fichier de paramètres.`);const{secret:_secret,default:_default,...plain}=def;if(secrets[name]!==undefined&&compileRaw(plain)(secrets[name]))values[name]=secrets[name];continue;}
     if (def["default"] !== undefined) values[name] = def["default"];
     if (input[name] === undefined) continue;
-    if (def["secret"] === true) {
-      notes.push(`option secrète ${name} ignorée : jamais lue d'un fichier de paramètres.`);
-      continue;
-    }
     const { secret: _secret, ...plain } = def;
     const validate = compileRaw(plain);
     if (validate(input[name])) values[name] = input[name];
@@ -110,9 +108,11 @@ export function loadExtensions(active: readonly ActiveExtension[], inputs: LoadI
       report.push(`Extension ${id} non chargée.`);
       continue;
     }
-    const opts = optionValues(ext, inputs.options[ext.name]);
+    const opts = optionValues(ext, inputs.options[ext.name],inputs.secretOptions?.[id]);
     for (const n of opts.notes) report.push(`Extension ${id} : ${n}`);
     const vars = { root: ext.root, data: inputs.dataDir(ext.name), options: opts.values };
+    const secretNames=new Set(Object.entries((ext.optionsSchema?.["properties"]??{})as Record<string,Record<string,unknown>>).filter(([,def])=>def["secret"]===true).map(([name])=>name));
+    const promptVars={...vars,options:Object.fromEntries(Object.entries(opts.values).filter(([name])=>!secretNames.has(name)))};
     /** A component that needs a required option without value is disabled (FA-01, CA-02). */
     const blockedBy = (missing: Set<string>) => [...missing].filter((m) => opts.missingRequired.has(m));
     // Skills and commands (namespace `<extension>:`).
@@ -125,8 +125,8 @@ export function loadExtensions(active: readonly ActiveExtension[], inputs: LoadI
         const file = join(dir, name);
         try {
           const missing = new Set<string>();
-          const text = substituteVariables(readFileSync(file, "utf8"), vars, missing) as string;
-          const blocked = blockedBy(missing);
+          const text = substituteVariables(readFileSync(file, "utf8"), promptVars, missing) as string;
+          const blocked = [...missing].filter(name=>secretNames.has(name)||opts.missingRequired.has(name));
           if (blocked.length) { report.push(`Extension ${id} : agent ${file} désactivé : option requise ${blocked.join(", ")} non renseignée.`); continue; }
           const def = parseAgent(text, file, "extension", (m) => report.push(`Extension ${id} : ${m}`));
           if (typeof def === "string") report.push(`Extension ${id} : agent invalide (${file}) : ${def}.`);

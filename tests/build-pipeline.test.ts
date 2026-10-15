@@ -64,7 +64,7 @@ test("SPEC-BLD-006/CA-01 — SPEC-BLD-008/CA-01 — two identities generate thei
   }
 }, 30_000);
 
-test("SPEC-BLD-009/CA-01 — SPEC-BLD-009/CA-02 — the public executable ignores profile environment overrides and contains no internal feature markers", async () => {
+test("SPEC-BLD-009/CA-01 — SPEC-BLD-009/CA-02 — SPEC-IHM-032/CA-04 — the public executable ignores profile overrides and excludes internal and companion resources", async () => {
   const f = fixture(); expect((await f.build()).code).toBe(0);
   const file = f.manifest().deliverables.find((d: { target: string }) => d.target === "current").file;
   const prefix = loadIdentity().get("ENV_PREFIX");
@@ -72,8 +72,11 @@ test("SPEC-BLD-009/CA-01 — SPEC-BLD-009/CA-02 — the public executable ignore
   expect(result.code).not.toBe(0); expect(result.stderr).toContain("inconnue");
   for (const d of f.manifest().deliverables.filter((d: { target: string }) => ["bundle", "current"].includes(d.target))) {
     const content = readFileSync(join(f.root, "dist", d.file));
-    for (const marker of ["STRICT-FAILURE:", "orchestrator.role", "Export non masqu", "Développement ·"]) expect(content.includes(Buffer.from(marker))).toBe(false);
+    for (const marker of ["STRICT-FAILURE:", "orchestrator.role", "Export non masqu", "Développement ·", "Compagnon éclos", "companion-v1:", "session-rescue"]) expect(content.includes(Buffer.from(marker))).toBe(false);
   }
+  writeFileSync(join(f.ws.configHome,"config.json"),JSON.stringify({api:{provider:"openai_compatible",baseUrl:"http://127.0.0.1:9/v1"},models:{selected:"fixture-model"},ui:{companion:{enabled:true}}}));
+  const unavailable=await f.run(file,["--non-interactive","--ephemeral","/companion"]);
+  expect(unavailable.code).not.toBe(0);expect(unavailable.stderr+unavailable.stdout).toContain("Commande inconnue");
 }, 150_000);
 
 test("SPEC-OBS-019/CA-01 — the internal export includes project instructions without connecting to the model service", async () => {
@@ -230,3 +233,9 @@ test("TECH — a file asset which would depend on dist at runtime cannot receive
   const result = await f.build();
   expect(result.code).not.toBe(0); expect(result.stderr).toContain("Ressource externe non embarquée"); expect(existsSync(join(f.root, "dist/manifest.json"))).toBe(false);
 }, 150_000);
+
+test("SPEC-CMD-012/CA-01 — the included test profile hatches a companion with a proposed name, enforces managed disable and runs the local rescue skill",async()=>{
+  const f=fixture();cpSync(join(ROOT,"tests/helpers"),join(f.root,"tests/helpers"),{recursive:true});cpSync(join(ROOT,"tests/fixtures"),join(f.root,"tests/fixtures"),{recursive:true});
+  const generated=runToCompletion(BUN,["scripts/generate.ts","--profile","test"],{cwd:f.root,env:productEnv(f.ws),timeoutMs:15000});expect(generated.code).toBe(0);
+  const probe=runToCompletion(BUN,[join(f.root,"tests/fixtures/companion-probe.ts")],{cwd:f.root,env:productEnv(f.ws),timeoutMs:25000});if(probe.code!==0)throw Error(probe.stderr+probe.stdout);expect(probe.stdout).toContain("COMPANION_AND_RESCUE_PROBE_PASSED");
+},60000);

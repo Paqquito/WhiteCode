@@ -40,7 +40,7 @@ import { maskSecrets } from "../shared/secrets";
 import { readTranscriptReference } from "../session/transcript-access";
 import { renderValidation, validateExtension } from "../extensions/validate";
 import { officialSettings, officialCatalog, officialName } from "../extensions/official";
-import { catalogAdd, catalogList, catalogRemove, catalogUpdate, extensionAdd, extensionEnable, extensionList, extensionRemove, extensionUpdate, scopeOf, type ExtensionAdminContext } from "../extensions/admin";
+import { catalogAdd, catalogList, catalogRemove, catalogUpdate, extensionAdd, extensionEnable, extensionList, extensionRemove, extensionUpdate, extensionRollback, scopeOf, type ExtensionAdminContext } from "../extensions/admin";
 import { runConnectorAdmin } from "../connectors/admin";
 import { runInstallationAdmin } from "../installation/admin";
 import { multipleInstallations } from "../installation/runtime";
@@ -247,6 +247,7 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
     case "extension enable":
     case "extension disable":
     case "extension remove":
+    case "extension rollback":
     case "extension update": {
       const scopeOption = parsed.options.get("scope");
       const scope = scopeOf(scopeOption);
@@ -260,7 +261,13 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
         err(`Argument manquant : ${operation.args ?? "<nom>"}.`);
         return ExitCode.UsageOrConfiguration;
       }
-      const ctx = extensionContext(deps, write, out, err);
+      let ctx = extensionContext(deps, write, out, err);
+      if(family.name==="extension"&&operation.name==="update"){
+        const auto=parsed.options.has("auto"),notify=parsed.options.has("notify-only"),pipe=parsed.options.has("approval-pipe");
+        if(auto&&notify||(auto||notify)&&parsed.options.has("force")||pipe&&!auto)return ExitCode.UsageOrConfiguration;
+        if(auto||notify)ctx={...ctx,updateMode:auto?"auto":"notify"};
+        if(pipe){const lines=deps.streams.stdinLines()[Symbol.asyncIterator]();let id=0;const send=(event:unknown)=>deps.streams.writeOut(JSON.stringify(event)+"\n");ctx={...ctx,out:message=>send({type:"notice",message:maskSecrets(message)}),err:message=>send({type:"notice",message:maskSecrets(message)}),confirm:async question=>{const request=++id;send({type:"approval",id:request,question:maskSecrets(question)});const answer=await lines.next();if(answer.done||answer.value.length>1024)return false;try{const reply=JSON.parse(answer.value);return reply.id===request&&reply.accepted===true;}catch{return false;}}};}
+      }
       const lean = parsed.options.get("lean-context");
       const name = parsed.options.get("name");
       switch (`${family.name} ${operation.name}`) {
@@ -278,6 +285,8 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
           return extensionList(ctx, parsed.options.has("installable"));
         case "extension update":
           return extensionUpdate(ctx, arg, parsed.options.has("force"));
+        case "extension rollback":
+          return extensionRollback(ctx,arg!);
         case "extension enable":
         case "extension disable":
           return extensionEnable(ctx, arg!, scope, operation.name === "enable");

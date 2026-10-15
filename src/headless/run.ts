@@ -1,3 +1,4 @@
+// Supports: SPEC-INT-001/002/003/004, SPEC-MCP-004/013/023, SPEC-MOD-014, SPEC-API-029, SPEC-OUT-011, SPEC-EXT-003/006/015/025/030, SPEC-IHM-032, SPEC-CMD-012/032/092, gaps E-175 to E-180.
 // Supports: SPEC-SES-005/010, SPEC-CMD-005/010/043/082, SPEC-MCP-005, SPEC-OBS-006, gap E-171.
 // Supports: SPEC-CFG-012, SPEC-MOT-027/028/030/031/043/044, SPEC-CMD-003/004/042/062, SPEC-AGT-015/025, SPEC-IHM-029, SPEC-EXT-034/037/039/040, SPEC-PER-007, gap E-170.
 // Supports: SPEC-MOD-029, SPEC-OUT-013/034/038/045, SPEC-CMD-007/008/027/036/093/096/098/101/107, SPEC-OBS-012/016, SPEC-IHM-002/023/038, gap E-161.
@@ -80,7 +81,9 @@ import { loadWorkflows, type Workflow, type WorkflowStep } from "../workflows/de
 import { WorkflowRunner } from "../workflows/runtime";
 import { createRunWorkflowTool, type WorkflowInput } from "../workflows/tool";
 import { credentialValidator } from "../providers/credential-check";
-import { configuredNetwork } from "../config/network";
+import { configuredNetwork, configuredNetworkSettings } from "../config/network";
+import { connectNetworkWebSocket } from "../platform/socket-network";
+import { networkFetch } from "../platform/network";
 import { authDialog } from "../interactive/auth-dialog";
 import { configuredCompanyAccount, describeAccount } from "../auth/company-runtime";
 import { SettingsSync } from "../config/settings-sync";
@@ -89,6 +92,10 @@ import { AgentMemory } from "../agents/agent-memory";
 import { LivingDocuments } from "../memory/living-docs";
 import { detectTerminal, terminalPlan, applyTerminalPlan, restoreTerminal } from "../interactive/terminal-setup";
 import { TeamMemory, teamMemoryTool } from "../memory/team-memory";
+import { IdeClient } from "../integrations/ide";
+import { runCodeTool,SCRIPT_TOOLS } from "../tools/run-code";
+import {runRemoteSession} from "../remote/run";
+import type {ScriptValue} from "../engine/script-engine";
 import { nativeCredentialVault, type CredentialVault } from "../platform/credential-vault";
 import { FallbackPolicy } from "../engine/fallback";
 import { buildSystemInstructions, estimateTokens, RequiredSectionUnavailable } from "../engine/system-instructions";
@@ -186,11 +193,14 @@ import { codeIntelligenceTool } from "../tools/code-intelligence";
 import { detectPosixShell, detectPowerShell, ShellRuntime } from "../tools/shell-runtime";
 import type { ToolContext, ToolEnvironment } from "../tools/types";
 import { ResultStore } from "../session/result-store";
-import { resolveConnectors } from "../connectors/declarations";
+import { resolveConnectors,connectorMatches } from "../connectors/declarations";
+import {InboundChannels} from "../connectors/inbound";
 import { ConnectorManager, type ConnectorEvent } from "../connectors/manager";
 import { connectorSources, projectChoice, projectStateKey, type ProjectState } from "../connectors/session";
 import { createDiscoverToolsTool } from "../tools/discover-tools";
 import { loadExtensions } from "../extensions/load";
+import { ExtensionMaintenance } from "../extensions/maintenance";
+import { ExtensionSecretOptions } from "../extensions/secret-options";
 import { activeInstalled } from "../extensions/active";
 import { officialSettings, officialCatalog, officialName } from "../extensions/official";
 import { catalogList, catalogRefused, extensionAdd, extensionList, scopeOf, type ExtensionAdminContext } from "../extensions/admin";
@@ -223,7 +233,9 @@ import { TurnAssistance } from "../engine/turn-assistance";
 import { writeJobState } from "../engine/job-state";
 import { sessionTaskSummary } from "../session/sessions";
 import { SkillImprovements } from "../skills/improvements";
-import { proposeTestSkill } from "../skills/generate";
+import { proposeTestSkill, proposeWebVerifiers } from "../skills/generate";
+import{fillerText,sessionHealth}from"../skills/local-utilities";
+import{Companion,companionName,type CompanionSoul}from"../interactive/companion";
 import { sandboxDiagnostic } from "../permissions/sandbox-diagnostic";
 import { MemoryStore } from "../memory/store";
 import { MemoryConsolidation } from "../memory/consolidation";
@@ -804,6 +816,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   for (const name of parsed.options.keys()) {
     if (forbidden.includes(name)) throw new RunError(`Cette option est désactivée par la politique en vigueur : --${name}.`, ExitCode.UsageOrConfiguration);
   }
+  if(buildFlag("remote_sessions")&&typeof opt("remote-session")==="string"){
+    if(offlineMinimal||serve||opt("control-channel")||opt("control-listen")||opt("control-connect")||parsed.prompt!==undefined)throw new RunError("La session distante exige une invocation dédiée avec --remote-session <consigne>.",ExitCode.UsageOrConfiguration);
+    return runRemoteSession({identity,env,settings,configDir:locations.configDir,cwd,system,streams,signal:deps.signal,vault:deps.credentialVault,fetch:deps.companyFetch,assertPolicy,prompt:opt("remote-session") as string,maxCost:typeof opt("max-cost")==="string"?Number(opt("max-cost")):undefined,maxDurationSeconds:typeof opt("max-duration")==="string"?Number(opt("max-duration")):undefined,format:(opt("result-format")??settings.get("engine.output.format")) as "text"|"json"|"jsonl"});
+  }
   const verbose = opt("verbose") === true;
   // SPEC-MOT-004: custom system instructions, validated at launch (§ 5.3 steps 1 to 3).
   const customOnly = readCustomInstructions(opt, deps.cwd, settings.get<boolean>("context.allowCustomSystemInstructions"), err);
@@ -1315,16 +1331,17 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const toolsetOption = opt("toolset");
   const toolsetNames = typeof toolsetOption === "string" ? (toolsetOption.trim() === "" ? [] : splitList(toolsetOption)) : undefined;
   // `spawn_agent` is a tool of the session, added after the registry is built: it is listed like the others (SPEC-OUT-001).
-  const toolset = toolsetNames?.filter((n) => !["team_memory", "work_item_create", "work_item_get", "work_item_list", "work_item_update", "form_team", "disband_team", "open_isolated_copy", "close_isolated_copy", "list_peers", "message_agent", "wait", "run_workflow", "discover_skills", "message_user", "review_artifact", "search_web", "overflow_test", "check_plan_progress", "consult_advisor", "prune_history", "inspect_context", "consolidate_memory", "configure", "submit_result", "spawn_agent", "code_intelligence", "list_connector_resources", "read_connector_resource", "connector_sign_in", "schedule_create", "schedule_list", "schedule_delete"].includes(n));
+  const toolset = toolsetNames?.filter((n) => !["team_memory", "work_item_create", "work_item_get", "work_item_list", "work_item_update", "form_team", "disband_team", "open_isolated_copy", "close_isolated_copy", "list_peers", "message_agent", "wait", "run_workflow", "discover_skills", "message_user", "review_artifact", "search_web", "overflow_test", "check_plan_progress", "consult_advisor", "prune_history", "inspect_context", "consolidate_memory", "configure", "submit_result", "spawn_agent", "code_intelligence", "list_connector_resources", "read_connector_resource", "connector_sign_in", "run_code", "schedule_create", "schedule_list", "schedule_delete"].includes(n));
   const agentsInToolset = toolsetNames === undefined || toolsetNames.includes("spawn_agent") || (toolsetNames.length === 1 && toolsetNames[0] === "default");
   let registry: ToolRegistry;
+  let ide:IdeClient|undefined;
   const minimal = opt("minimal") === true || offlineMinimal;
   let mainMemoryWritten = false;
   const memory = !minimal && !settings.get<boolean>("storage.encryption.enabled") && settings.get<boolean>("memory.automatic.enabled") ? new MemoryStore(settings.get<string | undefined>("memory.directory") ? absolute(settings.get<string>("memory.directory"), cwd) : join(locations.configDir, "memory", projectKey(projectReal)), { indexFile: identity.get("MEMORY_INDEX_FILE"), maxLines: settings.get<number>("memory.indexMaxLines"), maxBytes: settings.get<number>("memory.indexMaxBytes"), redact: redactOutput }) : undefined;
   try {
     registry = ToolRegistry.build(
       toolEnv,
-      { toolset, decorateBuiltin: memory ? tool => memoryFileTool(tool, memory, ctx => { if (!ctx.agentName) mainMemoryWritten = true; }) : undefined, deniedWholeTools: new Set([...rules.filter((r) => r.decision === "deny" && r.pattern === undefined).map((r) => r.tool), ...(offlineMinimal ? ["run_shell", "run_powershell", "monitor_process"] : [])]) },
+      { toolset, decorateBuiltin: tool => {const base=memory?memoryFileTool(tool,memory,ctx=>{if(!ctx.agentName)mainMemoryWritten=true;}):tool;return {...base,execute:(input,ctx)=>(ide?.decorate(base,()=>liveSettings.get<boolean>("ide.diagnostics.enabled"),()=>liveSettings.get<number>("ide.diagnostics.timeoutMs"))??base).execute(input,ctx)};}, deniedWholeTools: new Set([...rules.filter((r) => r.decision === "deny" && r.pattern === undefined).map((r) => r.tool), ...(offlineMinimal ? ["run_shell", "run_powershell", "monitor_process"] : [])]) },
     );
   } catch (e) {
     if (e instanceof UnknownToolsetEntryError) throw new RunError(e.message, ExitCode.UsageOrConfiguration);
@@ -1363,9 +1380,12 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // SPEC-EXT-009 § 5.3 step 3, EF-03: with `extensions.managedOnly`, only the managed customisations and the managed
   // extensions count; the others are left out and reported.
   const managedOnlyCustomisation = settings.get<boolean>("extensions.managedOnly");
+  const extensionSecrets=new ExtensionSecretOptions({vault:sessionVault,service:identity.get("KEYCHAIN_SERVICE"),configDir:locations.configDir});
+  let extensionSecretValues=await extensionSecrets.load([...installedExtensions.active,...sessionExtensions.map(root=>({root,origin:"session" as const}))]);
+  const rememberExtensionSecrets=()=>{for(const values of Object.values(extensionSecretValues))for(const value of Object.values(values)){for(const form of[value,encodeURIComponent(value),JSON.stringify(value).slice(1,-1)])if(!credentialForms.includes(form))credentialForms.push(form);}credentialForms.sort((a,b)=>b.length-a.length);};rememberExtensionSecrets();
   const contributions = (active: typeof installedExtensions.active, s: Settings) =>
     loadExtensions([...active, ...sessionExtensions.map((root) => ({ root, origin: "session" as const }))], {
-      options: s.get<Record<string, unknown>>("extensions.options"),
+      options: s.get<Record<string, unknown>>("extensions.options"), secretOptions:extensionSecretValues,
       dataDir: (name) => join(locations.configDir, "extension-data", name),
     });
   let extensions = contributions(installedExtensions.active, settings);
@@ -1424,6 +1444,13 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     if (required.length > 0) throw new RunError(`Le mode minimal est incompatible avec la configuration en vigueur : connecteur indispensable ${required.map((c) => c.name).join(", ")}.`, ExitCode.UsageOrConfiguration);
   }
   const connectorSet = minimal ? { connectors: [], excluded: [], warnings: [] } : resolved;
+  const incomingNames=new Set([...(settings.get<string[]>("mcp.inboundChannels")??[]),...(typeof opt("inbound-connectors")==="string"?splitList(opt("inbound-connectors") as string):[])]);
+  if(incomingNames.size>32||[...incomingNames].some(name=>!/^[a-z0-9][a-z0-9-]{1,47}$/.test(name)))throw new RunError("Liste de canaux entrants invalide (32 noms au plus).",ExitCode.UsageOrConfiguration);
+  const channelAllowed=(name:string)=>{const declaration=connectorSet.connectors.find(row=>row.name===name);return!!declaration&&!!liveSettings.get<unknown[]|undefined>("mcp.allowList")?.some(value=>connectorMatches(value,declaration));},developmentChannels=new Set([...incomingNames].filter(name=>!channelAllowed(name)));
+  if(opt("dangerously-allow-unlisted-inbound")===true&&developmentChannels.size){if(!willBeInteractive||!await authDialog(streams.terminal!,`Charger les canaux de développement hors liste autorisée : ${[...developmentChannels].join(", ")} ? Ils pourront démarrer des tours et transmettre des données externes.`,false,deps.signal,captureStartupInput))throw new RunError("Canaux de développement non confirmés.",ExitCode.ConsentRequired);}
+  else developmentChannels.clear();
+  for(const name of incomingNames)if(!channelAllowed(name)&&!developmentChannels.has(name))err(`Canal non autorisé : ${name}.`);
+  const inbound=buildFlag("inbound_channels")&&!minimal&&incomingNames.size?new InboundChannels({selected:incomingNames,allowed:channelAllowed,development:developmentChannels,maxPerMinute:()=>liveSettings.get<number>("mcp.channelRateLimit"),redact:value=>redactOutput(maskSecrets(value)),warn:err}):undefined;
   for (const w of connectorSet.warnings) err(`avertissement : ${w}`);
   for (const x of connectorSet.excluded) {
     if (x.reason.startsWith("remplacé")) continue; // an ordinary override (§ 5.3 step 2)
@@ -2055,7 +2082,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     return manager?.active ? [...input, ...input.filter(rule => isWithin(rule.anchor, manager.root, system.platform)).map(rule => ({ ...rule, anchor: resolve(manager.active!.path, relative(manager.root, rule.anchor)) }))] : input;
   };
   const effectiveRules = () => copyRules((settings.get<boolean>("permissions.managedRulesOnly") ? rules.filter((r) => r.scope === "managed") : rules));
-  const readDenied = (path: string) => isCredentialFile(path, locations.configDir) || effectiveRules().some((r) => r.decision === "deny" && READ_TOOLS.has(r.tool) && [matchContext, { ...matchContext, cwd: (holder.isolated?.active ? holder.isolated : modelCopies)?.original ?? cwd }].some(context => ruleMatches(r, r.tool, { kind: "paths", access: "read", paths: [path] }, context)));
+  const readDenied = (path: string) => isCredentialFile(path, locations.configDir) || isWithin(realTargetPath(path),join(locations.configDir,"ide"),system.platform) || effectiveRules().some((r) => r.decision === "deny" && READ_TOOLS.has(r.tool) && [matchContext, { ...matchContext, cwd: (holder.isolated?.active ? holder.isolated : modelCopies)?.original ?? cwd }].some(context => ruleMatches(r, r.tool, { kind: "paths", access: "read", paths: [path] }, context)));
   let teamMemory:TeamMemory|undefined;
   if(buildFlag("team_memory")&&companyAccount&&identity.has("SERVICE_CONSOLE")&&!minimal&&!settings.get<boolean>("storage.encryption.enabled")&&settings.get<boolean>("memory.team.enabled")) {
     try {const profile=await companyAccount.profile(),git=findExecutable("git"),remote=profile&&git?runToCompletion(git,["--no-optional-locks","remote","get-url","origin"],{cwd,env:env.childEnvironment({GIT_TERMINAL_PROMPT:"0"}),timeoutMs:1000}):undefined,url=remote?.code===0?sanitizeRemoteUrl(remote.stdout.trim()):undefined;
@@ -2264,6 +2291,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
 
   // Engine.
   const controller = new AbortController();
+  if(buildFlag("ide_bridge")&&!minimal&&!offlineMinimal&&!connectorSet.connectors.some(connector=>connector.name==="ide")){ide=new IdeClient({configDir:locations.configDir,cwd:()=>cwd,platform:system.platform,clientInfo:{name:identity.get("PRODUCT_SLUG"),version:identity.version},network:networkFetch({...configuredNetworkSettings(env),httpProxy:undefined,httpsProxy:undefined,noProxy:["*"]}),readDenied,redact:redactOutput,rememberSecret:value=>{credentialForms.push(value,encodeURIComponent(value),JSON.stringify(value).slice(1,-1));credentialForms.sort((a,b)=>b.length-a.length);},changed:()=>{for(const tool of registry.list().filter(tool=>tool.name.startsWith("cnx_ide_")))registry.removeStatic(tool.name);for(const tool of ide?.tools()??[])if(inToolset(tool.name))registry.addStatic(tool);conversation.replaceTools([...conversation.tools.filter(tool=>!tool.name.startsWith("cnx_ide_")),...(ide?.connected?ide.tools().filter(tool=>inToolset(tool.name)).map(tool=>({name:tool.name,description:tool.description(toolEnv),inputSchema:tool.inputSchema})):[])]);app?.refresh();},report:message=>app?app.notice("info",message):err(message)});
+    holder.cleanups.push(()=>{void ide?.close();});(holder.finalizers??=[]).push(()=>ide?.close()??Promise.resolve());
+    if(opt("connect-editor")===true||settings.get<boolean>("ide.autoConnect")||env.public("TERM_PROGRAM")==="vscode"){const candidates=ide.list();if(candidates.length===1)try{await ide.connect(candidates[0]!.id,controller.signal);}catch(cause){err((cause as Error).message);}}
+  }
   if(teamMemory){const interval=setInterval(()=>{void teamMemory!.sync(AbortSignal.any([controller.signal,AbortSignal.timeout(5000)])).catch(()=>{});},60000);interval.unref();holder.cleanups.push(()=>clearInterval(interval));}
   holder.abortOnLoggedError = () => controller.abort();
   const external = deps.signal;
@@ -2369,6 +2400,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
               return app.requestSecret(`Authentification humaine : ${url}\nTerminez le parcours dans votre navigateur. Attendez le retour local, ou collez l'URL complète de retour ici (saisie masquée).`, signal);
             },
           } : undefined,
+          wsConnect:(url,headers,handlers)=>connectNetworkWebSocket(url,headers,handlers,configuredNetworkSettings(env)),wsPingIntervalMs:settings.get<number>("mcp.wsPingInterval"),
+          onInbound:(server,params)=>{inbound?.receive(server,params);},
           projectRoot: locations.projectRoot,
           platform: system.platform,
           environment: (declared) => env.childEnvironment({ ...settings.get<Record<string, string>>("environment.variables"), ...declared }),
@@ -2719,6 +2752,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   };
   // Context of the main agent (SPEC-MOT-010 to SPEC-MOT-014).
   const coefficients = settings.get<Record<string, Record<string, number>>>("context.tokenEstimation")[resolvedModel.family];
+  const companion=buildFlag("ui_companion")?new Companion((await companyAccount?.profile())?.account,()=>liveSettings.get<CompanionSoul|undefined>("ui.companion.soul"),()=>liveSettings.get<boolean>("ui.companion.enabled"),()=>liveSettings.get<boolean>("ui.reducedMotion")):undefined;
   const meter = new ContextMeter({ model: resolvedModel, outputReserveTokens: settings.get<number>("engine.outputReserveTokens"), coefficients, warn: (m) => debug.log("context", m) });
   const recentFiles: string[] = [];
   const pruning = buildFlag("history_pruning") && settings.get<boolean>("context.pruning.enabled") && inToolset("prune_history")
@@ -3139,7 +3173,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         exitDoublePressMs: settings.get<number>("ui.exitDoublePressWindow"),
         dialogGuardMs: DIALOG_GUARD_MS,
       },
-      status: () => ({ mode: modeState.mode, model: minimal ? `${currentModel.id} · session minimale` : currentModel.id, ...(schedule?.list().length ? { scheduled: schedule.list().sort((a, b) => a.nextAt - b.nextAt)[0]!.nextLocal } : {}) }),
+      inputDecoration:companion?columns=>companion.frame(columns):undefined,
+      onDecorativeTurnEnd:companion?success=>companion.react(success):undefined,
+      status: () => ({ mode: modeState.mode, model: minimal ? `${currentModel.id} · session minimale` : currentModel.id,...(ide?.known?{ide:ide.status}:{}), ...(schedule?.list().length ? { scheduled: schedule.list().sort((a, b) => a.nextAt - b.nextAt)[0]!.nextLocal } : {}) }),
       reducedMotion: settings.get<boolean>("ui.reducedMotion"),
       screenReader: settings.get<boolean>("ui.screenReaderMode"),
       tips: settings.get<boolean>("ui.hints.enabled"),
@@ -3296,6 +3332,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     if (enabled) conversation.extendTools([{ name: consult.name, description: consult.description(toolEnv), inputSchema: consult.inputSchema }]);
   };
   let livingDocuments:LivingDocuments|undefined;
+  let scripting:ReturnType<typeof runCodeTool>|undefined;
+  const scriptModeActive=buildFlag("script_mode")&&settings.get<boolean>("tools.scriptMode.enabled");
   const loopDeps: LoopDeps = {
     maxKeyword: buildFlag("thinking_max_keyword") ? settings.get<string>("thinking.maxKeyword") : undefined,
     tokenTarget: { enabled: buildFlag("context_token_target") && settings.get<boolean>("context.tokenBudget.enabled"), completionRatio: settings.get<number>("context.tokenBudget.completionRatio") },
@@ -3313,6 +3351,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       refreshSkills();
       refreshConnectorTools();
       refreshAdvisor();
+      if(scriptModeActive){const tools=scripting?[{name:scripting.tool.name,description:scripting.tool.description(toolEnv),inputSchema:scripting.tool.inputSchema}]:[];if(JSON.stringify(conversation.tools)!==JSON.stringify(tools))conversation.replaceTools(tools);}
     },
     fallback,
     takeQueued: () => app ? app.takeForSafePoint().flatMap(typedParts) : plannedQueue.splice(0).map(text => ({ type: "text" as const, text })),
@@ -3350,16 +3389,16 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     maxOutputContinuations: settings.get<number>("engine.maxOutputContinuations"),
     maxStopHookContinuations: settings.get<number>("engine.maxStopHookContinuations"),
     emit,
-    pendingNote: () => { const note = [modeState.takeNote(), briefNote, pruneNote].filter(Boolean).join("\n"); briefNote = undefined; pruneNote = undefined; return note || undefined; },
+    pendingNote: () => { const note = [modeState.takeNote(), briefNote, pruneNote,ide?.takeDiagnostics(liveSettings.get<number>("ide.diagnostics.maxItems"))].filter(Boolean).join("\n"); briefNote = undefined; pruneNote = undefined; return note || undefined; },
     publishedMessage: () => publishedMessage,
     context,
     executor: {
       redactOutput,
       policyRefusal,
-      registry,
+      get registry(){return scriptModeActive?restrictedView(registry,name=>name==="run_code"):registry;},
       hooks,
       // SPEC-PER-001 § 5.3 point c: the habilitated `approval_needed` hooks answer before any other authority.
-      authorities: { habilitatedHook: hooks.approvalHook, classifier: approvalClassifier, ...deps.authorities, ...(designatedDelegate ? { delegate: designatedDelegate } : {}), classifierNeedsHuman: () => permissionDenials.needsHuman, ...(app ? { human: app.approvals } : {}), ...(control ? { controlHost: control.authority } : {}) },
+      authorities: { habilitatedHook: hooks.approvalHook, classifier: approvalClassifier, ...deps.authorities, ...(designatedDelegate ? { delegate: designatedDelegate } : {}), classifierNeedsHuman: () => permissionDenials.needsHuman, ...((app?.approvals??deps.authorities?.human)?{human:{request:(request,signal)=>{const human=app?.approvals??deps.authorities!.human!;return ide&&liveSettings.get<boolean>("ide.showDiffs")?ide.approvals(human).request(request,signal):human.request(request,signal);},loopDetected:(info,signal)=>(app?.approvals??deps.authorities?.human)?.loopDetected?.(info,signal)??Promise.resolve({choice:"stop"})}}:{}), ...(control ? { controlHost: control.authority } : {}) },
       concurrency: settings.get<number>("engine.toolConcurrency"),
       toolTimeoutMs: settings.get<number>("engine.toolTimeout"),
       persistRule,
@@ -3397,6 +3436,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         protectedLocations: protectedPaths,
         readDenied,
         writeDenied: (path) => {
+          if(isWithin(realTargetPath(path),join(locations.configDir,"ide"),system.platform))return true;
           if (comparablePath(realTargetPath(path), system.platform) === comparablePath(realTargetPath(locations.userStateFile), system.platform)) return true;
           try { const a = statSync(path), b = statSync(locations.userStateFile); return a.ino !== 0 && a.dev === b.dev && a.ino === b.ino; } catch { return false; }
         },
@@ -3413,6 +3453,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   };
 
   let sessionNotes: SessionNotes | undefined;
+  if(scriptModeActive&&inToolset("run_code")){
+    scripting=runCodeTool({timeoutMs:settings.get<number>("tools.scriptMode.timeout"),outputLimit:settings.get<number>("tools.resultInlineLimit"),tools:()=>registry.list().map(tool=>tool.name),call:async(name,input,ctx)=>{
+      const call={callId:randomUUID(),name,input},execution=new ResponseExecution({...loopDeps.executor,registry:restrictedView(registry,name=>SCRIPT_TOOLS.has(name)),toolContext:signal=>({...ctx,signal}),emit},ctx.signal);emit({type:"tool_call",...call});execution.submit(call);execution.responseComplete("end_turn");const parts=await execution.results();filesTouched([call],parts);const result=parts[0];if(!result||result.isError)throw new Error(`Tool ${name} refused or failed: ${result?.content.filter(part=>part.type==="text").map(part=>part.text).join("\n")??"unavailable"}`);return JSON.parse(JSON.stringify(result)) as ScriptValue;
+    }});registry.addStatic(scripting.tool as never);conversation.replaceTools([{name:scripting.tool.name,description:scripting.tool.description(toolEnv),inputSchema:scripting.tool.inputSchema}]);
+  }
   if (transcript && !minimal && !settings.get<boolean>("storage.encryption.enabled") && settings.get<boolean>("memory.session.enabled")) {
     try { sessionNotes = new SessionNotes(transcript.sessionDir, redactOutput); const template = join(locations.configDir, "memory", "session-notes-template.md"); sessionNotes.initialize(existsSync(template) ? readPrivateText(template, 16000) : undefined); }
     catch { sessionNotes = undefined; err("avertissement : notes de session indisponibles ; fichier privé ordinaire et gabarit borné requis."); }
@@ -3786,7 +3831,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // SPEC-CMD-001: the catalogue of the commands, built again for each request (skills reread, connectors connected).
   const commandCatalog = () =>
     new CommandCatalog({
-      internal: INTERNAL_COMMANDS.filter(command => command.name === "merch" ? buildFlag("ui_merch") && identity.has("SERVICE_MERCH") && liveSettings.get<boolean>("ui.merch.enabled") && !offlineMinimal : command.name === "browser" ? identity.has("SERVICE_BROWSER_EXTENSION") : command.name === "install-chat-app" ? identity.has("TEAM_CHAT_APP") : true),
+      internal: INTERNAL_COMMANDS.filter(command => command.name === "companion" ? buildFlag("ui_companion") && liveSettings.get<boolean>("ui.companion.enabled") : command.name === "merch" ? buildFlag("ui_merch") && identity.has("SERVICE_MERCH") && liveSettings.get<boolean>("ui.merch.enabled") && !offlineMinimal : command.name === "browser" ? identity.has("SERVICE_BROWSER_EXTENSION") : command.name === "install-chat-app" ? identity.has("TEAM_CHAT_APP") : true),
       skills: skillSet,
       connectors: connectors?.prompts() ?? [],
       workflows: [...workflowCatalog().values()],
@@ -3958,6 +4003,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     if (original === teamWake) teamWakeQueued = false;
     turnFeatures = featureFlags.snapshot();
     let content = original;
+
     const first = typeof content === "string" ? content : content.find((p) => p.type === "text")?.text;
     if (policyGuard.check(policyCapability).length > 0) {
       if (!literal && first?.trim() === "/diagnose") return { note: localPolicyDiagnostic() };
@@ -4011,6 +4057,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           break;
         }
         case "skill": {
+          if(resolved.skill.scope==="product"&&resolved.skill.name==="filler-text"&&buildFlag("skill_filler_text")){try{const filler=fillerText(entry.args,meter.coefficients.text);conversation.appendNote(filler);transcript?.append("system",{event:"reminder",text:filler,type:"context_filler"});app?.refresh();return{note:"Remplissage local ajouté : environ "+Number(entry.args)+" jetons estimés ; aucun appel de modèle."};}catch(error){return{refused:(error as Error).message};}}
+          if(resolved.skill.scope==="product"&&resolved.skill.name==="session-rescue"&&buildFlag("skill_session_rescue")){if(entry.args.trim())return{refused:"Usage : /session-rescue."};return{note:sessionHealth(join(locations.configDir,"presence"),sessionId,settings.get<number>("sessions.presenceTimeout")),shown:undefined};}
           let args = entry.args;
           if (resolved.skill.scope === "product" && resolved.skill.name === "loop") { try { const loop = parseLoop(args); args = `Requested intervalSeconds: ${loop.seconds}. Recurring user request: ${loop.prompt}`; } catch (error) { return { refused: (error as Error).message }; } }
           const loaded = await loadSessionSkill(resolved.name, args, "user", signal);
@@ -4023,6 +4071,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     } else if (entry?.kind === "text" && entry.text !== first) {
       replaceFirst(entry.text);
     }
+    if(ide?.connected&&liveSettings.get<boolean>("ide.selection.enabled")){const selected=await ide.selection(signal,liveSettings.get<number>("ide.selection.maxLines"));if(selected)content=typeof content==="string"?[{type:"text",text:content},{type:"text",text:selected}]:[...content,{type:"text",text:selected}];}
     // SPEC-MOT-006 § 5.3 steps 1 and 2: outside the interface, the references of a message are attached here (the
     // input area attaches them itself, SPEC-IHM-010).
     if (!app && entry?.kind !== "command" && first !== undefined) {
@@ -4166,7 +4215,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       return outcome;
     }
     finally {
-      processingRequests--; ended?.(); hookParentSignal = deps.signal;
+      processingRequests--; ended?.(); hookParentSignal = deps.signal;queueMicrotask(()=>inbound?.flush());
       peers?.update();
       for (const release of skillHookReleases.get(skillAllows) ?? []) release();
       skillHookReleases.delete(skillAllows); skillAllows.length = 0;
@@ -4174,6 +4223,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   };
 
   let pruneRequested = false;
+  inbound?.attach((message,server)=>{if(controller.signal.aborted||policyRefusal())return false;applySettingsChanges();if(!channelAllowed(server)&&!developmentChannels.has(server))return false;const accepted=app?app.enqueueScheduled(message):control?control.enqueueScheduled(message):false;if(accepted){transcript?.append("system",{event:"incoming_channel"});wakes?.emit("message");}return accepted;});
   let pruneNote: string | undefined;
   const launchWorkflowCommand = async (name: string, args: string, signal: AbortSignal): Promise<RequestOutcome> => {
     let inputs: unknown; try { inputs = args.trim() ? JSON.parse(args) : {}; } catch { return { refused: "Paramètres du flux : objet JSON attendu." }; }
@@ -4182,7 +4232,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     const note = (part?.content ?? []).filter(content => content.type === "text").map(content => content.text).join("\n"); return part?.isError ? { refused: note } : { note };
   };
   let agentDraft: { path: string; content: string } | undefined;
-  let generatedSkill: { path: string; content: string } | undefined;
+  let generatedSkills: Array<{path:string;content:string}> = [];
   const saveReviewedFile = async (path: string, content: string, signal: AbortSignal, expected?: string): Promise<string | undefined> => {
     if (assistedReadDenied(path) || !registry.get("write_file")) return "Fichier exclu ou outil d’écriture indisponible.";
     if (redactOutput(maskSecrets(content)) !== content) return "Contenu sensible refusé.";
@@ -4276,12 +4326,25 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         agentDraft = { path: join(locations.configDir, "agents", `${parsed.name}.md`), content };
         const report = `Définition proposée, aucun fichier créé. Relisez puis /agents save pour demander l’écriture protégée :\n${content}`; return { note: report, shown: text(report) };
       }
+      case "companion":{
+        if(buildFlag("ui_companion")){
+        if(!app||!companion||!buildFlag("ui_companion")||!liveSettings.get<boolean>("ui.companion.enabled"))return{refused:"Commande indisponible."};
+        const soul=liveSettings.get<CompanionSoul|undefined>("ui.companion.soul"),value=args.trim();
+        if(value==="hide"){setValueInSettingsFile(locations.userSettingsFile,["ui","companion","enabled"],false,system.platform);applySettingsChanges();return{note:"Compagnon masqué."};}
+        if(value&&!value.startsWith("rename ")&&value!=="show"&&value!=="info")return{refused:"Usage : /companion [show|hide|info|rename <nom>]."};
+        const name=value.startsWith("rename ")?value.slice(7).trim():soul?.name??companionName((await companyAccount?.profile())?.account);
+        if(!name||[...name].length>32||/[\u0000-\u001f\u007f]/.test(name))return{refused:"Nom de compagnon invalide."};
+        if(!soul||value.startsWith("rename ")){if(!await app.confirm("Nom proposé : "+name+". Enregistrer ce compagnon ?","enregistrer","annuler",false,signal))return{silent:true};setValueInSettingsFile(locations.userSettingsFile,["ui","companion","soul"],{name,personality:soul?.personality??"patient"},system.platform);applySettingsChanges();}
+        app.refresh();return{note:(!soul?"Compagnon éclos : ":"Compagnon : ")+name+" · "+companion.skeleton.species+" · "+companion.skeleton.rarity};
+        }return{refused:"Commande indisponible."};
+      }
       case "generate-skills": {
         if (minimal || !trust.trusted || managedOnlyCustomisation) return { refused: "La génération de compétences exige un projet approuvé et des personnalisations autorisées." };
-        if (args.trim() === "save") { if (!generatedSkill) return { refused: "Aucune proposition à enregistrer." }; if (existsSync(generatedSkill.path)) return { refused: "Compétence existante : mise à jour à relire séparément." }; const refused = await saveReviewedFile(generatedSkill.path, generatedSkill.content, signal); return refused ? { refused } : { note: "Compétence de tests enregistrée après relecture et permission." }; }
+        if (args.trim() === "save") { if(!generatedSkills.length)return{refused:"Aucune proposition à enregistrer."};for(const proposed of generatedSkills){if(existsSync(proposed.path))return{refused:"Compétence existante : mise à jour à relire séparément."};const refused=await saveReviewedFile(proposed.path,proposed.content,signal);if(refused)return{refused};}return{note:"Compétences de vérification enregistrées après relecture et permission."}; }
         if (args.trim()) return { refused: "Usage : /generate-skills [save]." };
+        const verifiers=proposeWebVerifiers(cwd,assistedReadDenied);if(verifiers.length){generatedSkills=verifiers.map(proposal=>({path:join(projectReal,identity.get("PROJECT_DIR"),"skills",proposal.name,"definition.md"),content:proposal.content}));const report="Deux compétences proposées : interface et serveur. Relisez puis /generate-skills save pour demander les écritures protégées.\n"+verifiers.map(proposal=>proposal.content).join("\n");return{note:report,shown:text(report)};}
         const content = proposeTestSkill(cwd, assistedReadDenied); if (!content) return { note: "Aucune procédure de test identifiable dans package.json." };
-        const path = join(projectReal, identity.get("PROJECT_DIR"), "skills", "project-tests", "definition.md"); generatedSkill = { path, content };
+        const path = join(projectReal, identity.get("PROJECT_DIR"), "skills", "project-tests", "definition.md"); generatedSkills = [{ path, content }];
         const report = `Compétence proposée : lancer les tests déclarés dans package.json. ${existsSync(path) ? "Une compétence similaire existe : relisez une mise à jour." : "Relisez puis /generate-skills save pour demander l’écriture protégée."}\n${content}`; return { note: report, shown: text(report) };
       }
       case "skill-improvements": {
@@ -4461,6 +4524,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       }
       case "help":
         return { shown: helpView(commandCatalog().entries(), keymap) };
+      case "editor-link": {
+        if(!ide||!app)return {refused:"Connexion IDE indisponible dans ce mode."};const candidates=ide.list();if(!candidates.length)return {shown:text("Aucun IDE compatible détecté. Installez et démarrez l’extension IDE de votre distribution.")};const chosen=await app.choose("Choisir l’IDE de cette session",candidates.map(row=>({label:row.name+" ("+row.id+")"})),{other:false});if(chosen.kind!=="options")return {silent:true};const target=candidates.find(row=>row.name+" ("+row.id+")"===chosen.labels[0]);if(!target)return {silent:true};try{await ide.connect(target.id,controller.signal);return {shown:text(ide.status)};}catch(cause){return {refused:(cause as Error).message};}
+      }
       case "transcript":
         app?.openTranscript();
         return { silent: true };
@@ -4904,6 +4970,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         else if (verb === "erreurs") {
           const problems = [...installedExtensions.imposedProblems, ...installedExtensions.report, ...extensions.report];
           lines.push(...(problems.length > 0 ? problems : ["Aucune erreur d'extension."]));
+        } else if(verb==="config"){
+          if(!app||!ref||!scopeWord)return{refused:"Usage interactif : /extensions config <référence> <option secrète>."};
+          const target=extensions.loaded.find(item=>item.id===ref);if(!target)return{refused:"Extension active inconnue ; précisez son catalogue."};
+          const value=await app.requestSecret("Option secrète : "+ref+" / "+scopeWord,signal);if(value===undefined)return{silent:true};
+          try{await extensionSecrets.set(ref,target.extension.root,scopeWord,value);extensionSecretValues=await extensionSecrets.load([...installedExtensions.active,...sessionExtensions.map(root=>({root,origin:"session" as const}))]);rememberExtensionSecrets();return{note:"Option enregistrée uniquement dans le trousseau système. Rechargez les extensions ou démarrez une nouvelle session pour les connecteurs."};}catch{return{refused:"Option secrète non enregistrée : valeur invalide ou trousseau indisponible."};}
         } else if (verb === "install") {
           if (!ref) return { refused: "Usage : /extensions install <extension>@<catalogue> [user|project|local]." };
           if (!app) return { refused: "L'installation demande l'accord de l'utilisateur dans l'interface." }; // EF-01
@@ -4921,6 +4992,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         if (minimal) return { refused: "Session minimale : les extensions ne sont pas chargées." };
         applySettingsChanges(); // step 1: the activations written since, by this session or another one
         installedExtensions = await activation(liveSettings);
+        extensionSecretValues=await extensionSecrets.load([...installedExtensions.active,...sessionExtensions.map(root=>({root,origin:"session" as const}))]);rememberExtensionSecrets();
         const next = contributions(installedExtensions.active, liveSettings);
         const before = new Set(extensions.loaded.map((l) => l.id));
         const after = new Set(next.loaded.map((l) => l.id));
@@ -5438,6 +5510,14 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       const maintenance = new InstallationMaintenance({ store: installation, enabled: env.ownBoolean("NO_AUTO_UPDATES") !== true && settings.get<boolean>("updates.automatic.enabled"), channel: settings.get<string>("updates.channel"), keep: settings.get<number>("maintenance.keepVersions"), lastInteraction: () => interactiveApp.lastInteractionAt, delayMs: deps.installationMaintenanceDelayMs, idleMs: deps.installationMaintenanceIdleMs, report: message => interactiveApp.notice("info", message), log: (event, count) => debug.log("installation", event, { count }), onUpdated: version => { downloadedVersion = version; } });
       maintenance.start(); (holder.finalizers ??= []).push(() => maintenance.close());
     } else if (!offlineMinimal && packageAdvice(installMethod, identity.get("PRODUCT_CLI"))) interactiveApp.notice("info", `Mise à jour par gestionnaire : ${packageAdvice(installMethod, identity.get("PRODUCT_CLI"))}`);
+    if(buildFlag("extension_maintenance")&&!offlineMinimal&&!minimal){
+      const updates=new ExtensionMaintenance({configDir:locations.configDir,cwd,env:{...env.childEnvironment(),[env.prefix+"CONFIG_HOME"]:locations.configDir},mode:settings.get("extensions.autoUpdate"),intervalMs:settings.get("extensions.updateInterval"),report:message=>interactiveApp.notice("info",redactOutput(maskSecrets(message))),confirm:async(question,signal)=>{if(interactiveApp.running||interactiveApp.autonomousInputBusy){interactiveApp.notice("info","Mise à jour avec code exécutable : relancez extension update pour la confirmer.");return false;}return interactiveApp.confirm(question,"mettre à jour","annuler",false,signal);}});
+      updates.start();(holder.finalizers??=[]).push(()=>updates.close());
+      if(trust.trusted&&!managedOnlyCustomisation){
+        const missing=Object.entries(liveSettings.get<Record<string,unknown>>("extensions.enabled")).filter(([key,value])=>value===true&&liveSettings.valuesByScope("extensions.enabled").some(scope=>(scope.origin==="project"||scope.origin==="local")&&(scope.value as Record<string,unknown>)[key]===true)&&!listInstalled(locations.configDir).some(item=>item.name+"@"+item.catalog===key));
+        for(const[ref]of missing.slice(0,20)){if(controller.signal.aborted)break;interactiveApp.notice("info","Extension du projet non installée : "+ref+".");if(await interactiveApp.confirm("Installer l’extension du projet "+ref+" ?","examiner l’installation","plus tard",false,controller.signal)){const outcome=await runInternalCommand(INTERNAL_COMMANDS.find(command=>command.name==="extensions")!,"install "+ref+" project",controller.signal);if(outcome.refused)interactiveApp.notice("warning",outcome.refused);else if(outcome.note)interactiveApp.notice("info",outcome.note);}}
+      }
+    }
     holder.errSink = (text) => interactiveApp.writeLine(text);
     if (reopened && replay !== "none") replayHistory(interactiveApp, reopened.chain, replay === "full", (name, input) => registry.get(name)?.summary(input as never) ?? "");
     const onSignal = () => interactiveApp.forceExit();
@@ -5781,7 +5861,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       phase("affichage");
       reportPhases();
     }
-    controlEnd = await control.run(ops, link ? link.lines() : streams.stdinLines(), parsed.prompt !== undefined && parsed.prompt.trim() !== "" ? [{ type: "text", text: parsed.prompt }] : undefined, controller.signal);
+    const controlRunning=control.run(ops, link ? link.lines() : streams.stdinLines(), parsed.prompt !== undefined && parsed.prompt.trim() !== "" ? [{ type: "text", text: parsed.prompt }] : undefined, controller.signal);inbound?.flush();controlEnd=await controlRunning;
     if (controlEnd.kind === "refused") err(controlEnd.message);
     const reopenable = transcript ? ` ; la session reste reprenable (--reopen=${sessionId})` : "";
     // FA-03 of SPEC-MOD-007: the resumption window expired; the run stops, the session stays reopenable.

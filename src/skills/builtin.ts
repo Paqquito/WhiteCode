@@ -2,6 +2,8 @@
 // built into the product: their definitions, their invocation and their tools)
 // Supports: SPEC-EXT-019 (same header and same invocation as the other skills), gap E-117
 
+import filler from "../../prompts/skills/filler-text.md" with { type:"text" };
+import rescue from "../../prompts/skills/session-rescue.md" with { type:"text" };
 import batch from "../../prompts/skills/batch.md" with { type: "text" };
 import configGuide from "../../prompts/skills/config-guide.md" with { type: "text" };
 import debug from "../../prompts/skills/debug.md" with { type: "text" };
@@ -16,7 +18,7 @@ import memoryConsolidation from "../../prompts/skills/memory-consolidation.md" w
 import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 import { splitHeader, type Invocation, type Skill } from "./registry";
 
-const SOURCES = [batch, configGuide, debug, promoteMemory, simplify, skillFromSession, verify, shortcutHelp, apiGuide, ...(buildFlag("scheduled_triggers") ? [loop] : []), ...(buildFlag("memory_consolidation") ? [memoryConsolidation] : [])];
+const SOURCES = [...(buildFlag("skill_filler_text")?[filler]:[]),...(buildFlag("skill_session_rescue")?[rescue]:[]),batch, configGuide, debug, promoteMemory, simplify, skillFromSession, verify, shortcutHelp, apiGuide, ...(buildFlag("scheduled_triggers") ? [loop] : []), ...(buildFlag("memory_consolidation") ? [memoryConsolidation] : [])];
 
 /** The skills of the product, scope `product`: a skill of the same name of any other scope replaces it. */
 export function builtinSkills(): Skill[] {

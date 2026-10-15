@@ -82,8 +82,8 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
       op("remove", "Désinstalle une extension.", { args: "<nom>", delivered: true, options: ["scope", "force", "preserve-data"] }),
       op("enable", "Active une extension installée.", { args: "<nom>", delivered: true, options: ["scope"] }),
       op("disable", "Désactive une extension installée.", { args: "<nom>", delivered: true, options: ["scope"] }),
-      op("update", "Met à jour une ou toutes les extensions.", { args: "[<nom>]", delivered: true, options: ["force"] }),
-      op("rollback", "Revient à la version précédente d'une extension.", { args: "<nom>" }),
+      op("update", "Met à jour une ou toutes les extensions.", { args: "[<nom>]", delivered: true, options: ["force", "auto", "notify-only", "approval-pipe"] }),
+      op("rollback", "Revient à la version précédente d'une extension.", { args: "<nom>", delivered: true }),
       op("validate", "Vérifie la conformité d'une extension en cours de développement.", { args: "<chemin>", delivered: true, options: ["json"] }),
     ],
   },
@@ -157,7 +157,7 @@ export const FAMILY_BY_NAME: ReadonlyMap<string, FamilyDef> = new Map(FAMILY_CAT
 
 /** Common options of the sub-commands (§ 5.4): `true` when the option takes a value. */
 /** § 5.4 of SPEC-MOD-012, plus the options proper to an operation: `--lean-context` (SPEC-EXT-004), `--installable` (SPEC-EXT-002). */
-export const COMMON_OPTIONS: Readonly<Record<string, boolean>> = { json: false, scope: true, force: false, "preserve-data": false, name: true, verbose: false, help: false, "lean-context": true, installable: false, capabilities: true, root: true, transport: true, "approval-mode": true, listen: true, orchestrator: false, env: true, header: true, declaration: true, check: false, channel: true, version: true, company: false, refresh: false, resolve: true, restore: true };
+export const COMMON_OPTIONS: Readonly<Record<string, boolean>> = { auto: false, "notify-only": false, "approval-pipe": false, json: false, scope: true, force: false, "preserve-data": false, name: true, verbose: false, help: false, "lean-context": true, installable: false, capabilities: true, root: true, transport: true, "approval-mode": true, listen: true, orchestrator: false, env: true, header: true, declaration: true, check: false, channel: true, version: true, company: false, refresh: false, resolve: true, restore: true };
 
 export interface ParsedSubcommand {
   readonly family: string;

@@ -7,6 +7,7 @@
 import { parse, type ParseError } from "jsonc-parser";
 import { fingerprint } from "../shared/fingerprint";
 import { secureConnectorUrl } from "./url";
+import { secureWebSocketUrl } from "./ws-client";
 import type { OAuthConfiguration } from "./oauth";
 // Supports: SPEC-MCP-006, SPEC-MCP-008 (validated declarations and approval fingerprints), gap E-155.
 
@@ -124,6 +125,7 @@ function readSource(src: ConnectorSource, warnings: string[]): ConnectorDeclarat
     if ((transport === "http" || transport === "sse") && typeof d["url"] === "string" && !d["url"].startsWith("${")) {
       try { secureConnectorUrl(d["url"].replace(/\$\{[^}]+\}/g, "localhost")); } catch { problems.push("URL non sécurisée refusée"); }
     }
+    if(transport==="ws"&&typeof d["url"]==="string"&&!d["url"].startsWith("${")){try{secureWebSocketUrl(d["url"].replace(/\$\{[^}]+\}/g,"localhost"));}catch{problems.push("URL WebSocket non sécurisée refusée");}}
     if (d["timeout"] !== undefined && !(Number.isInteger(d["timeout"]) && (d["timeout"] as number) > 0 && (d["timeout"] as number) <= 86_400_000)) problems.push("timeout doit être un entier de 1 à 86400000 millisecondes");
     if (d["headersCommand"] !== undefined && (transport === "stdio" || typeof d["headersCommand"] !== "string" || d["headersCommand"].trim() === "" || d["headersCommand"].length > 8192)) problems.push("headersCommand doit être une commande de transport distant");
     if (d["oauth"] !== undefined) {
@@ -172,7 +174,7 @@ function wildcard(pattern: string): RegExp {
 }
 
 /** One criterion of the managed lists: `{ name }`, `{ command }` (command and exact arguments, EF-03) or `{ url }` (pattern). */
-function matches(criterion: unknown, d: ConnectorDeclaration): boolean {
+export function connectorMatches(criterion: unknown, d: ConnectorDeclaration): boolean {
   if (typeof criterion !== "object" || criterion === null) return false;
   const c = criterion as Record<string, unknown>;
   if (typeof c["name"] === "string") return c["name"] === d.name;
@@ -204,9 +206,9 @@ export function resolveConnectors(sources: readonly ConnectorSource[], o: Resolv
   const connectors: ConnectorDeclaration[] = [];
   for (const d of chosen.values()) {
     let reason: string | undefined;
-    if (o.denyList.some((c) => matches(c, d))) reason = "Connecteur bloqué par votre organisation (mcp.denyList).";
+    if (o.denyList.some((c) => connectorMatches(c, d))) reason = "Connecteur bloqué par votre organisation (mcp.denyList).";
     else if (o.managedServersOnly && d.scope !== "managed") reason = "Connecteur bloqué par votre organisation : seuls les connecteurs gérés sont admis (mcp.managedServersOnly).";
-    else if (o.allowList !== undefined && !o.allowList.some((c) => matches(c, d))) reason = "Connecteur bloqué par votre organisation : absent de mcp.allowList.";
+    else if (o.allowList !== undefined && !o.allowList.some((c) => connectorMatches(c, d))) reason = "Connecteur bloqué par votre organisation : absent de mcp.allowList.";
     else if (d.scope === "project") {
       const choice = o.projectChoice(d);
       if (choice === "refused") reason = "connecteur de projet refusé";

@@ -11,6 +11,9 @@ import type { Tool } from "../tools/types";
 import { expand, type ConnectorDeclaration } from "./declarations";
 import { ConnectionError, StdioConnection, type McpPromptInfo, type McpToolInfo } from "./stdio-client";
 import { AuthenticationRequired, HttpConnection } from "./http-client";
+import { buildFlag } from "../extension-points/build-flags" with {type:"macro"};
+import { WebSocketConnection } from "./ws-client";
+import type { connectWebSocket } from "../platform/websocket";
 import { connectorTool, qualifiedToolName, schemaProblem } from "./tools";
 import { ConnectorHeaders } from "./headers";
 import type { ShellChoice } from "../hooks/command";
@@ -32,6 +35,9 @@ export interface ConnectorStatus {
 }
 
 export interface ConnectorManagerOptions {
+  readonly onInbound?:(server:string,params:unknown)=>void;
+  readonly wsConnect?:typeof connectWebSocket;
+  readonly wsPingIntervalMs?:number;
   /** Shared proxy, authorities and client certificate configuration. */
   readonly fetch?: typeof fetch;
   readonly headerShell?: ShellChoice;
@@ -243,7 +249,7 @@ export class ConnectorManager {
 
   async #connect(e: Entry): Promise<void> {
     if (this.#closed || e.state === "disabled") return;
-    if (!["stdio", "http", "sse"].includes(e.d.transport)) return this.#fail(e, `transport ${e.d.transport} non disponible dans cette version`, false);
+    if (!["stdio", "http", "sse", "ws"].includes(e.d.transport)) return this.#fail(e, `transport ${e.d.transport} non disponible dans cette version`, false);
     const launch = this.#launch(e);
     if (typeof launch === "string") return this.#fail(e, launch, false);
     e.state = "connecting";
@@ -253,7 +259,8 @@ export class ConnectorManager {
         connectTimeoutMs: e.d.timeoutMs ?? this.#o.connectTimeoutMs,
         clientInfo: this.#o.clientInfo,
         onRequest: (_method: string, params: unknown, signal: AbortSignal) => this.#o.elicitation?.(e.d.name, params, AbortSignal.any([signal, this.#shutdown.signal])) ?? Promise.resolve({ action: "cancel" }),
-        onNotification: (method: string) => {
+        onNotification: (method: string,params:unknown) => {
+          if(method==="notifications/channel/message")this.#o.onInbound?.(e.d.name,params);
           if (method === "notifications/tools/list_changed") void this.#refresh(e);
           if (method === "notifications/prompts/list_changed") void this.#refreshPrompts(e);
           if (method === "notifications/resources/list_changed") void this.resources(e.d.name, this.#shutdown.signal).then(() => this.#o.changed({ kind: "resources_changed", name: e.d.name })).catch(() => this.#o.report("avertissement : liste de ressources indisponible."));
@@ -265,7 +272,9 @@ export class ConnectorManager {
       const headers = Object.fromEntries(Object.entries(e.d.headers).map(([k, v]) => [k, expand(v, this.#o.variables, missing)]));
       if (missing.size > 0) return this.#fail(e, `erreur de configuration : variable ${[...missing].join(", ")} non définie`, false);
       if (e.d.transport !== "stdio") {
-        e.oauth ??= this.#o.oauth?.(e.d, url);
+        if(e.d.transport==="ws"&&!buildFlag("connector_websocket"))throw new ConnectionError("Transport WebSocket absent de cette distribution.");
+        if(e.d.transport==="ws"&&e.d.oauth)throw new ConnectionError("OAuth WebSocket non disponible ; utilisez un en-tête ou le transport HTTP.");
+        if(e.d.transport!=="ws")e.oauth ??= this.#o.oauth?.(e.d, url);
         if (e.d.headersCommand && !e.headers) {
           if (!this.#o.headerShell) throw new ConnectionError("Programme d'en-têtes : aucun shell disponible.");
           e.headers = new ConnectorHeaders({ name: e.d.name, url, command: e.d.headersCommand, cwd: launch.cwd, env: { ...this.#o.environment(launch.env), MCP_CONNECTOR_NAME: e.d.name, MCP_CONNECTOR_URL: url }, shell: this.#o.headerShell, platform: this.#o.platform, ttlMs: this.#o.headersTtlMs ?? 900000, timeoutMs: this.#o.headersTimeoutMs ?? 10000 });
@@ -282,7 +291,7 @@ export class ConnectorManager {
         env: this.#o.environment(launch.env),
         platform: this.#o.platform,
         ...common,
-      }) : await HttpConnection.open({ ...common, url, headers, getHeaders, transport: e.d.transport as "http" | "sse", fetch: this.#o.fetch });
+      }) : e.d.transport==="ws"?await WebSocketConnection.open({...common,url,headers:await(async()=>{const values=new Headers(headers);for(const[name,value]of Object.entries(await getHeaders?.(this.#shutdown.signal,false)??{}))values.set(name,value);return Object.fromEntries(values);})(),connect:this.#o.wsConnect,pingIntervalMs:this.#o.wsPingIntervalMs}):await HttpConnection.open({ ...common, url, headers, getHeaders, transport: e.d.transport as "http" | "sse", fetch: this.#o.fetch });
       if (this.#closed || (e.state as ConnectorState) === "disabled") return void (await conn.close(0));
       e.conn = conn;
       const list = await conn.listTools(common.connectTimeoutMs);

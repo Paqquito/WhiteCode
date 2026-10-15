@@ -5,6 +5,7 @@
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { comparablePath, type PlatformName } from "../platform/system";
+import { processExists } from "../platform/process";
 
 export interface Presence {
   readonly sessionId: string;
@@ -53,7 +54,8 @@ export class PresenceRegistry {
         continue; // being written, or not ours
       }
       if (this.#now().getTime() - Date.parse(p.heartbeat) > this.#o.timeoutMs) {
-        rmSync(path, { force: true });
+        // A stalled but living process remains evidence for session-rescue; only dead presences are pruned.
+        if(!processExists(p.pid))rmSync(path, { force: true });
         continue;
       }
       if (p.sessionId !== ownSessionId) live.push(p);

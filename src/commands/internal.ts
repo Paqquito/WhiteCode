@@ -11,6 +11,8 @@ import type { InternalCommand } from "./catalog";
 import { buildFlag, buildProfile } from "../extension-points/build-flags" with { type: "macro" };
 
 export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
+  ...(buildFlag("ui_companion")?[{name:"companion",description:"Fait éclore le compagnon décoratif local et règle son affichage.",kind:"action",widening:false,interactiveOnly:true}] as readonly InternalCommand[]:[]),
+  {name:"editor-link",description:"Connecte cette session à un IDE local compatible choisi.",kind:"action",widening:false,interactiveOnly:true},
   ...(buildFlag("terminal_setup")?[{ name: "configure-terminal", description: "Configure Maj+Entrée après confirmation et sauvegarde ; restore rétablit une sauvegarde.", kind: "action", widening: true, usage: "[restore <sauvegarde>]", interactiveOnly: true }] as readonly InternalCommand[]:[]),
   ...(buildFlag("ui_merch") ? [{ name: "merch", description: "Ouvre la boutique configurée sur demande explicite.", kind: "action", widening: false, interactiveOnly: true }] as readonly InternalCommand[] : []),
   { name: "aside", description: "Pose une question annexe en lecture seule sans interrompre le tour.", kind: "display", widening: false, usage: "<question>", interactiveOnly: true },

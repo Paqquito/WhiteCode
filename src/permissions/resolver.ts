@@ -8,6 +8,7 @@ import type { AskOrigin, Decision } from "./engine";
 import type { FileChange } from "../shared/diff";
 
 export type HumanAnswer =
+  | { readonly answer: "yes_modified"; readonly input: Record<string, unknown> }
   | { readonly answer: "yes" }
   | { readonly answer: "yes_always"; readonly scope: "session" | "local" | "project" | "user"; readonly rule: string }
   | { readonly answer: "no" }
@@ -190,6 +191,8 @@ async function askHuman(request: ApprovalRequest, human: HumanApprovalChannel, s
   const a = await human.request(request, signal);
   if (signal.aborted) return cancelled();
   switch (a.answer) {
+    case "yes_modified":
+      return {decision:"allow",by:"human",input:a.input};
     case "yes":
       return { decision: "allow", by: "human" };
     case "yes_always":

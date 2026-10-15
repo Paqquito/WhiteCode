@@ -77,7 +77,9 @@ export async function activeInstalled(i: ActivationInputs): Promise<Activations>
       report.push(`Extension ${key} ignorée : seules les extensions gérées sont admises (extensions.managedOnly).`); // EF-03
       continue;
     }
-    let version = installedVersions(i.configDir, catalog, name)[0];
+    const versions=installedVersions(i.configDir,catalog,name),pin=i.settings.get<Record<string,string>>("extensions.pinnedVersions")[key];
+    let version = pin?(versions.includes(pin)?pin:undefined):versions[0];
+    if(pin&&!version){const message=`Extension ${key} : version épinglée ${pin} absente ; aucune autre version chargée.`;report.push(message);if(imposed.has(key))imposedProblems.push(message);continue;}
     if (!version && imposed.has(key) && i.installMissing !== false) {
       const problem = await installImposed(i, key);
       if (problem) imposedProblems.push(`Extension imposée ${key} indisponible : ${problem}.`); // FA-01

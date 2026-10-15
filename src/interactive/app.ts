@@ -156,6 +156,8 @@ export interface AppOptions {
   readonly externalEditor?: (draft: string) => Promise<string | undefined>;
   readonly messageActions?: { readonly enabled: boolean; readonly copy: (text: string) => Promise<boolean>; readonly edit?: (item: TranscriptItem) => Promise<void> };
   readonly footer?: () => { readonly spans: readonly Span[]; readonly padding: number } | undefined;
+  readonly inputDecoration?: (columns:number) => readonly string[];
+  readonly onDecorativeTurnEnd?: (success:boolean) => void;
   readonly developmentBar?: () => string | undefined;
   readonly fileBrowser?: { readonly matches: (query: string, global: boolean) => FileMatch[]; readonly debounceMs: number; readonly open?: (match: FileMatch) => Promise<void> };
   readonly historyBrowser?: boolean;
@@ -177,7 +179,7 @@ export interface AppOptions {
   readonly capabilities: Capabilities;
   readonly settings: AppSettings;
   /** Mode, model and other facts of the status line. */
-  readonly status: () => { readonly mode: string; readonly model: string; readonly scheduled?: string };
+  readonly status: () => { readonly mode: string; readonly model: string; readonly scheduled?: string; readonly ide?:string };
   readonly cycleMode?: () => void;
   /** Background tasks still running, stopped by the exit (SPEC-CMD-023 CA-01). */
   readonly backgroundTasks?: () => number;
@@ -271,6 +273,7 @@ export class InteractiveApp {
   #tip?: string;
   readonly #shownTips = new Set<string>();
   #animation: ReturnType<typeof setInterval> | undefined;
+  #decorationTimer:ReturnType<typeof setInterval>|undefined;
   #stream = "";
   /** Renderer of the response being produced: its finished blocks are not parsed again (ENF-02 of SPEC-IHM-003). */
   #streamRenderer: MarkdownRenderer | undefined;
@@ -524,6 +527,7 @@ export class InteractiveApp {
     this.#session.screen.flush();
     if (this.#o.onAppearance && !this.#o.screenReader) { this.#queryAppearance(); this.#appearanceTimer = setInterval(() => this.#queryAppearance(), 5000); }
     if (buildFlag("ui_dev_bar") && buildProfile() !== "public" && this.#o.developmentBar) this.#developmentTimer = setInterval(() => this.#redraw(), 500);
+    if(this.#o.inputDecoration&&!this.#o.reducedMotion&&!this.#o.screenReader)this.#decorationTimer=setInterval(()=>this.#redraw(),500);
   }
 
   /** Replays input captured after startup consent once the ordinary input consumer is installed. */
@@ -536,6 +540,7 @@ export class InteractiveApp {
     this.#exiting = true;
     clearInterval(this.#developmentTimer); this.#developmentTimer = undefined;
     clearInterval(this.#appearanceTimer); this.#appearanceTimer = undefined;
+    clearInterval(this.#decorationTimer);this.#decorationTimer=undefined;
     if (this.#cursorShape) {
       this.#o.terminal.write("\u001b[0 q"); // the shape of the cursor found at start
       this.#cursorShape = "";
@@ -637,6 +642,7 @@ export class InteractiveApp {
 
   /** The turn is over: what remains of the response is committed; the interruption leaves its marker (FA-01). */
   endTurn(outcome: { readonly stopCause: string; readonly message?: string }): void {
+    this.#o.onDecorativeTurnEnd?.(outcome.stopCause==="completed");
     if (this.#tipTimer) clearTimeout(this.#tipTimer); this.#tipTimer = undefined;
     this.#stopAnimation();
     this.#flushStream();
@@ -1662,7 +1668,8 @@ export class InteractiveApp {
   /** The input area: a frame, the prompt, the text and its caret, at most `ui.inputMaxHeight` lines around the caret. */
   #inputNode(columns: number, ctx: LayoutContext): Node {
     const ed = this.#editor;
-    const inner = Math.max(1, (ctx.narrow ? columns : columns - 4) - 2);
+    const decoration=!this.#o.screenReader&&columns>=100?this.#o.inputDecoration?.(columns)??[]:[];
+    const inner = Math.max(1, (ctx.narrow ? columns : columns - 4) - 2 - (decoration.length?24:0));
     const placeholder = ed.isEmpty;
     const keyword = this.shellLine ? undefined : this.#o.maxKeyword?.();
     const ranges = keyword ? keywordRanges(ed.text, keyword.keyword) : [];
@@ -1709,7 +1716,7 @@ export class InteractiveApp {
       border: { style: shell ? { fg: { ansi: 5 } } : this.#sessionColor !== undefined ? { fg: { ansi: this.#sessionColor } } : { dim: true } },
       padding: { left: 1, right: 1 },
     });
-    return node;
+    return decoration.length?box([box([node],{width:"grow"}),box(decoration.map(line=>text(line,{overflow:"clip"})),{width:24,padding:{left:1}})],{direction:"row"}):node;
   }
 
   /** The text that will be sent when it differs from the input (doubled trigger characters), otherwise undefined. */
@@ -1723,8 +1730,8 @@ export class InteractiveApp {
   #statusNode(): Node {
     const s = this.#o.status();
     const custom = this.#o.footer?.();
-    if (custom) return text([{ text: `mode : ${s.mode}${this.#queue.length ? ` · ${this.#queue.length} en attente` : ""}${s.scheduled ? ` · planifié : ${s.scheduled}` : ""} · ${" ".repeat(custom.padding)}`, style: { dim: true } }, ...custom.spans, { text: " ".repeat(custom.padding) }], { overflow: "clip" });
-    const parts: Span[] = [{ text: `mode : ${s.mode}` }, { text: ` · ${s.model}` }];
+    if (custom) return text([{ text: `mode : ${s.mode}${this.#queue.length ? ` · ${this.#queue.length} en attente` : ""}${s.scheduled ? ` · planifié : ${s.scheduled}` : ""}${s.ide?` · ${s.ide}`:""} · ${" ".repeat(custom.padding)}`, style: { dim: true } }, ...custom.spans, { text: " ".repeat(custom.padding) }], { overflow: "clip" });
+    const parts: Span[] = [{ text: `mode : ${s.mode}` }, { text: ` · ${s.model}` },...(s.ide?[{text:` · ${s.ide}`}]:[])];
     if (s.scheduled) parts.push({ text: ` · planifié : ${s.scheduled}` });
     // EF-05 of SPEC-IHM-011: the number of waiting messages is always visible when not zero.
     if (this.#queue.length > 0) parts.push({ text: ` · ${this.#queue.length} message${this.#queue.length > 1 ? "s" : ""} en attente`, style: { bold: true } });

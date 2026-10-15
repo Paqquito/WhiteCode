@@ -7,6 +7,7 @@ import type { CredentialVault } from "../platform/credential-vault";
 import { ordinaryPrivateFile, readPrivateText } from "../shared/private-text";
 import { currentPlatform } from "../platform/system";
 import { writeAtomic } from "../tools/text-file";
+import {remoteEvents} from "../remote/events";
 
 export interface AccountProfile { readonly method: "company"; readonly account: string; readonly organization: { readonly id: string; readonly name: string }; readonly roles: readonly string[]; readonly expiresAt: number; readonly updatedAt: number }
 export type CompanyService = "account" | "settings" | "policy" | "memory" | "metrics" | "sessions" | "triggers" | "connectors" | "events" | "share";
@@ -76,19 +77,29 @@ export class CompanyAccount {
     ordinaryPrivateFile(this.#profileFile, 32768); writeAtomic(this.#profileFile, Buffer.from(JSON.stringify({ ...profile, generation: token.generation })), currentPlatform(), true); return { profile, generation: token.generation };
   }
   async request(service: CompanyService, path: string, body: unknown, parent: AbortSignal, identity?: { readonly organizationId: string; readonly account?: string }): Promise<unknown> {
+    return json(await this.#response(service,path,body,AbortSignal.any([parent,AbortSignal.timeout(15000)]),identity));
+  }
+  async *events(path:string,after:number,signal:AbortSignal,identity?:{readonly organizationId:string;readonly account?:string}):AsyncGenerator<unknown>{
+    if(!Number.isSafeInteger(after)||after<0)throw new Error("Curseur distant invalide.");
+    const response=await this.#response("sessions",path+`?after=${after}`,undefined,signal,identity,"text/event-stream");
+    yield*remoteEvents(response,signal);
+  }
+  async #response(service: CompanyService, path: string, body: unknown, parent: AbortSignal, identity?: { readonly organizationId: string; readonly account?: string },accept="application/json"): Promise<Response> {
     const profileRequest = service === "account" && path === "profile", required = this.options.forceOrganization?.();
     let verified = !profileRequest ? required ? await this.#validatedProfile(parent) : await this.#cachedProfile() ?? await this.#validatedProfile(parent) : undefined;
     const assertIdentity=()=>{if(identity&&(!verified||verified.profile.organization.id!==identity.organizationId||identity.account!==undefined&&verified.profile.account!==identity.account))throw new Error("Compte ou organisation modifiés pendant l’opération ; recommencez.");};assertIdentity();
     const base = this.#services.get(service); if (!base) throw new Error("Service absent de la configuration de marque.");
     const prefix = base.pathname.endsWith("/") ? base.pathname : base.pathname + "/", url = new URL(path, base.origin + prefix);
     if (url.origin !== base.origin || !url.pathname.startsWith(prefix) || url.username || url.password || url.hash) throw new Error("Adresse hors du service autorisé.");
-    const signal = AbortSignal.any([parent, AbortSignal.timeout(15000)]);
+    const handshake=new AbortController(),timer=setTimeout(()=>handshake.abort(),15000),signal=AbortSignal.any([parent,handshake.signal]);
+    try {
     const authorize = async () => { try { return await this.#oauth.authorize(signal, { expectedGeneration: verified?.generation }); } catch (error) { if (!(error instanceof OAuthGenerationChanged) || profileRequest) throw error; verified = await this.#validatedProfile(signal);assertIdentity(); return this.#oauth.authorize(signal, { expectedGeneration: verified.generation }); } };
     let selected = await authorize();
     if (!selected) throw new Error("Connectez un compte de la société pour utiliser ce service.");
-    const run = () => this.options.fetch(url, { method: body === undefined ? "GET" : "POST", headers: { Authorization: selected!.authorization, Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: "error", signal });
+    const run = () => this.options.fetch(url, { method: body === undefined ? "GET" : "POST", headers: { Authorization: selected!.authorization, Accept: accept, ...(body === undefined ? {} : { "Content-Type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: "error", signal });
     let response = await run();
     if (response.status === 401) { await response.body?.cancel(); if (!profileRequest) verified = await this.#validatedProfile(signal);assertIdentity(); selected = await this.#oauth.authorize(signal, { force: true, rejected: selected.authorization, rejectedVersion: selected.version, expectedGeneration: verified?.generation }); if (!selected) throw new Error("Connexion expirée ; reconnectez le compte."); response = await run(); }
-    return json(response);
+    return response;
+    }finally{clearTimeout(timer);}
   }
 }

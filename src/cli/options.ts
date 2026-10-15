@@ -43,7 +43,7 @@ export const OPTIONS: readonly OptionDef[] = [
   { name: "reopen-project", value: "required", type: "path", group: "Session et exécution", description: "Désigne le projet d’origine pour lever une ambiguïté entre identifiants de sessions.", delivered: true, owner: "SPEC-SES-005" },
   { name: "assign-session-id", value: "required", type: "string", group: "Session et exécution", description: "Impose l'identifiant de la session créée.", delivered: true, owner: "SPEC-SES-001" },
   { name: "ephemeral", value: "none", group: "Session et exécution", description: "N'enregistre pas la session.", delivered: true, owner: "SPEC-SES-012" },
-  { name: "remote-session", value: "required", type: "string", group: "Session et exécution", description: "Crée une session distante.", delivered: false, owner: "SPEC-MOD-014" },
+  { name: "remote-session", value: "required", type: "string", group: "Session et exécution", description: "Crée et suit une session distante avec une clé confiée au service.", delivered: buildFlag("remote_sessions"), owner: "SPEC-MOD-014" },
   { name: "reopen-remote", value: "optional", type: "string", group: "Session et exécution", description: "Rapatrie une session distante.", delivered: false, owner: "SPEC-MOD-015" },
   { name: "background", value: "required", type: "string", group: "Session et exécution", description: "Lance une session d'arrière-plan.", delivered: false, owner: "SPEC-MOD-022" },
   { name: "orchestrator", value: "none", group: "Session et exécution", description: "Active le mode coordinateur.", delivered: false, owner: "SPEC-MOD-028" },
@@ -100,8 +100,8 @@ export const OPTIONS: readonly OptionDef[] = [
   { name: "wait-for-mcp", value: "none", group: "Extensions, connecteurs et configuration", description: "Attend que tous les connecteurs soient prêts.", delivered: true, owner: "SPEC-MCP-022" },
   { name: "extension-dir", value: "required", type: "path", repeatable: true, group: "Extensions, connecteurs et configuration", description: "Charge des extensions depuis un emplacement local.", delivered: true, owner: "SPEC-EXT-014" },
   { name: "extension-dir-watch", value: "none", group: "Extensions, connecteurs et configuration", description: "Recharge les extensions locales à chaque modification.", delivered: false, owner: "SPEC-EXT-014" },
-  { name: "inbound-connectors", value: "required", type: "list", group: "Extensions, connecteurs et configuration", description: "Connecteurs autorisés à pousser des messages entrants.", delivered: false, owner: "SPEC-MCP-013" },
-  { name: "dangerously-allow-unlisted-inbound", value: "none", group: "Extensions, connecteurs et configuration", description: "Accepte des canaux entrants hors liste autorisée.", danger: true, delivered: false, owner: "SPEC-MCP-013" },
+  { name: "inbound-connectors", value: "required", type: "list", group: "Extensions, connecteurs et configuration", description: "Connecteurs autorisés à pousser des messages entrants.", delivered: buildFlag("inbound_channels"), owner: "SPEC-MCP-013" },
+  { name: "dangerously-allow-unlisted-inbound", value: "none", group: "Extensions, connecteurs et configuration", description: "Accepte des canaux entrants hors liste autorisée après confirmation.", danger: true, delivered: buildFlag("inbound_channels"), owner: "SPEC-MCP-013" },
   { name: "minimal", value: "none", delivered: true, group: "Extensions, connecteurs et configuration", description: "Session minimale : sans instructions de projet, extensions, compétences, connecteurs ni crochets non gérés.", owner: "SPEC-MOD-009" },
 
   // Miscellaneous
@@ -114,7 +114,7 @@ export const OPTIONS: readonly OptionDef[] = [
   ...(buildFlag("system_instructions_export") ? [{ name: "export-system-instructions", value: "none", group: "Divers", description: "Affiche les instructions système et quitte.", hidden: true, delivered: true, owner: "SPEC-OBS-019" }] as const : []),
 
   // Integrations
-  { name: "connect-editor", value: "none", group: "Intégrations", description: "Se connecte à l'IDE compatible.", delivered: false, owner: "SPEC-INT-001" },
+  { name: "connect-editor", value: "none", group: "Intégrations", description: "Se connecte à l'IDE compatible.", delivered: buildFlag("ide_bridge"), owner: "SPEC-INT-001" },
   { name: "isolated-copy", value: "optional", type: "string", group: "Intégrations", description: "Démarre dans une copie de travail isolée.", delivered: true, owner: "SPEC-INT-007" },
   { name: "multiplexer", value: "none", group: "Intégrations", description: "Avec --isolated-copy, ouvre la session dans le multiplexeur de terminal.", delivered: false, owner: "SPEC-INT-007" },
   { name: "from-merge-request", value: "required", type: "string", group: "Intégrations", description: "Reprend la session liée à une demande de fusion.", delivered: false, owner: "SPEC-INT-009" },

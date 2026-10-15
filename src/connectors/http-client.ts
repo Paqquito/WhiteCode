@@ -1,6 +1,7 @@
 // Implements: SPEC-MCP-003 (http and legacy sse, EF-01/02/03, RG-01, FA-01/02, CA-01/02/03).
 // Supports: SPEC-MCP-022 (loss and reconnection), SPEC-MCP-009, SPEC-MCP-011, gap E-146.
 // Wire framing follows the official MCP 2025-06-18 and 2024-11-05 transport specifications.
+import { redactConnectorData } from "./redaction";
 import { ConnectionError, McpError, PROTOCOL_VERSIONS, RequestTimeout, type McpCallResult, type McpContent, type McpPromptInfo, type McpToolInfo } from "./stdio-client";
 import { secureConnectorUrl } from "./url";
 
@@ -158,38 +159,7 @@ export class HttpConnection {
       this.#pending.delete(m.id as number); p.resolve(result);
     }
   }
-  #redact(value: unknown, metadata = false): unknown {
-    if (value === undefined || this.#secrets.size === 0) return value;
-    // Match original text once: inserted markers are never input to subsequent replacements.
-    const pattern = new RegExp([...this.#secrets].sort((a, b) => b.length - a.length).map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g");
-    let bytes = 0;
-    const mask = (text: string): string => {
-      bytes += Buffer.byteLength(text);
-      if (bytes > MAX_BYTES) throw new ConnectionError("Résultat MCP masqué trop volumineux.");
-      return text.replace(pattern, (match) => {
-        bytes += 10 - Buffer.byteLength(match);
-        if (bytes > MAX_BYTES) throw new ConnectionError("Résultat MCP masqué trop volumineux.");
-        return "[redacted]";
-      });
-    };
-    const visit = (item: unknown, field = "", opaque = false, depth = 0): unknown => {
-      if (depth > 128) throw new ConnectionError("Résultat MCP trop imbriqué.");
-      if (typeof item === "string") {
-        // Routing names, schema contracts and content discriminants remain protocol data.
-        if (!opaque && (metadata ? field !== "description" && field !== "title" : field === "type" || field === "role" || field === "mimeType")) return item;
-        return mask(item);
-      }
-      if (Array.isArray(item)) return item.map((v) => visit(v, field, opaque, depth + 1));
-      if (item && typeof item === "object") return Object.fromEntries(Object.entries(item).map(([key, v]) => {
-        const data = opaque || key === "structuredContent";
-        return [opaque ? mask(key) : key, visit(v, key, data, depth + 1)];
-      }));
-      return item;
-    };
-    const result = visit(value);
-    if (Buffer.byteLength(JSON.stringify(result)) > MAX_BYTES) throw new ConnectionError("Résultat MCP masqué trop volumineux.");
-    return result;
-  }
+  #redact(value: unknown, metadata = false): unknown { return redactConnectorData(value, this.#secrets, metadata); }
   async #stream(response: Response, signal: AbortSignal, stop: () => boolean, receive?: (event: Event) => void): Promise<void> {
     let cursor: string | undefined;
     for (let resume = 0; ; resume++) {
