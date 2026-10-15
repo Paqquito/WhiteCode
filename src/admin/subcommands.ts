@@ -44,9 +44,15 @@ import { catalogAdd, catalogList, catalogRemove, catalogUpdate, extensionAdd, ex
 import { runConnectorAdmin } from "../connectors/admin";
 import { runInstallationAdmin } from "../installation/admin";
 import { multipleInstallations } from "../installation/runtime";
+import { configuredCompanyAccount, describeAccount } from "../auth/company-runtime";
+import { configuredNetwork } from "../config/network";
+import { openAuthorizationUrl } from "../platform/browser";
+import { detectPowerShell } from "../tools/shell-runtime";
+import { SettingsSync } from "../config/settings-sync";
 
 // Supports: SPEC-MOD-011 (CA-10, CA-11: explicit refusal before any session or service), gap E-140.
 export interface AdminDependencies {
+  readonly companyFetch?: typeof fetch;
   readonly installationFetch?: typeof fetch;
   readonly installationExecutable?: string;
   readonly validateCredential?: CredentialValidator;
@@ -99,7 +105,7 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
   }
   // RN-G, CA-01, CA-07, CA-12: a family alone shows its help and does nothing.
   if (parsed.operation === undefined || parsed.options.has("help")) {
-    out(familyHelp(cli, family));
+    out(familyHelp(cli, family.name==="config"&&!deps.identity.has("SERVICE_CONSOLE")?{...family,operations:family.operations.filter(operation=>!["push","pull"].includes(operation.name))}:family));
     return ExitCode.Success;
   }
   const operation = family.operations.find((o) => o.name === parsed.operation);
@@ -139,6 +145,36 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
   if (family.name === "installation") return runInstallationAdmin(deps, parsed, write, out, err);
 
   switch (`${family.name} ${operation.name}`) {
+    case "config push":
+    case "config pull": {
+      if (parsed.args.length) { err("Usage : config push [--resolve local|remote|diff] ; config pull [--restore sauvegarde]."); return ExitCode.UsageOrConfiguration; }
+      try {
+        deps.assertPolicy?.(); if (!deps.identity.has("SERVICE_CONSOLE")) throw new Error("Synchronisation absente de la configuration de marque.");
+        const configuration=loadConfiguration({...deps}), vault=deps.credentialVault??nativeCredentialVault({environment:deps.env.childEnvironment()});
+        const account=configuredCompanyAccount(deps.identity,configuration.locations.configDir,()=>loadConfiguration({...deps}).firstPass,vault,deps.companyFetch??configuredNetwork(deps.env));
+        if(!account) throw new Error("Connectez-vous pour synchroniser vos paramètres.");
+        const secrets=Object.values(deps.env.childEnvironment()).filter(value=>value.length>=8);
+        const sync=new SettingsSync({account,file:configuration.locations.userSettingsFile,include:configuration.firstPass.get("settingsSync.include"),redact:text=>secrets.reduce((safe,value)=>safe.split(value).join("[masqué]"),maskSecrets(text))});
+        const restore=parsed.options.get("restore"), resolution=parsed.options.get("resolve");
+        if(resolution!==undefined&&!["local","remote","diff"].includes(String(resolution)))throw new Error("Résolution attendue : local, remote ou diff.");
+        if(typeof restore==="string") { sync.restore(restore); out("Paramètres restaurés depuis la sauvegarde."); }
+        else if(operation.name==="pull"||resolution==="remote") out(`Paramètres récupérés. Restauration : ${deps.identity.get("PRODUCT_CLI")} config pull --restore ${JSON.stringify(await sync.pull(deps.signal??AbortSignal.timeout(15000)))}`);
+        else out(`Paramètres synchronisés : ${await sync.push(deps.signal??AbortSignal.timeout(15000),resolution as "local"|"diff"|undefined)}.`);
+        return ExitCode.Success;
+      } catch(cause){err(maskSecrets((cause as Error).message));return ExitCode.UsageOrConfiguration;}
+    }
+    case "auth show": {
+      if (parsed.args.length) { err("Usage : auth show [--json] [--refresh]."); return ExitCode.UsageOrConfiguration; }
+      try {
+        deps.assertPolicy?.(); const configuration = loadConfiguration({ ...deps });
+        const vault = deps.credentialVault ?? nativeCredentialVault({ environment: deps.env.childEnvironment() });
+        const account = configuredCompanyAccount(deps.identity, configuration.locations.configDir, () => loadConfiguration({ ...deps }).firstPass, vault, deps.companyFetch ?? configuredNetwork(deps.env));
+        const profile = account ? parsed.options.has("refresh") ? await account.refreshProfile(deps.signal ?? AbortSignal.timeout(15000)) : await account.profile() : undefined;
+        const provider = configuration.firstPass.get<string | undefined>("api.provider");
+        write({ method: profile ? "company" : "provider-key", provider, ...(profile ? { profile } : {}) }, () => `${describeAccount(profile)}\nFournisseur de modèles : ${provider ?? "non configuré"} (clé indépendante).`);
+        return ExitCode.Success;
+      } catch { err("Profil du compte indisponible ; reconnectez le compte ou réessayez le rafraîchissement."); return ExitCode.UsageOrConfiguration; }
+    }
     case "auth login":
     case "auth logout": {
       if (operation.name === "logout" && deps.env.ownBoolean("HIDE_SIGN_OUT") === true) { err("Déconnexion désactivée par la configuration."); return ExitCode.UsageOrConfiguration; }
@@ -156,6 +192,14 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
       };
       try {
         const initial = load();
+        if (parsed.options.has("company")) {
+          const account = configuredCompanyAccount(deps.identity, initial.locations.configDir, () => load().firstPass, vault, deps.companyFetch ?? configuredNetwork(deps.env));
+          if (!account) throw new Error("Connexion au compte absente de la configuration de marque.");
+          check();
+          if (operation.name === "logout") { if (!await ui.confirm("Déconnecter le compte de la société ? L’accès aux modèles par clé est conservé.")) return ExitCode.UsageOrConfiguration; check(); await account.signOut(deps.signal ?? new AbortController().signal); out("Compte de la société déconnecté."); }
+          else { const profile = await account.signIn({ confirm: async () => { const accepted = await ui.confirm("Connecter le compte de la société ? Réalisez vous-même l’authentification dans le navigateur."); check(); return accepted; }, authorize: async (address, signal) => { check(); if (deps.env.ownBoolean("NO_BROWSER") !== true) openAuthorizationUrl(address, deps.system.platform, deps.cwd, deps.env.childEnvironment(), detectPowerShell(undefined, deps.system.platform)?.path); const value = await authDialog(terminal, `Authentification humaine : ${address}\nAttendez le retour local, ou collez l’URL complète de retour (saisie masquée).`, true, signal); return typeof value === "string" ? value : undefined; } }, deps.signal ?? new AbortController().signal); out(describeAccount(profile)); }
+          return ExitCode.Success;
+        }
         const success = operation.name === "login"
           ? await loginWithKey(initial.firstPass.get<string | undefined>("api.provider"), store, ui, deps.validateCredential ?? credentialValidator(initial.firstPass, deps.env), deps.signal, check)
           : await logout(store(), ui, check);

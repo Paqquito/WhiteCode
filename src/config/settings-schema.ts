@@ -258,7 +258,15 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "auth.credentialHelper", schema: str(), scopes: [U, G], owner: "SPEC-API-014" },
   { key: "auth.credentialHelperTtl", schema: durationSchema(), kind: "duration", default: 300000, scopes: [U, G], owner: "SPEC-API-014" },
   { key: "auth.loginMethod", schema: str(), scopes: [G], owner: "SPEC-API-012" },
+  { key: "auth.forceOrganization", schema: Type.String({ minLength: 1, maxLength: 240, pattern: "^[^\\u0000-\\u001f\\u007f]+$" }), scopes: [G], owner: "SPEC-API-012" },
   { key: "auth.credentialStore", schema: enumOf(["auto", "keychain", "file"]), default: "auto", scopes: [U, G], owner: "SPEC-PER-027" },
+  { key: "settingsSync.autoUpload", schema: bool(), default: false, scopes: [U], owner: "SPEC-CFG-006" },
+  { key: "settingsSync.include", schema: strList(), default: ["ui.theme", "ui.input.editMode", "context.language", "models.selected"], scopes: [U], owner: "SPEC-CFG-006" },
+  { key: "memory.team.enabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-MOT-041" },
+  { key: "memory.livingDocs.enabled", schema: bool(), default: false, scopes: [U, P], owner: "SPEC-MOT-032" },
+  { key: "memory.livingDocs.header", schema: Type.String({ minLength: 1, maxLength: 240, pattern: "^[^\\r\\n]+$" }), scopes: [P], owner: "SPEC-MOT-032" },
+  { key: "memory.livingDocs.everyTurns", schema: int(1, 1000), default: 10, scopes: [U], owner: "SPEC-MOT-032" },
+  { key: "telemetry.organizationMetrics", schema: bool(), default: true, scopes: [G], owner: "SPEC-OBS-003", hot: true },
 
   // Storage, sessions, environment
   { key: "memory.automatic.enabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-MOT-036" },

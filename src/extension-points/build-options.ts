@@ -4,6 +4,13 @@ export const BUILD_PROFILES = ["public", "internal", "development", "test"] as c
 export type BuildProfile = (typeof BUILD_PROFILES)[number];
 const option = (value: boolean, description: string, specs: string[], absentMarkers: string[] = []) => ({ description, specs, implemented: value, values: { public: value, internal: value, development: value, test: value }, absentMarkers });
 export const BUILD_OPTIONS = {
+  company_account: option(true, "Compte de société indépendant des clés de modèles.", ["SPEC-API-028", "SPEC-API-023", "SPEC-API-012"]),
+  settings_sync: option(true, "Synchronisation explicite de préférences sans secrets.", ["SPEC-CFG-006"]),
+  organization_metrics: option(true, "Agrégats d’organisation soumis aux refus locaux et distants.", ["SPEC-OBS-003", "SPEC-API-025"]),
+  team_memory: option(true, "Mémoire d’équipe liée au dépôt et à l’organisation.", ["SPEC-MOT-041"]),
+  agent_memory: option(true, "Mémoire propre aux agents déclarant une portée.", ["SPEC-AGT-007"]),
+  living_docs: option(true, "Documents vivants après lecture et décisions durables.", ["SPEC-MOT-032"]),
+  terminal_setup: option(true, "Configuration confirmée des raccourcis du terminal.", ["SPEC-INT-021", "SPEC-CMD-071"]),
   memory_consolidation: option(true, "Consolidation de mémoire sous verrou, copie préalable et tâche visible.", ["SPEC-MOT-039", "SPEC-AGT-022", "SPEC-EXT-035"]),
   context_folding: option(true, "Préparation et repli de tours anciens avec inspection bornée.", ["SPEC-MOT-020", "SPEC-OUT-044"]),
   telemetry_memory_metrics: option(true, "Comptages de mémoire sans nom ni contenu, soumis au refus de télémétrie.", ["SPEC-OBS-006"]),

@@ -23,6 +23,7 @@ export type AgentSource = "built-in" | "user" | "project" | "managed" | "extensi
 
 export interface AgentDefinition {
   readonly hooks?: unknown;
+  readonly memory?: "user" | "project" | "local";
   readonly name: string;
   readonly description: string;
   readonly source: AgentSource;
@@ -117,6 +118,8 @@ export function parseAgent(text: string, file: string, source: AgentLocation["so
   const iterations = header["maxIterations"];
   if (iterations !== undefined && (!Number.isInteger(iterations) || (iterations as number) < 1)) return "maxIterations : entier positif attendu";
   const model = header["model"];
+  const memory = header["memory"];
+  if(memory!==undefined&&!["user","project","local"].includes(String(memory)))return "memory : portée user, project ou local attendue";
   if (header["hooks"] !== undefined) {
     const snapshot = buildSnapshot([{ origin: source, value: header["hooks"], file, labelScope: `agent:${name}` }], { noHooks: false, managedOnly: false, maxTimeoutMs: 600000 });
     for (const warning of [...snapshot.warnings, ...snapshot.ignored.map(i => `${i.label} : ${i.reason}.`)]) warn(warning);
@@ -127,6 +130,7 @@ export function parseAgent(text: string, file: string, source: AgentLocation["so
     source,
     file,
     instructions: body.trim(),
+    ...(memory!==undefined?{memory:memory as "user"|"project"|"local"}:{}),
     ...(tools ? { tools } : {}),
     excludedTools: excluded ?? [],
     ...(typeof model === "string" && model.trim() !== "" ? { model: model.trim() } : {}),

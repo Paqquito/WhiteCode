@@ -2,6 +2,7 @@
 // Supports: SPEC-MOD-011 (CA-10, CA-11: session coordination role), gap E-140.
 // Supports: gaps E-066 (operations delivered in lot 1), E-126 (local authorised policy recovery verification).
 
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 export interface OperationDef {
   /** Operation name, second level of the invocation (RN-F). */
   readonly name: string;
@@ -35,14 +36,14 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
       op("validate", "Vérifie la validité de toutes les sources de configuration, ou d'un fichier.", { args: "[<fichier>]", delivered: true, options: ["json", "scope"] }),
       op("recover-policy", "Vérifie une version de politique autorisée avant sa remise en place administrative.", { args: "<fichier>", delivered: true, options: ["json"] }),
       op("show-sources", "Affiche les sources chargées et leur ordre de priorité."),
-      op("push", "Envoie les paramètres vers l'emplacement de sauvegarde configuré."),
-      op("pull", "Récupère les paramètres depuis l'emplacement de sauvegarde configuré."),
+      op("push", "Envoie les préférences choisies vers le service configuré.", { delivered: buildFlag("settings_sync"), options: ["resolve"] }),
+      op("pull", "Récupère les préférences avec sauvegarde restaurable.", { delivered: buildFlag("settings_sync"), options: ["restore"] }),
     ],
   },
   {
     name: "auth",
     role: "Identifiants",
-    operations: [op("login", "Enregistre une clé d'API par saisie masquée.", { delivered: true }), op("logout", "Supprime les identifiants enregistrés après confirmation.", { delivered: true }), op("show", "Affiche l'état d'authentification et l'expiration.")],
+    operations: [op("login", "Connecte un compte de la société ou enregistre une clé d'API.", { delivered: true, options: ["company"] }), op("logout", "Supprime les identifiants choisis après confirmation.", { delivered: true, options: ["company"] }), op("show", "Affiche l'état d'authentification et l'expiration.", { delivered: true, options: ["json", "refresh"] })],
   },
   {
     name: "model",
@@ -156,7 +157,7 @@ export const FAMILY_BY_NAME: ReadonlyMap<string, FamilyDef> = new Map(FAMILY_CAT
 
 /** Common options of the sub-commands (§ 5.4): `true` when the option takes a value. */
 /** § 5.4 of SPEC-MOD-012, plus the options proper to an operation: `--lean-context` (SPEC-EXT-004), `--installable` (SPEC-EXT-002). */
-export const COMMON_OPTIONS: Readonly<Record<string, boolean>> = { json: false, scope: true, force: false, "preserve-data": false, name: true, verbose: false, help: false, "lean-context": true, installable: false, capabilities: true, root: true, transport: true, "approval-mode": true, listen: true, orchestrator: false, env: true, header: true, declaration: true, check: false, channel: true, version: true };
+export const COMMON_OPTIONS: Readonly<Record<string, boolean>> = { json: false, scope: true, force: false, "preserve-data": false, name: true, verbose: false, help: false, "lean-context": true, installable: false, capabilities: true, root: true, transport: true, "approval-mode": true, listen: true, orchestrator: false, env: true, header: true, declaration: true, check: false, channel: true, version: true, company: false, refresh: false, resolve: true, restore: true };
 
 export interface ParsedSubcommand {
   readonly family: string;
