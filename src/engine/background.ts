@@ -1,3 +1,5 @@
+// Supports: SPEC-SES-001 (protected storage access), gap E-181.
+import { storeAppend as appendFileSync, storeMkdir as mkdirSync, storeRead as readFileSync, storeStat as statSync, storeWrite as writeFileSync } from "../session/private-storage";
 // Implements: SPEC-AGT-016 (§ 5.1, § 5.3 steps 2 to 4, FA-01, FA-02, FA-03, EF-01 to EF-04, CA-01, CA-02), SPEC-AGT-017 (§ 5.3, EF-01, CA-01),
 //             SPEC-AGT-018 (§ 5.3 steps 1 and 4), SPEC-OUT-022 (§ 5.3 steps 2 to 4, FA-01, EF-02 to EF-04, CA-01 to CA-03)
 // Background tasks of a session: a shell command, an agent or a monitor that go on while the conversation continues.
@@ -6,7 +8,7 @@
 // Implements: SPEC-AGT-006 (CA-01, stable per-type colors), SPEC-AGT-024 (CA-01, delivered monitor counters), gap E-166.
 // Supports: SPEC-AGT-023 (live workflow tree and joined individual cancellation), gap E-169.
 
-import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+
 import { join } from "node:path";
 import type { Reminder, ReminderProducer } from "./reminders";
 

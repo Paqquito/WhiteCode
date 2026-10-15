@@ -1,8 +1,11 @@
+// Supports: SPEC-SES-001 (protected storage access), gap E-181.
+import { ArchiveFailure } from "../session/archive-crypto";
+import { storeAppend as appendFileSync, storeExists as existsSync, storeMkdir as mkdirSync, storeRead as readFileSync, storeRename as renameSync, storeStat as statSync, storeWrite as writeFileSync } from "../session/private-storage";
 // Implements: SPEC-IHM-008 (§ 5.1 recording, § 5.4 scope, § 5.5 bounds and purge, FA-02, FA-04, FA-05, EF-01, EF-05, EF-06, EF-08, ERR-01, ERR-02, RG-01, RG-03, RG-04, ENF-02, CA-04, CA-06, CA-07)
 // The history of the inputs, kept on this machine only: one line per message appended to a file shared by the sessions,
 // so that concurrent writes add up without loss; read back in time order, bounded in number and age, filtered by folder.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+
 import { dirname } from "node:path";
 import { containsSecret } from "../shared/secrets";
 import { ContentStore } from "../session/content-store";
@@ -53,7 +56,8 @@ export class InputHistory {
     try {
       const s = statSync(this.#o.path);
       stamp = `${s.mtimeMs}:${s.size}`;
-    } catch {
+    } catch (error) {
+      if (error instanceof ArchiveFailure) throw error;
       return;
     }
     if (stamp === this.#stamp) return;
@@ -61,7 +65,8 @@ export class InputHistory {
     let text: string;
     try {
       text = readFileSync(this.#o.path, "utf8");
-    } catch {
+    } catch (error) {
+      if (error instanceof ArchiveFailure) throw error;
       return;
     }
     const lines = text.split("\n").filter((l) => l.trim() !== "");
@@ -71,7 +76,8 @@ export class InputHistory {
         const v = JSON.parse(l) as { text?: unknown; dir?: unknown; at?: unknown };
         v.text = this.#content.decode(v.text);
         if (typeof v.text === "string" && typeof v.dir === "string" && typeof v.at === "number") read.push({ text: v.text, dir: v.dir, at: v.at });
-      } catch {
+      } catch (error) {
+        if (error instanceof ArchiveFailure) throw error;
         // ENF-02: a line cut by an interrupted write is skipped.
       }
     }
@@ -144,7 +150,8 @@ export class InputHistory {
     let lines = 0;
     try {
       lines = readFileSync(this.#o.path, "utf8").split("\n").filter((l) => l.trim() !== "").length;
-    } catch {
+    } catch (error) {
+      if (error instanceof ArchiveFailure) throw error;
       return;
     }
     // The bound applies per folder in a folder scope: the file keeps at most the bound for each folder.

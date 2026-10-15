@@ -1,9 +1,11 @@
+// Supports: SPEC-SES-001 (protected storage access), gap E-181.
+import { storeExists as existsSync } from "../session/private-storage";
 // Implements: SPEC-MOT-036 (private file writes, generated index and normal refusal precedence).
 // Supports: SPEC-OUT-002/003/004, SPEC-PER-001, gap E-163.
 import type { Tool, ToolContext, ToolPreview } from "../tools/types";
 import { textOutcome } from "../tools/types";
 import { readPreconditionError, readStateKey, recordWrite, toLf } from "../tools/text-file";
-import { existsSync } from "node:fs";
+
 import type { MemoryStore } from "./store";
 import { planBlockAnchor, planEdit } from "../tools/edit-match";
 import { unifiedDiff } from "../shared/diff";

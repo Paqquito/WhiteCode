@@ -4,13 +4,13 @@ import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { writeAtomic } from "../tools/text-file";
 import type { PlatformName } from "../platform/system";
-export interface DynamicValues { readonly scheduled_triggers: boolean; readonly schedule_jitter_ms: number; }
-export interface FeatureFlagOptions { url?: string; cache: string; compiled: boolean; version: string; platform: PlatformName; disabled: boolean; intervalMs: number; fetch: (input: string, init?: RequestInit) => Promise<Response>; overrides?: string; internal: boolean; canRefresh?: () => boolean; }
+export interface DynamicValues { readonly scheduled_triggers: boolean; readonly schedule_jitter_ms: number; readonly remote_auto_connect?: boolean; readonly survey_probability?: number; readonly survey_share_probability?: number; }
+export interface FeatureFlagOptions { url?: string; cache: string; compiled: boolean; remoteCompiled?: boolean; version: string; platform: PlatformName; disabled: boolean; intervalMs: number; fetch: (input: string, init?: RequestInit) => Promise<Response>; overrides?: string; internal: boolean; canRefresh?: () => boolean; }
 export class FeatureFlags {
   readonly #o: FeatureFlagOptions;
   #values: DynamicValues; #id = randomUUID(); #lastRefresh?: string; #timer?: ReturnType<typeof setInterval>; #busy = false; #closed = false; #controller?: AbortController;
   constructor(options: FeatureFlagOptions) {
-    this.#o = options; this.#values = Object.freeze({ scheduled_triggers: options.compiled, schedule_jitter_ms: 5000 });
+    this.#o = options; this.#values = Object.freeze({ scheduled_triggers: options.compiled, schedule_jitter_ms: 5000, ...(options.remoteCompiled === undefined ? {} : { remote_auto_connect: options.remoteCompiled }) });
     if (this.#configured()) try { const stat = lstatSync(options.cache); if (stat.isFile() && !stat.isSymbolicLink() && stat.size <= 20_000) { const data = JSON.parse(readFileSync(options.cache, "utf8")); if (/^[a-f0-9-]{36}$/i.test(data.id)) this.#id = data.id; this.#apply(data.values); if (typeof data.refreshedAt === "string") this.#lastRefresh = data.refreshedAt; } } catch { /* embedded defaults */ }
     if (options.internal && options.overrides) try { this.#apply(JSON.parse(options.overrides)); } catch { /* invalid local override */ }
   }
@@ -18,6 +18,8 @@ export class FeatureFlags {
   #apply(input: unknown): void {
     if (!input || typeof input !== "object" || Array.isArray(input)) return;
     const row = input as Record<string, unknown>, next = { ...this.#values };
+    for (const key of ["survey_probability", "survey_share_probability"] as const) if (typeof row[key] === "number" && Number.isFinite(row[key]) && row[key] >= 0 && row[key] <= 1) next[key] = row[key];
+    if (typeof row["remote_auto_connect"] === "boolean" && this.#o.remoteCompiled !== undefined) next.remote_auto_connect = this.#o.remoteCompiled && row["remote_auto_connect"];
     if (typeof row["scheduled_triggers"] === "boolean") next.scheduled_triggers = this.#o.compiled && row["scheduled_triggers"];
     if (typeof row["schedule_jitter_ms"] === "number" && Number.isInteger(row["schedule_jitter_ms"]) && row["schedule_jitter_ms"] >= 0 && row["schedule_jitter_ms"] <= 59_000) next.schedule_jitter_ms = row["schedule_jitter_ms"];
     this.#values = Object.freeze(next);

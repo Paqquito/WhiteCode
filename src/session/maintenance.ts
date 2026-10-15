@@ -3,9 +3,8 @@
 // The deferred maintenance of a launch: the sessions beyond their retention are removed, the current one never. It runs
 // after the display, uses no model, and a failure only leaves the work for the next launch.
 
-import { readdirSync, rmSync, lstatSync } from "node:fs";
+import { storeList as readdirSync, storeRemove, storeStat as lstatSync, storeFileLock as tryFileLock } from "./private-storage";
 import { join } from "node:path";
-import { tryFileLock } from "../platform/file-lock";
 // Implements: SPEC-CFG-013 (CA-01/02/03, EF-02), gap E-151.
 
 export function purgeExpiredSessions(sessionsDir: string, retentionDays: number, now: number, keep: ReadonlySet<string>): { removed: string[] } {
@@ -38,9 +37,9 @@ export function purgeExpiredSessions(sessionsDir: string, retentionDays: number,
         if (!release) continue;
         // The holder may have refreshed its transcript before this cleanup acquired the lease.
         if (lstatSync(file).mtimeMs >= limit) continue;
-        rmSync(join(dir, name), { force: true });
+        storeRemove(join(dir, name));
         const data = join(dir, id);
-        try { const metadata = lstatSync(data); if (metadata.isDirectory() && !metadata.isSymbolicLink()) rmSync(data, { recursive: true, force: true }); } catch { /* no companion directory */ }
+        try { const metadata = lstatSync(data); if (metadata.isDirectory() && !metadata.isSymbolicLink()) storeRemove(data, true); } catch { /* no companion directory */ }
         removed.push(id);
       } catch {
         // EF-07: retried at the next launch

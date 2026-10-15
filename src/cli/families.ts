@@ -63,7 +63,8 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
       op("remove", "Retire un connecteur.", { args: "<nom>", delivered: true, options: ["scope"] }),
       op("validate", "Vérifie le démarrage et la découverte des capacités.", { args: "<nom>", delivered: true, options: ["json"] }),
       op("search", "Recherche un connecteur dans le registre configuré.", { args: "<terme>", delivered: true, options: ["json"] }),
-      op("import", "Importe des déclarations depuis une source reconnue.", { args: "<source>" }),
+      op("import", "Importe les déclarations sélectionnées d’un fichier d’application de bureau.", { args: "<fichier> <noms séparés par des virgules>", delivered: true, options: ["force"] }),
+      op("install-archive", "Installe une archive locale de connecteur après confirmation.", { args: "<fichier.mcpb>", delivered: true, options: ["scope", "force"] }),
       op("reset-choices", "Réinitialise les décisions d'approbation de connecteurs du projet.", { delivered: true }),
     ],
   },
@@ -149,15 +150,15 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
     role: "Travaux",
     operations: [op("create", "Crée un travail à partir d'un modèle.", { args: "<modèle> [consigne]" }), op("list", "Liste les travaux."), op("reply", "Répond à un travail.", { args: "<id> <message>" })],
   },
-  { name: "session-runner", role: "Exécuteur de sessions", operations: [op("start", "Lance un exécuteur de sessions affectées à un environnement.")] },
-  { name: "job-runner", role: "Exécuteur de travaux", operations: [op("start", "Lance un exécuteur de travaux affectés.")] },
+  { name: "session-runner", role: "Exécuteur de sessions", operations: [op("start", "Lance un exécuteur de sessions affectées à un environnement.", { delivered: buildFlag("remote_self_hosted_runner"), options: ["organization", "environment", "credential-file", "root", "concurrent-sessions"] })] },
+  { name: "job-runner", role: "Exécuteur de travaux", operations: [op("start", "Lance un exécuteur de travaux affectés.", { delivered: buildFlag("remote_provided_environment"), options: ["organization", "environment", "credential-file", "root", "concurrent-sessions"] })] },
 ];
 
 export const FAMILY_BY_NAME: ReadonlyMap<string, FamilyDef> = new Map(FAMILY_CATALOG.map((f) => [f.name, f]));
 
 /** Common options of the sub-commands (§ 5.4): `true` when the option takes a value. */
 /** § 5.4 of SPEC-MOD-012, plus the options proper to an operation: `--lean-context` (SPEC-EXT-004), `--installable` (SPEC-EXT-002). */
-export const COMMON_OPTIONS: Readonly<Record<string, boolean>> = { auto: false, "notify-only": false, "approval-pipe": false, json: false, scope: true, force: false, "preserve-data": false, name: true, verbose: false, help: false, "lean-context": true, installable: false, capabilities: true, root: true, transport: true, "approval-mode": true, listen: true, orchestrator: false, env: true, header: true, declaration: true, check: false, channel: true, version: true, company: false, refresh: false, resolve: true, restore: true };
+export const COMMON_OPTIONS: Readonly<Record<string, boolean>> = { organization: true, environment: true, "credential-file": true, "concurrent-sessions": true, auto: false, "notify-only": false, "approval-pipe": false, json: false, scope: true, force: false, "preserve-data": false, name: true, verbose: false, help: false, "lean-context": true, installable: false, capabilities: true, root: true, transport: true, "approval-mode": true, listen: true, orchestrator: false, env: true, header: true, declaration: true, check: false, channel: true, version: true, company: false, refresh: false, resolve: true, restore: true };
 
 export interface ParsedSubcommand {
   readonly family: string;

@@ -49,6 +49,7 @@ import { configuredNetwork } from "../config/network";
 import { openAuthorizationUrl } from "../platform/browser";
 import { detectPowerShell } from "../tools/shell-runtime";
 import { SettingsSync } from "../config/settings-sync";
+import { runExecutorAdmin } from "../remote/executor-admin";
 
 // Supports: SPEC-MOD-011 (CA-10, CA-11: explicit refusal before any session or service), gap E-140.
 export interface AdminDependencies {
@@ -143,6 +144,7 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
   const write = (document: unknown, text: () => string) => out(json ? JSON.stringify(document) : text()); // FA-04, CA-02: only the document
   if (family.name === "connector") return runConnectorAdmin(deps, parsed, write, out, err);
   if (family.name === "installation") return runInstallationAdmin(deps, parsed, write, out, err);
+  if (family.name === "session-runner" || family.name === "job-runner") return runExecutorAdmin(deps, parsed);
 
   switch (`${family.name} ${operation.name}`) {
     case "config push":

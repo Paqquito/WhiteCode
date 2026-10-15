@@ -10,6 +10,7 @@ import type { BackgroundTasks } from "../engine/background";
 import { renderTasks, TASK_STATUSES, type Task, type TaskStatus } from "../engine/task-list";
 import { MAIN_AGENT } from "./update-todo-list";
 import { textOutcome, type Tool, type ToolContext } from "./types";
+import { storeReference } from "../session/private-storage";
 
 const free = () => ({ readOnly: true, concurrencySafe: true, destructive: false, requiresPermission: false, openWorld: false });
 const listChange = () => ({ readOnly: true, concurrencySafe: false, destructive: false, requiresPermission: false, openWorld: false });
@@ -162,7 +163,7 @@ export const backgroundOutputTool: Tool<{ task_id: string; block?: boolean; time
     const tail = bg.tail(t.id, 20_000);
     const state = t.status === "running" ? "still running" : `${t.status}${t.exitCode !== undefined && t.exitCode !== null ? ` (exit code ${t.exitCode})` : ""}`;
     // FA-03: the end of a large output, and where the whole of it is.
-    return textOutcome(`Task ${t.id} (${t.description}): ${state}.${t.summary && t.kind === "agent" ? `\nReport:\n${t.summary}` : ""}\nOutput file: ${t.outputFile}\n\n${tail || "(no output yet)"}`);
+    return textOutcome(`Task ${t.id} (${t.description}): ${state}.${t.summary && t.kind === "agent" ? `\nReport:\n${t.summary}` : ""}\nOutput file: ${storeReference(t.outputFile)}\n\n${tail || "(no output yet)"}`);
   },
 };
 
@@ -181,7 +182,7 @@ export const backgroundStopTool: Tool<{ task_id: string }> = {
     if (!t) return textOutcome(`Unknown background task: ${i.task_id}.`, true, "invalid_input");
     if (t.status !== "running") return textOutcome(`Task ${t.id} already ended (${t.status}).`);
     await ctx.background.stop(t.id); // FA-04, EF-04: its processes and their descendants; the output is kept
-    return textOutcome(`Task ${t.id} stopped. Its output stays in ${t.outputFile}.`);
+    return textOutcome(`Task ${t.id} stopped. Its output stays in ${storeReference(t.outputFile)}.`);
   },
 };
 

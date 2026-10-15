@@ -39,6 +39,7 @@ export interface ResolvedIdentity {
     readonly forbiddenTerms: readonly string[];
     readonly scanExceptions?: readonly { readonly terme: string; readonly contexte: string; readonly justification: string }[];
     readonly allowLegacyReads: boolean;
+    readonly previousConfigDirs?: readonly string[];
   };
   readonly policyAnchor?: PolicyAnchor;
   /** SHA-256 of the canonical form of everything above (EF-15, ENF-04). */
@@ -102,7 +103,7 @@ function canonicalJson(value: unknown): string {
 /** Build-only scan declarations stay outside the runtime identity; its hash covers its actual content. */
 export function runtimeIdentity(identity: ResolvedIdentity): ResolvedIdentity {
   const { hash: _hash, ...source } = identity;
-  const body = { ...source, compatibility: { forbiddenTerms: [], allowLegacyReads: identity.compatibility.allowLegacyReads } };
+  const body = { ...source, compatibility: { forbiddenTerms: [], allowLegacyReads: identity.compatibility.allowLegacyReads, ...(identity.compatibility.previousConfigDirs?.length ? { previousConfigDirs: identity.compatibility.previousConfigDirs } : {}) } };
   return { ...body, hash: createHash("sha256").update(canonicalJson(body)).digest("hex") };
 }
 
@@ -400,6 +401,8 @@ export function resolveIdentity(data: unknown, options: ResolveOptions): Resolve
     } else scanExceptions.push({ terme: entry["terme"], contexte: entry["contexte"], justification: entry["justification"] });
   }
   const allowLegacyReads = compat["allowLegacyReads"] === true;
+  const previousConfigDirs = compat["previousConfigDirs"];
+  if (previousConfigDirs !== undefined && (!Array.isArray(previousConfigDirs) || previousConfigDirs.length > 8 || previousConfigDirs.some(path => typeof path !== "string" || !path.trim() || path.length > 4096 || /[\u0000-\u001f]/.test(path)) || !allowLegacyReads)) error("ERR-05", "Les anciens profils exigent allowLegacyReads et au plus huit chemins explicites.", "$.compatibility.previousConfigDirs");
 
   if (issues.some((i) => i.severity === "error")) return { issues };
 
@@ -412,7 +415,7 @@ export function resolveIdentity(data: unknown, options: ResolveOptions): Resolve
     models,
     modelDefault,
     modelBackground,
-    compatibility: { forbiddenTerms, allowLegacyReads, ...(scanExceptions.length ? { scanExceptions } : {}) },
+    compatibility: { forbiddenTerms, allowLegacyReads, ...(scanExceptions.length ? { scanExceptions } : {}), ...(Array.isArray(previousConfigDirs) ? { previousConfigDirs: previousConfigDirs as string[] } : {}) },
     ...(policyAnchor ? { policyAnchor } : {}),
   };
   const hash = createHash("sha256").update(canonicalJson(body)).digest("hex");

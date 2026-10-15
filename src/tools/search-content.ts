@@ -12,6 +12,7 @@ import { suggest } from "../shared/suggest";
 import { walkFiles } from "./file-walk";
 import { decodeText } from "./text-file";
 import { textOutcome, type Tool, type ToolContext, type ToolOutcome } from "./types";
+import { encryptedStore, storeRead, storeStat, storeReference, walkStoreFiles } from "../session/private-storage";
 
 export interface SearchContentInput {
   readonly pattern: string;
@@ -129,8 +130,8 @@ function searchBuiltIn(q: Query): SearchRun {
   const typeFilter = q.typeGlobs ? nameFilter(q.typeGlobs) : undefined;
   const accept = (rel: string) => (!globFilter || globFilter(rel)) && (!typeFilter || typeFilter(rel));
   const walked = q.isFile
-    ? { files: [{ path: q.target, relativePath: q.target.split(/[\\/]/).pop()!, stats: statSync(q.target) }], timedOut: false }
-    : walkFiles(q.target, { respectIgnoreFiles: q.respectIgnoreFiles, caseInsensitive: q.caseInsensitivePaths, deadline: q.deadline, signal: q.signal }, accept);
+    ? { files: [{ path: q.target, relativePath: q.target.split(/[\\/]/).pop()!, stats: encryptedStore(q.target) ? storeStat(q.target) : statSync(q.target) }], timedOut: false }
+    : encryptedStore(q.target) ? walkStoreFiles(q.target, q.deadline, q.signal, accept) : walkFiles(q.target, { respectIgnoreFiles: q.respectIgnoreFiles, caseInsensitive: q.caseInsensitivePaths, deadline: q.deadline, signal: q.signal }, accept);
   const regex = jsRegex(q.pattern, q.ignoreCase, q.multiline);
   const files: FileResult[] = [];
   let timedOut = walked.timedOut;
@@ -141,7 +142,7 @@ function searchBuiltIn(q: Query): SearchRun {
     }
     let decoded;
     try {
-      decoded = decodeText(readFileSync(f.path));
+      decoded = decodeText(encryptedStore(f.path) ? storeRead(f.path) : readFileSync(f.path));
     } catch {
       continue;
     }
@@ -355,7 +356,7 @@ export const searchContentTool: Tool<SearchContentInput> = {
     const target = targetOf(input, ctx);
     let isFile: boolean;
     try {
-      isFile = statSync(target).isFile();
+      isFile = (encryptedStore(target) ? storeStat(target) : statSync(target)).isFile();
     } catch {
       return textOutcome(`Path not found: ${target}.`, true, "invalid_input");
     }
@@ -377,7 +378,7 @@ export const searchContentTool: Tool<SearchContentInput> = {
     };
     let run: SearchRun;
     let fallbackNote = "";
-    if (ctx.ripgrepPath) {
+    if (ctx.ripgrepPath && !encryptedStore(target)) {
       try {
         run = await searchRipgrep(ctx.ripgrepPath, q);
       } catch (error) {
@@ -399,7 +400,7 @@ export const searchContentTool: Tool<SearchContentInput> = {
       if (run.timedOut) return textOutcome(`Search stopped after ${Math.round(ctx.settings.searchTimeoutMs / 1000)} s: no match found in the part searched.`);
       return textOutcome(`No match found.${filterNote(input, q, ctx)}${fallbackNote}`); // FA-01
     }
-    const all = entries(files, mode, input.line_numbers !== false, ctx.settings.searchMaxLineLength);
+    const all = entries(files.map(file => ({ ...file, path: storeReference(file.path) })), mode, input.line_numbers !== false, ctx.settings.searchMaxLineLength);
     const offset = input.offset ?? 0;
     const limit = input.limit ?? ctx.settings.searchDefaultLimit;
     const page = limit === 0 ? all.slice(offset) : all.slice(offset, offset + limit);

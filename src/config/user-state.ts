@@ -11,6 +11,8 @@ import { tryFileLock } from "../platform/file-lock";
 import { currentPlatform, type PlatformName } from "../platform/system";
 
 export interface UserState {
+  readonly onboardingStep?: import("../interactive/onboarding").WelcomeStep;
+  readonly lastSurveyAt?: number;
   readonly preflightCompleted?: boolean;
   readonly migrations?: readonly string[];
   readonly lastSeenVersion?: string;
@@ -35,6 +37,8 @@ function load(path: string): UserState {
   try { value = JSON.parse(readFileSync(path, "utf8")); } catch (error) { if (error instanceof SyntaxError) throw new CorruptState(); throw error; }
   if (!object(value) || ["trustedProjects", "restrictedProjects", "migrations", "extensionRecommendationsDismissed"].some((key) => value[key] !== undefined && (!Array.isArray(value[key]) || value[key].some((p) => typeof p !== "string"))) ||
       (value["preflightCompleted"] !== undefined && typeof value["preflightCompleted"] !== "boolean") ||
+      (value["onboardingStep"] !== undefined && !["theme", "connection", "safety", "terminal", "trust", "done"].includes(String(value["onboardingStep"]))) ||
+      (value["lastSurveyAt"] !== undefined && (!Number.isSafeInteger(value["lastSurveyAt"]) || Number(value["lastSurveyAt"]) < 0)) ||
       (value["lastSeenVersion"] !== undefined && (typeof value["lastSeenVersion"] !== "string" || value["lastSeenVersion"].length > 100)) ||
       (value["unrestrictedAccepted"] !== undefined && typeof value["unrestrictedAccepted"] !== "boolean") ||
       (value["autoApproveConsent"] !== undefined && (!object(value["autoApproveConsent"]) || !Number.isSafeInteger(value["autoApproveConsent"]["version"]) ||

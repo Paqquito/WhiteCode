@@ -22,6 +22,7 @@ import { buildSnapshot } from "../hooks/config";
 export type AgentSource = "built-in" | "user" | "project" | "managed" | "extension";
 
 export interface AgentDefinition {
+  readonly connectors?: readonly string[];
   readonly hooks?: unknown;
   readonly memory?: "user" | "project" | "local";
   readonly name: string;
@@ -112,6 +113,8 @@ export function parseAgent(text: string, file: string, source: AgentLocation["so
   for (const k of Object.keys(header)) if (!KNOWN_FIELDS.has(k)) warn(`agent ${name} (${file}) : champ inconnu ${k} ignoré.`); // EF-02
   const tools = list(header["tools"]);
   const excluded = list(header["excludedTools"]);
+  const connectors = list(header["connectors"]);
+  if (connectors === null || connectors && (connectors.length > 20 || new Set(connectors).size !== connectors.length || connectors.some(name => !/^[a-z0-9][a-z0-9-]{1,47}$/.test(name)))) return "connectors : au plus vingt références de connecteurs admis attendues";
   if (tools === null || excluded === null) return "tools et excludedTools : liste de noms attendue";
   const mode = header["approvalMode"];
   if (mode !== undefined && !(PERMISSION_MODES as readonly string[]).includes(String(mode))) return `mode de permission inconnu : ${String(mode)}`;
@@ -132,6 +135,7 @@ export function parseAgent(text: string, file: string, source: AgentLocation["so
     instructions: body.trim(),
     ...(memory!==undefined?{memory:memory as "user"|"project"|"local"}:{}),
     ...(tools ? { tools } : {}),
+    ...(connectors ? { connectors } : {}),
     excludedTools: excluded ?? [],
     ...(typeof model === "string" && model.trim() !== "" ? { model: model.trim() } : {}),
     ...(mode !== undefined ? { approvalMode: mode as PermissionMode } : {}),

@@ -1,3 +1,5 @@
+// Supports: SPEC-SES-001 (protected storage access), gap E-181.
+import { encryptedStore, guardedStoreWrite, privateStat as storeStat } from "../session/private-context";
 // Implements: SPEC-OUT-003 (§ 5.3 points 2, 5, 6 and 7, EF-02 to EF-04, RG-02, RG-03, ERR-01, ERR-02, ERR-04, ERR-05, ENF-01, ENF-02, Q-01 POSIX mode kept)
 // Supports: SPEC-OUT-002 (decoding), SPEC-OUT-004 (§ 5.3 points 2 and 6), SPEC-OUT-005 (§ 5.3 point 5)
 // Shared by the writing tools: text format detection, faithful re-encoding, read precondition and atomic write.
@@ -103,14 +105,14 @@ export function readPreconditionError(path: string, ctx: ToolContext, complete: 
   const record = ctx.readState.get(readStateKey(path, ctx.platform));
   if (!record) return `Read the file before you ${verb} it.`;
   if (complete && !record.complete) return `Read the whole file (without offset, limit or truncation) before you rewrite it.`;
-  const now = statSync(path);
+  const now = encryptedStore(path) ? storeStat(path) : statSync(path);
   if (now.mtimeMs !== record.mtimeMs || now.size !== record.size) return "The file has changed since you read it: read it again.";
   return undefined;
 }
 
 /** After a write, the file is known to the agent in its new state (§ 5.3 point 7). */
 export function recordWrite(path: string, ctx: ToolContext): void {
-  const s = statSync(path);
+  const s = encryptedStore(path) ? storeStat(path) : statSync(path);
   const record: ReadRecord = { mtimeMs: s.mtimeMs, size: s.size, complete: true };
   ctx.readState.set(readStateKey(path, ctx.platform), record);
 }
@@ -130,6 +132,9 @@ function failureMessage(error: unknown): string {
  * Missing parent folders are created; the POSIX mode of a replaced file is kept (Q-01). The original stays intact on failure.
  */
 export function writeAtomic(path: string, bytes: Uint8Array, platform: PlatformName, ownerOnly = false): void {
+  guardedStoreWrite(path, bytes, () => writeAtomicRaw(path, bytes, platform, ownerOnly));
+}
+function writeAtomicRaw(path: string, bytes: Uint8Array, platform: PlatformName, ownerOnly: boolean): void {
   const dir = dirname(path);
   const temp = join(dir, `.${basename(path)}.${process.pid}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}.tmp`);
   let mode: number | undefined;

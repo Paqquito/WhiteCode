@@ -163,8 +163,8 @@ export function startDetached(file: string, args: readonly string[], options: { 
 }
 
 /** Runs a short command to completion (detection, snapshot); output captured, time bounded. */
-export function runToCompletion(file: string, args: readonly string[], options: { cwd: string; env: Readonly<Record<string, string>>; timeoutMs: number }): { code: number | null; stdout: string; stderr: string } {
-  const r = spawnSync(file, [...args], { cwd: options.cwd, env: options.env, stdio: ["ignore", "pipe", "pipe"], timeout: options.timeoutMs, windowsHide: true, encoding: "buffer" });
+export function runToCompletion(file: string, args: readonly string[], options: { cwd: string; env: Readonly<Record<string, string>>; timeoutMs: number; input?: string }): { code: number | null; stdout: string; stderr: string } {
+  const r = spawnSync(file, [...args], { cwd: options.cwd, env: options.env, input: options.input === undefined ? undefined : Buffer.from(options.input), stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"], timeout: options.timeoutMs, windowsHide: true, encoding: "buffer" });
   return { code: r.status, stdout: r.stdout?.toString("utf8") ?? "", stderr: r.stderr?.toString("utf8") ?? "" };
 }
 

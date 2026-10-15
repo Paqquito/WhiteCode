@@ -54,6 +54,23 @@ const enumOf = (values: readonly string[]) => Type.Union(values.map((v) => Type.
 const mode = () => enumOf(PERMISSION_MODES);
 
 export const SETTINGS: readonly SettingDef[] = [
+  { key: "remote.runner.concurrency", schema: int(1, 16), default: 1, scopes: [U], owner: "SPEC-MOD-024" },
+  { key: "ui.surveys.enabled", schema: Type.Boolean(), default: true, scopes: [U, G], owner: "SPEC-IHM-037" },
+  { key: "skills.discovery.remote", schema: Type.Boolean(), default: false, scopes: [U, G], owner: "SPEC-EXT-038" },
+  { key: "tools.terminalSession.enabled", schema: Type.Boolean(), default: false, scopes: [U, G], owner: "SPEC-OUT-010" },
+  { key: "tools.terminalSession.keepOnExit", schema: Type.Boolean(), default: false, scopes: [U], owner: "SPEC-OUT-010" },
+  { key: "mcp.web.enabled", schema: Type.Boolean(), default: true, scopes: [U, G], owner: "SPEC-MCP-017" },
+  { key: "sessions.outputFiles.enabled", schema: Type.Boolean(), default: false, scopes: [U, G], owner: "SPEC-SES-013" },
+  { key: "sessions.outputFiles.directory", schema: Type.String({ minLength: 1, maxLength: 4096 }), default: "outputs", scopes: [U, G], owner: "SPEC-SES-013" },
+  { key: "sessions.outputFiles.maxSize", schema: int(1, 10485760), default: 5242880, scopes: [U, G], owner: "SPEC-SES-013" },
+  { key: "sessions.outputFiles.maxCount", schema: int(1, 100), default: 20, scopes: [U, G], owner: "SPEC-SES-013" },
+  { key: "sessions.outputFiles.excluded", schema: Type.Array(Type.String({ maxLength: 240 }), { maxItems: 100 }), default: [], scopes: [U, G], owner: "SPEC-SES-013" },
+  { key: "extensions.archiveMaxSize", schema: int(1024, 67108864), default: 16777216, scopes: [U, G], owner: "SPEC-EXT-016" },
+  { key: "remote.runner.labels", schema: Type.Array(Type.String({ pattern: "^[A-Za-z0-9_-]{1,128}$" }), { maxItems: 31 }), default: [], scopes: [U], owner: "SPEC-MOD-024" },
+  { key: "permissions.explainer.enabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-PER-013" },
+  { key: "policy.refreshIntervalMinutes", schema: int(1, 1440), default: 60, scopes: [G], owner: "SPEC-PER-020" },
+  { key: "remote.controlAtStartup", schema: bool(), scopes: [U], owner: "SPEC-MOD-016" },
+  { key: "remote.suggestions.maxPerSession", schema: int(0, 10), default: 2, scopes: [U], owner: "SPEC-OUT-047" },
   {key:"ui.companion.enabled",schema:bool(),default:false,scopes:[U,G],hot:true,owner:"SPEC-IHM-032"},
   {key:"ui.companion.soul",schema:Type.Object({name:Type.String({minLength:1,maxLength:32,pattern:"^[^\\u0000-\\u001f\\u007f]+$"}),personality:enumOf(["patient","lively"])},{additionalProperties:false}),scopes:[U],hot:true,owner:"SPEC-IHM-032"},
   {key:"extensions.autoUpdate",schema:enumOf(["off","notify","auto"]),default:"notify",scopes:[U,G],owner:"SPEC-EXT-006"},

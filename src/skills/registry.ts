@@ -15,6 +15,7 @@ export type SkillScope = "managed" | "project" | "user" | "extension" | "product
 export type Invocation = "user" | "model" | "both";
 
 export interface Skill {
+  readonly remote?: { readonly id: string; readonly sha256: string };
   readonly hooks?: unknown;
   readonly name: string;
   readonly description: string;

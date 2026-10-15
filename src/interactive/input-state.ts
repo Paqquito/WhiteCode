@@ -1,8 +1,11 @@
+// Supports: SPEC-SES-001 (protected storage access), gap E-181.
+import { ArchiveFailure } from "../session/archive-crypto";
+import { storeExists as existsSync, storeMkdir as mkdirSync, storeRead as readFileSync, storeRename as renameSync, storeWrite as writeFileSync } from "../session/private-storage";
 // Implements: SPEC-IHM-007 (EF-04, § 5.6 draft kept with the session, CA-04), SPEC-IHM-011 (EF-06, ENF-02, FA-06, CA-07)
 // The draft, the queue and the stashed drafts of a session, in its private folder: written on each change (the draft
 // after a short pause), atomically, and read back when the session is reopened, without anything being sent.
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+
 import { dirname, join } from "node:path";
 import type { InputState } from "./app";
 
@@ -23,7 +26,8 @@ export function readInputState(path: string): InputState | undefined {
     const v = JSON.parse(readFileSync(path, "utf8")) as Partial<InputState>;
     const strings = (x: unknown) => (Array.isArray(x) ? x.filter((s): s is string => typeof s === "string") : []);
     return { draft: typeof v.draft === "string" ? v.draft : "", queue: strings(v.queue), stash: strings(v.stash) };
-  } catch {
+  } catch (error) {
+    if (error instanceof ArchiveFailure) throw error;
     return undefined;
   }
 }

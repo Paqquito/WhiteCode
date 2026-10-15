@@ -80,7 +80,7 @@ export type Entry = { readonly kind: "message"; readonly text: string; readonly 
 
 interface Choice {
   readonly label: string;
-  readonly answer: () => HumanAnswer | "explain";
+  readonly answer: () => HumanAnswer | "explain" | "explain_command";
 }
 
 interface PendingApproval {
@@ -91,6 +91,9 @@ interface PendingApproval {
   selected: number;
   scope: number;
   explaining?: Editor;
+  explanation?: string;
+  explanationLoading?: boolean;
+  explanationController?: AbortController;
 }
 
 /** Answer of a choice dialog (SPEC-OUT-033 § 5.3, SPEC-OUT-024 § 5.3 step 3). */
@@ -167,6 +170,7 @@ export interface AppOptions {
   readonly onFocus?: (focused: boolean) => void;
   readonly onActivity?: () => void;
   readonly onTurnEnd?: () => void;
+  readonly survey?: { prompt: () => string | undefined; key: (key: { name: string; alt?: boolean; ctrl?: boolean; text?: string }) => boolean };
   readonly teammateView?: () => { readonly name: string; readonly lines: readonly string[] } | undefined;
   readonly sendToTeammate?: (text: string) => boolean;
   readonly leaveTeammate?: () => void;
@@ -179,7 +183,7 @@ export interface AppOptions {
   readonly capabilities: Capabilities;
   readonly settings: AppSettings;
   /** Mode, model and other facts of the status line. */
-  readonly status: () => { readonly mode: string; readonly model: string; readonly scheduled?: string; readonly ide?:string };
+  readonly status: () => { readonly mode: string; readonly model: string; readonly scheduled?: string; readonly ide?:string; readonly remote?:string };
   readonly cycleMode?: () => void;
   /** Background tasks still running, stopped by the exit (SPEC-CMD-023 CA-01). */
   readonly backgroundTasks?: () => number;
@@ -815,6 +819,7 @@ export class InteractiveApp {
           resolve: (a) => {
             if (settled) return;
             settled = true;
+            pending.explanationController?.abort();
             signal.removeEventListener("abort", onAbort);
             const i = this.#approvals.indexOf(pending);
             if (i !== -1) this.#approvals.splice(i, 1);
@@ -846,6 +851,7 @@ export class InteractiveApp {
       { label: "Non", answer: () => ({ answer: "no" }) },
       { label: "Non, et dire quoi faire autrement", answer: () => "explain" },
       { label: "Non, et arrêter le tour", answer: () => ({ answer: "no_stop" }) },
+      ...(p.request.explain ? [{ label: "Expliquer cette commande", answer: () => "explain_command" as const }] : []),
     ];
   }
 
@@ -869,6 +875,8 @@ export class InteractiveApp {
     }
     if (danger) rows.push(text([{ text: `${t.symbol} Action dangereuse : ${r.danger}`, style: t.style }]));
     rows.push(text([{ text: r.reason, style: { dim: true } }]));
+    if (p.explanationLoading) rows.push(text("Explication en cours… La permission reste en attente."));
+    if (p.explanation) rows.push(...p.explanation.split("\n").slice(0, 16).map(line => text(line)));
     this.#choices(p).forEach((c, i) => {
       const selected = i === p.selected;
       rows.push(text([{ text: `${selected ? "❯" : " "} ${i + 1}. ${c.label}`, style: selected ? { bold: true } : undefined }]));
@@ -898,6 +906,13 @@ export class InteractiveApp {
     const pick = (i: number) => {
       const a = choices[i]!.answer();
       if (a === "explain") p.explaining = new Editor(2_000);
+      else if (a === "explain_command") {
+        if (!p.explanationLoading && p.request.explain) {
+          p.explanationLoading = true;
+          p.explanationController = new AbortController();
+          void p.request.explain(p.explanationController.signal).then(value => { if (this.#approvals.includes(p)) p.explanation = value; }, () => { if (this.#approvals.includes(p)) p.explanation = "Explication indisponible."; }).finally(() => { if (this.#approvals.includes(p)) { p.explanationLoading = false; this.#redraw(); } });
+        }
+      }
       else if (a.answer.startsWith("yes") && this.#isDeletion(p) && !p.deletionConfirmed) { p.deletionConfirmed = true; p.selected = 1; p.shownAt = this.#now; }
       else p.resolve(a);
     };
@@ -1189,6 +1204,7 @@ export class InteractiveApp {
     if (e.kind === "appearance") { if (this.#o.autoTheme?.()) this.#o.onAppearance?.(e.light); return; }
     this.#lastInteractionAt = Date.now();
     this.#o.onActivity?.();
+    if (!this.running && !this.humanDialogActive && this.#o.survey?.key(e.kind === "key" ? e : { name: "paste" })) return;
     if (this.#secret) {
       const secret = this.#secret;
       if (e.kind === "paste") {
@@ -1697,6 +1713,7 @@ export class InteractiveApp {
     const indent: Cell[] = spansToLines([{ text: "  " }])[0]!;
     const rows = lines.map((l, i) => [...(i === 0 ? prompt : indent), ...l]);
     const extra: string[] = [];
+    const survey = this.#o.survey?.prompt(); if (survey) extra.push(survey);
     const autonomous = this.#o.autonomousStatus?.(); if (autonomous) extra.push(autonomous);
     if (ranges.length) extra.push(keyword?.supported ? "Réflexion maximale pour ce tour." : "Ce modèle ne prend pas en charge la réflexion : mot-clé sans effet.");
     if (this.#modal) extra.push(this.#modal.label()); // EF-01: always visible, as a text
@@ -1730,8 +1747,8 @@ export class InteractiveApp {
   #statusNode(): Node {
     const s = this.#o.status();
     const custom = this.#o.footer?.();
-    if (custom) return text([{ text: `mode : ${s.mode}${this.#queue.length ? ` · ${this.#queue.length} en attente` : ""}${s.scheduled ? ` · planifié : ${s.scheduled}` : ""}${s.ide?` · ${s.ide}`:""} · ${" ".repeat(custom.padding)}`, style: { dim: true } }, ...custom.spans, { text: " ".repeat(custom.padding) }], { overflow: "clip" });
-    const parts: Span[] = [{ text: `mode : ${s.mode}` }, { text: ` · ${s.model}` },...(s.ide?[{text:` · ${s.ide}`}]:[])];
+    if (custom) return text([{ text: `mode : ${s.mode}${this.#queue.length ? ` · ${this.#queue.length} en attente` : ""}${s.scheduled ? ` · planifié : ${s.scheduled}` : ""}${s.ide?` · ${s.ide}`:""}${s.remote?` · ${s.remote}`:""} · ${" ".repeat(custom.padding)}`, style: { dim: true } }, ...custom.spans, { text: " ".repeat(custom.padding) }], { overflow: "clip" });
+    const parts: Span[] = [{ text: `mode : ${s.mode}` }, { text: ` · ${s.model}` },...(s.ide?[{text:` · ${s.ide}`}]:[]),...(s.remote?[{text:` · ${s.remote}`}]:[])];
     if (s.scheduled) parts.push({ text: ` · planifié : ${s.scheduled}` });
     // EF-05 of SPEC-IHM-011: the number of waiting messages is always visible when not zero.
     if (this.#queue.length > 0) parts.push({ text: ` · ${this.#queue.length} message${this.#queue.length > 1 ? "s" : ""} en attente`, style: { bold: true } });

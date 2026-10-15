@@ -4,6 +4,12 @@ export const BUILD_PROFILES = ["public", "internal", "development", "test"] as c
 export type BuildProfile = (typeof BUILD_PROFILES)[number];
 const option = (value: boolean, description: string, specs: string[], absentMarkers: string[] = []) => ({ description, specs, implemented: value, values: { public: value, internal: value, development: value, test: value }, absentMarkers });
 export const BUILD_OPTIONS = {
+  remote_provided_environment: option(true, "Exécuteur local de sessions avec identifiant de machine distinct.", ["SPEC-MOD-023"]),
+  remote_self_hosted_runner: option(true, "Exécuteur local de travaux compatibles et révocation contrôlée.", ["SPEC-MOD-024"]),
+  remote_control: option(true, "Relais sortant de session locale et de décisions humaines.", ["SPEC-MOD-013", "SPEC-CMD-055"]),
+  remote_auto_connect: option(true, "Rattachement automatique soumis au réglage utilisateur et à l’option dynamique.", ["SPEC-MOD-016"]),
+  session_mirroring: option(true, "Réplication distante en lecture seule sur activation explicite.", ["SPEC-MOD-017"]),
+  scheduled_triggers_remote: option(true, "Gestion confirmée des déclencheurs du service distant.", ["SPEC-OUT-032", "SPEC-EXT-027"]),
   ide_bridge: option(true,"Liaison locale authentifiée à un IDE compatible.",["SPEC-INT-001","SPEC-MCP-023"]),
   connector_websocket: option(true,"Transport WebSocket avec battement de vie.",["SPEC-MCP-004"]),
   inbound_channels: option(true,"Canaux entrants déclarés et autorisés.",["SPEC-MCP-013"]),

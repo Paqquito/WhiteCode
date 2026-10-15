@@ -121,6 +121,7 @@ export class EventStream {
       }
     }
     switch (e.type) {
+      case "output_files": return this.emit("output_files", { files: e.files, failed: e.failed });
       case "progress_summary": return this.emit("progress_summary", { text: e.text });
       case "input_suggestion": return this.emit("input_suggestion", { text: e.text });
       case "text_delta":

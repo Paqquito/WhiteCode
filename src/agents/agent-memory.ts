@@ -1,7 +1,7 @@
 // Implements: SPEC-AGT-007 (scoped ordinary memory, local exclusion and explicit cross-agent access).
 // Supports: SPEC-MOT-036, gap E-174.
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync } from "node:fs";
+import { storeExists as existsSync, storeStat as lstatSync, storeMkdir as mkdirSync, storeRead as readFileSync } from "../session/private-storage";
 import { dirname, join, resolve } from "node:path";
 import { MemoryStore } from "../memory/store";
 import { currentPlatform, isWithin, realPathOrSelf } from "../platform/system";

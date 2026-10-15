@@ -6,6 +6,8 @@ import { createHash } from "node:crypto";
 import { currentPlatform, realPathOrSelf } from "../platform/system";
 import { writeAtomic } from "../tools/text-file";
 import { tryFileLock } from "../platform/file-lock";
+import { encryptedStore, storeRead, storeWrite, storeExists, storeFileLock } from "./private-storage";
+import { ArchiveFailure } from "./archive-crypto";
 
 interface ContentReference { readonly $contentRef: string; readonly encoding: "utf8" | "base64" }
 const MAX_BYTES = 20 * 1024 * 1024;
@@ -20,6 +22,7 @@ export class ContentStore {
   constructor(root: string, readonly inlineThreshold = 4000) { this.root = resolve(root); }
   static forTranscript(path: string): ContentStore { return new ContentStore(join(dirname(dirname(dirname(path))), "content")); }
   withLock<T>(action: () => T): T {
+    if (encryptedStore(this.root)) { const release = storeFileLock(join(this.root, ".references.lock")); if (!release) throw new Error("Content references are busy."); try { return action(); } finally { release(); } }
     this.#path("0".repeat(64)); mkdirSync(this.root, { recursive: true, mode: 0o700 });
     const lock = join(this.root, ".references.lock");
     if (existsSync(lock)) { const stat = lstatSync(lock); if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error("Invalid content lease."); }
@@ -46,6 +49,7 @@ export class ContentStore {
     return path;
   }
   #get(hash: string): Buffer {
+    if (encryptedStore(this.root)) { const bytes = storeRead(join(this.root, hash + ".blob")); if (bytes.length > MAX_BYTES || digest(bytes) !== hash) throw new Error("Altered content."); return bytes; }
     const path = this.#path(hash), fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     try {
       const stat = fstatSync(fd); if (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_BYTES) throw new Error("Invalid content size.");
@@ -59,6 +63,7 @@ export class ContentStore {
   #put(bytes: Buffer, encoding: ContentReference["encoding"]): ContentReference {
     if (bytes.length > MAX_BYTES) throw new Error("Content size exceeds its bound.");
     const hash = digest(bytes), path = this.#path(hash);
+    if (encryptedStore(this.root)) { if (storeExists(path)) this.#get(hash); else storeWrite(path, bytes); return { $contentRef: hash, encoding }; }
     if (existsSync(path)) this.#get(hash);
     else { mkdirSync(this.root, { recursive: true, mode: 0o700 }); this.#path(hash); writeAtomic(path, bytes, currentPlatform(), true); this.#get(hash); }
     return { $contentRef: hash, encoding };
@@ -82,7 +87,7 @@ export class ContentStore {
       if (depth > 8) throw new Error("Content nesting exceeds its bound.");
       if (reference(part)) {
         try { const bytes = this.#get(part.$contentRef); remaining -= bytes.length; if (remaining < 0) throw new Error("Resolved content exceeds its bound."); return bytes.toString(part.encoding); }
-        catch { return "[Stored content unavailable.]"; }
+        catch (error) { if (error instanceof ArchiveFailure) throw error; return "[Stored content unavailable.]"; }
       }
       if (Array.isArray(part)) { if (part.length > 1024) throw new Error("Too many content parts."); return part.map(item => walk(item, depth + 1)); }
       if (!part || typeof part !== "object") return part;
@@ -93,6 +98,7 @@ export class ContentStore {
   }
   /** A bounded, complete scan is required before deleting any unreferenced, hash-verified blob. */
   collect(sessionsDir: string, historyPath: string): number {
+    if (encryptedStore(this.root)) return 0; // Retention never deletes an encrypted blob on an incomplete reference inventory.
     if (!existsSync(this.root)) return 0;
     return this.withLock(() => {
       const referenced = new Set<string>(), deadline = Date.now() + 200, files: string[] = [historyPath]; let total = 0;

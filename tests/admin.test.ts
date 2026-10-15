@@ -184,8 +184,9 @@ describe("SPEC-MOD-012 sub-command families", () => {
     expect(r.stdout).toContain("Opérations :");
     expect(r.stdout).toContain("list");
     expect(snapshot(ws)).toEqual(before);
-    const undelivered = await cli(["connector", "import", "fixture"], ws);
-    expect(undelivered.code).toBe(2);
-    expect(undelivered.stderr).toContain("Opération non disponible dans cette version : connector import.");
+    const invalidImport = await cli(["connector", "import", "fixture"], ws, { userConfig: null });
+    expect(invalidImport.code).toBe(2);
+    expect(invalidImport.stderr).toContain("Usage : connector import desktop");
+    expect(snapshot(ws)).toEqual(before);
   });
 });

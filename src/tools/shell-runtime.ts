@@ -10,6 +10,9 @@ import { comparablePath, findExecutable, isWithin, realPathOrSelf, type Platform
 import type { ResultStore } from "../session/result-store";
 import { boundText, cleanOutput } from "./output-bounds";
 import { stripShellHints, ShellHintStream } from "./shell-hints";
+import { encryptedStore, storeWrite } from "../session/private-storage";
+import { randomUUID } from "node:crypto";
+import { ShellMetadataStream } from "./shell-metadata";
 
 export interface PosixShell {
   readonly path: string;
@@ -132,6 +135,7 @@ export interface ShellRuntimeOptions {
 export class ShellRuntime {
   #cwd: string;
   #snapshot: string | undefined | null = null;
+  #snapshotText?: string;
   readonly #running = new Set<Child>();
   #counter = 0;
 
@@ -186,6 +190,7 @@ export class ShellRuntime {
       if (keep) kept.push(line);
     }
     const forced = Object.entries(this.options.forcedVariables).map(([k, v]) => `export ${k}=${quotePosix(v)}`);
+    if (encryptedStore(this.options.workDir)) { this.#snapshotText = [...kept, ...forced, ""].join("\n"); return undefined; }
     mkdirSync(this.options.workDir, { recursive: true });
     const file = join(this.options.workDir, "shell-snapshot.sh");
     writeFileSync(file, [...kept, ...forced, ""].join("\n"), "utf8");
@@ -208,18 +213,21 @@ export class ShellRuntime {
     const shell = this.options.posix!;
     const p = (x: string) => posixPath(x, this.options.platform);
     const snapshot = this.snapshot();
+    const privateMode = encryptedStore(this.options.workDir);
+    const metadata = privateMode ? randomUUID() : undefined;
     const cwdFile = join(this.options.workDir, `cwd-${process.pid}-${++this.#counter}`);
     // Windows: the POSIX layer's own process id, to stop the command's process group through the shell (gap E-051).
-    const groupFile = this.options.platform === "windows" ? `${cwdFile}.group` : undefined;
-    mkdirSync(this.options.workDir, { recursive: true });
+    const groupFile = this.options.platform === "windows" && !privateMode ? `${cwdFile}.group` : undefined;
+    if (!privateMode) mkdirSync(this.options.workDir, { recursive: true });
     const lines = [
       groupFile ? `echo $$ > ${quotePosix(p(groupFile))}` : "",
       snapshot ? `. ${quotePosix(p(snapshot))} >/dev/null 2>&1` : "",
+      this.#snapshotText ? ". /dev/stdin >/dev/null 2>&1 || :" : "",
       this.options.initFile ? `. ${quotePosix(p(this.options.initFile))}` : "",
       `cd -- ${quotePosix(p(this.#cwd))} || exit 1`,
       `eval ${quotePosix(command)}`,
       "__status=$?",
-      `{ pwd -W 2>/dev/null || pwd -P; } > ${quotePosix(p(cwdFile))} 2>/dev/null`,
+      metadata ? `printf '\\036${metadata}:'; pwd -W 2>/dev/null || pwd -P; printf '\\037'` : `{ pwd -W 2>/dev/null || pwd -P; } > ${quotePosix(p(cwdFile))} 2>/dev/null`,
       "exit $__status",
     ];
     const stopDescendants = groupFile
@@ -229,7 +237,7 @@ export class ShellRuntime {
         }
       : undefined;
     try {
-      return await this.#run(shell.path, ["-c", lines.filter((l) => l !== "").join("\n")], cwdFile, timeoutMs, signal, stopDescendants, onOutput, command);
+      return await this.#run(shell.path, ["-c", lines.filter((l) => l !== "").join("\n")], cwdFile, timeoutMs, signal, stopDescendants, onOutput, command, this.#snapshotText, metadata);
     } finally {
       if (groupFile) rmSync(groupFile, { force: true });
     }
@@ -239,7 +247,9 @@ export class ShellRuntime {
   async runPowerShell(command: string, timeoutMs: number, signal: AbortSignal, onOutput?: (chunk: string) => void): Promise<ShellResult> {
     const ps = this.options.powershell!;
     const cwdFile = join(this.options.workDir, `cwd-${process.pid}-${++this.#counter}`);
-    mkdirSync(this.options.workDir, { recursive: true });
+    const privateMode = encryptedStore(this.options.workDir);
+    const metadata = privateMode ? randomUUID() : undefined;
+    if (!privateMode) mkdirSync(this.options.workDir, { recursive: true });
     const encoded = Buffer.from(command, "utf8").toString("base64");
     const script = [
       "$ErrorActionPreference = 'Continue'",
@@ -255,11 +265,11 @@ export class ShellRuntime {
       // Standard error of native programs is not merged: text on it with exit code 0 is not a failure (§ 5.3 point 4, CA-04).
       "try { . $__block | Out-String -Stream -Width 4096 | ForEach-Object { [Console]::Out.WriteLine($_) }; $__ok = ($Error.Count -eq $__errors) } catch { [Console]::Out.WriteLine(($_ | Out-String).TrimEnd()); $__ok = $false }",
       "$__code = if ($global:LASTEXITCODE -ne 0) { $global:LASTEXITCODE } elseif (-not $__ok) { 1 } else { 0 }",
-      `[IO.File]::WriteAllText(${quotePs(cwdFile)}, (Get-Location).ProviderPath)`,
+      metadata ? `[Console]::Out.Write([char]30 + '${metadata}:' + (Get-Location).ProviderPath + [char]31)` : `[IO.File]::WriteAllText(${quotePs(cwdFile)}, (Get-Location).ProviderPath)`,
       "exit $__code",
     ].join("\n");
     const args = ["-NoLogo", "-NonInteractive", ...(this.options.settings.powershellLoadProfile ? [] : ["-NoProfile"]), "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")];
-    const result = await this.#run(ps.path, args, cwdFile, timeoutMs, signal, undefined, onOutput, command);
+    const result = await this.#run(ps.path, args, cwdFile, timeoutMs, signal, undefined, onOutput, command, undefined, metadata);
     // ERR-02: a script blocked by the execution policy of the machine is stated explicitly.
     if (/PSSecurityException|UnauthorizedAccess|running scripts is disabled/i.test(result.output)) {
       return { ...result, output: `${result.output}\n[Script execution is blocked by the execution policy of this machine.]` };
@@ -267,17 +277,20 @@ export class ShellRuntime {
     return result;
   }
 
-  async #run(file: string, args: string[], cwdFile: string, timeoutMs: number, signal: AbortSignal, stopDescendants?: () => void, onOutput?: (chunk: string) => void, command = ""): Promise<ShellResult> {
+  async #run(file: string, args: string[], cwdFile: string, timeoutMs: number, signal: AbortSignal, stopDescendants?: () => void, onOutput?: (chunk: string) => void, command = "", input?: string, metadataNonce?: string): Promise<ShellResult> {
     const started = Date.now();
     const chunks: Buffer[] = [];
     // The output as it comes, for the shell mode of the interface (SPEC-IHM-012 EF-04).
     const decoder = new TextDecoder();
+    const metadataDecoder = new TextDecoder(); let privateCwd: string | undefined;
+    const metadata = metadataNonce ? new ShellMetadataStream(metadataNonce, path => { privateCwd = path; }) : undefined;
     const hints = this.options.hintTag ? new ShellHintStream(this.options.hintTag) : undefined;
-    const onData = (c: Buffer) => {
+    const onData = (raw: Buffer) => {
+      const c = metadata ? Buffer.from(metadata.push(metadataDecoder.decode(raw, { stream: true }))) : raw;
       chunks.push(c);
       if (onOutput) { const decoded = decoder.decode(c, { stream: true }); const safe = hints ? hints.push(decoded) : decoded; if (safe) onOutput(safe); }
     };
-    const child = startChild(file, args, { cwd: existsSync(this.#cwd) ? this.#cwd : this.options.projectCwd, env: this.options.childEnv, onData, stopDescendants });
+    const child = startChild(file, args, { cwd: existsSync(this.#cwd) ? this.#cwd : this.options.projectCwd, env: this.options.childEnv, onData, stopDescendants, input });
     this.#running.add(child);
     let timedOut = false;
     let interrupted = false;
@@ -294,6 +307,7 @@ export class ShellRuntime {
     if (signal.aborted) onAbort();
     else signal.addEventListener("abort", onAbort, { once: true });
     const exitCode = await child.exited;
+    if (metadata) { const last = Buffer.from(metadata.push(metadataDecoder.decode(), true)); if (last.length) { chunks.push(last); if (onOutput) { const decoded = decoder.decode(last, { stream: true }), safe = hints ? hints.push(decoded) : decoded; if (safe) onOutput(safe); } } }
     if (onOutput) { const decoded = decoder.decode(), safe = hints ? hints.push(decoded, true) : decoded; if (safe) onOutput(safe); }
     clearTimeout(timer);
     signal.removeEventListener("abort", onAbort);
@@ -305,8 +319,8 @@ export class ShellRuntime {
     let cwdNotice: string | undefined;
     let reported: string | undefined;
     try {
-      reported = readFileSync(cwdFile, "utf8");
-      rmSync(cwdFile, { force: true });
+      reported = metadata ? privateCwd : readFileSync(cwdFile, "utf8");
+      if (!metadata) rmSync(cwdFile, { force: true });
     } catch {
       reported = undefined;
     }

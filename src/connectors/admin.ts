@@ -21,6 +21,8 @@ import { ConnectorOAuth } from "./oauth";
 import { nativeCredentialVault } from "../platform/credential-vault";
 import { maskSecrets } from "../shared/secrets";
 import { registryReport, searchConnectorRegistry } from "./registry";
+import { parseConnectorBundle, installConnectorBundle } from "./bundle";
+import { authDialog } from "../interactive/auth-dialog";
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 function document(text: string): Record<string, unknown> {
@@ -32,10 +34,14 @@ function contents(file: string): string {
   catch (cause) { if ((cause as NodeJS.ErrnoException).code === "ENOENT") return "{}\n"; throw cause; }
 }
 async function changeFile(file: string, name: string, value: unknown, force: boolean, deps: AdminDependencies): Promise<void> {
+  return changeFiles(file, [[name, value]], force, deps);
+}
+async function changeFiles(file: string, entries: ReadonlyArray<readonly [string, unknown]>, force: boolean, deps: AdminDependencies): Promise<void> {
   mkdirSync(dirname(file), { recursive: true }); let release: (() => void) | undefined; const until = Date.now() + 30000;
   while (!(release = tryFileLock(file + ".lock"))) { deps.signal?.throwIfAborted(); if (Date.now() > until) throw new Error("Configuration verrouillée."); await new Promise(r => setTimeout(r, 25)); }
-  try { deps.assertPolicy?.(); const text = contents(file), previous = document(text); if (value !== undefined && object(previous.servers) && previous.servers[name] !== undefined && !force) throw new Error("Nom déjà présent dans cette portée ; utilisez --force.");
-    const next = applyEdits(text, modify(text, ["servers", name], value, { formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" } })); writeAtomic(file, Buffer.from(next), deps.system.platform, true);
+  try { deps.assertPolicy?.(); const text = contents(file), previous = document(text); let next = text;
+    for (const [name, value] of entries) { if (value !== undefined && object(previous.servers) && previous.servers[name] !== undefined && !force) throw new Error("Nom déjà présent dans cette portée ; utilisez --force."); next = applyEdits(next, modify(next, ["servers", name], value, { formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" } })); }
+    writeAtomic(file, Buffer.from(next), deps.system.platform, true);
   } finally { release(); }
 }
 function safeDeclaration(d: ConnectorDeclaration): Record<string, unknown> {
@@ -60,6 +66,37 @@ export async function runConnectorAdmin(deps: AdminDependencies, parsed: ParsedS
     const name = parsed.args[0], scope = parsed.options.get("scope") ?? "local", valueOption = parsed.options.get("declaration");
     if (!["user", "project", "local"].includes(String(scope))) { err("Portée invalide : user, project ou local."); return 2; }
     const files: Record<string, string> = { user: join(locations.configDir, "connectors.json"), project: join(locations.projectRoot, deps.identity.get("PROJECT_DIR"), "connectors.json") };
+    const confirm = async (summary: string) => { if (!deps.streams.stdinIsTTY || !deps.streams.stdoutIsTTY || !deps.streams.terminal) throw new Error("Cette opération exige une confirmation dans un terminal interactif."); return await authDialog(deps.streams.terminal, summary, false, deps.signal) === true; };
+    const checkProposal = (entryName: string, declaration: unknown, target: "user" | "project" | "local") => {
+      if (!/^[a-z0-9][a-z0-9-]{1,47}$/.test(entryName)) throw new Error("Nom de connecteur invalide.");
+      const result = resolveConnectors([...sources.filter(source => source.scope === "managed"), { scope: target, source: "import confirmé", content: { servers: { [entryName]: declaration } } }], { ...policy, projectChoice: () => "approved" });
+      if (result.warnings.length || !result.connectors.some(entry => entry.name === entryName && entry.scope === target)) throw new Error("Déclaration invalide ou interdite par votre organisation.");
+    };
+    if (parsed.operation === "install-archive") {
+      if (parsed.args.length !== 1) throw new Error("Usage : connector install-archive <fichier.mcpb> [--scope user|project|local].");
+      const path = resolve(deps.cwd, parsed.args[0]!), stat = lstatSync(path), maximum = settings.get<number>("extensions.archiveMaxSize");
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > maximum) throw new Error("Archive non ordinaire ou trop volumineuse.");
+      const bundle = parseConnectorBundle(readFileSync(path), maximum, deps.system.platform);
+      checkProposal(bundle.name, bundle.server, scope as "user" | "project" | "local");
+      const installed = await installConnectorBundle(bundle, { configDir: locations.configDir, confirm }); if (!installed) return 2;
+      deps.assertPolicy?.(); checkProposal(installed.name, installed.declaration, scope as "user" | "project" | "local");
+      if (scope === "local") await updateUserState(locations.userStateFile, current => { const entry = current.projects?.[key] as ProjectState | undefined, servers = object(entry?.connectors?.servers) ? { ...entry.connectors.servers } : {};
+        if (servers[installed.name] !== undefined && !parsed.options.has("force")) throw new Error("Nom déjà présent ; utilisez --force."); servers[installed.name] = installed.declaration;
+        return { ...current, projects: { ...current.projects, [key]: { ...entry, connectors: { ...entry?.connectors, servers } } } };
+      }, deps.system.platform, err);
+      else await changeFile(files[String(scope)]!, installed.name, installed.declaration, parsed.options.has("force"), deps);
+      out(`Connecteur ${installed.name} installé et déclaré (${scope}).`); return 0;
+    }
+    if (parsed.operation === "import") {
+      if (parsed.args[0] !== "desktop" || parsed.args.length !== 3) throw new Error("Usage : connector import desktop <fichier> <nom1,nom2>. Les autres connecteurs restent ignorés.");
+      const source = document(contents(resolve(deps.cwd, parsed.args[1]!))), selected = parsed.args[2]!.split(","), entries: Array<readonly [string, unknown]> = [];
+      if (!object(source.servers) || selected.length > 100 || new Set(selected).size !== selected.length) throw new Error("Configuration de bureau ou sélection invalide.");
+      for (const entryName of selected) { const declaration = source.servers[entryName]; checkProposal(entryName, declaration, "user");
+        if (object(declaration) && object(declaration.env) && Object.values(declaration.env).some(value => typeof value !== "string" || !/^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value))) throw new Error("Secret ou valeur d’environnement en clair : convertissez-la en référence ${VARIABLE} dans la configuration source avant l’import.");
+        entries.push([entryName, declaration]); }
+      if (!await confirm(`Importer en portée utilisateur : ${selected.join(", ")} ? Les noms déjà présents exigent --force.`)) return 2;
+      await changeFiles(files.user!, entries, parsed.options.has("force"), deps); out(`${entries.length} connecteurs importés en portée utilisateur.`); return 0;
+    }
     const mutate = async (target: string, value: unknown, force: boolean) => {
       if (target !== "local") return changeFile(files[target]!, name!, value, force, deps);
       await updateUserState(locations.userStateFile, current => { const entry = current.projects?.[key] as ProjectState | undefined, connectors = entry?.connectors ?? {}, servers = object(connectors.servers) ? { ...connectors.servers } : {};

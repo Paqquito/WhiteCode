@@ -1,7 +1,8 @@
 // Implements: SPEC-OBS-018 (request fingerprint, stream-preserving record/replay, explicit misses).
 // Supports: SPEC-API-002, SPEC-BLD-007, E-157.
 import { createHash } from 'node:crypto';
-import { mkdirSync, existsSync, lstatSync, openSync, fstatSync, readSync, closeSync, constants } from 'node:fs';
+import { openSync, fstatSync, readSync, closeSync, constants } from 'node:fs';
+import { storeMkdir as mkdirSync, storeExists as existsSync, storeStat as lstatSync, encryptedStore, storeRead } from '../session/private-storage';
 import { dirname, join, resolve } from 'node:path';
 import type { ModelEvent, ModelProvider, ModelRequest } from './types';
 import { writeAtomic } from '../tools/text-file';
@@ -48,6 +49,7 @@ export function withApiRecording(provider:ModelProvider,o:{mode?:RecordingMode;d
 
 const object = (value:unknown):value is Record<string,unknown> => !!value && typeof value==='object' && !Array.isArray(value);
 function readReference(file:string):unknown {
+  if (encryptedStore(file)) { const bytes = storeRead(file); if (bytes.length > LIMIT) throw new Error('Référence trop volumineuse.'); return JSON.parse(bytes.toString()); }
   const before=lstatSync(file),fd=openSync(file,constants.O_RDONLY|(constants.O_NOFOLLOW??0));
   try {
     const stat=fstatSync(fd);

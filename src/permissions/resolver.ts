@@ -16,6 +16,8 @@ export type HumanAnswer =
   | { readonly answer: "no_stop" };
 
 export interface ApprovalRequest {
+  /** Optional explanation is informational and never resolves this request. */
+  readonly explain?: (signal: AbortSignal) => Promise<string>;
   readonly callId: string;
   readonly toolName: string;
   readonly summary: string;

@@ -17,6 +17,7 @@ export type StopCause =
   | "error";
 
 export type EngineEvent =
+  | { readonly type: "output_files"; readonly files: readonly { path: string; id: string; sha256: string }[]; readonly failed: readonly { path: string; reason: string }[] }
   | { readonly type: "progress_summary"; readonly text: string }
   | { readonly type: "input_suggestion"; readonly text: string }
   | { readonly type: "capacity_wait"; readonly delayMs: number; readonly elapsedMs: number; readonly maxWaitMs: number }

@@ -11,6 +11,7 @@ import type { Tool, ToolEnvironment } from "./types";
 import { updateNotebookCellTool } from "./update-notebook-cell";
 import { updateTodoListTool } from "./update-todo-list";
 import { writeFileTool } from "./write-file";
+import { archiveAccessTool } from "./archive-access";
 
 /** Built-in tools delivered in this version. */
 export const BUILTIN_TOOLS: readonly Tool<never>[] = [
@@ -78,7 +79,7 @@ export class ToolRegistry implements ToolLookup {
 
   static build(env: ToolEnvironment, options: RegistryOptions = {}): ToolRegistry {
     const all = new Map<string, Tool<never>>();
-    for (const original of BUILTIN_TOOLS) { const t = options.decorateBuiltin?.(original) ?? original; if (t.isEnabled(env)) all.set(t.name, t); }
+    for (const original of BUILTIN_TOOLS) { const t = archiveAccessTool(options.decorateBuiltin?.(original) ?? original); if (t.isEnabled(env)) all.set(t.name, t); }
     for (const { tool, connector } of options.extraTools ?? []) {
       if (!tool.isEnabled(env)) continue;
       // FA-03: a connector tool never hides a built-in one; it takes the qualified name `cnx_<connector>_<tool>`.

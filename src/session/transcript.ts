@@ -7,6 +7,8 @@ import { randomUUID } from "node:crypto";
 import { tryFileLock } from "../platform/file-lock";
 import { ContentStore } from "./content-store";
 import { decodeRecordContent, retainedHistory } from "./retained-history";
+import { encryptedStore, storeAppend, storeExists, storeFileLock, storeRead, storeMkdir } from "./private-storage";
+import { ArchiveFailure } from "./archive-crypto";
 
 export const TRANSCRIPT_FORMAT_VERSION = 1;
 
@@ -76,12 +78,12 @@ export class TranscriptWriter {
     this.#clock = options.clock ?? (() => new Date());
     this.#content = new ContentStore(join(options.sessionsDir, "..", "content"), options.contentInlineThreshold);
     this.#lastId = options.parentId ?? null;
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    storeMkdir(dir, { recursive: true, mode: 0o700 });
     if (options.active) {
-      this.#releaseActive = tryFileLock(this.path + ".active");
+      this.#releaseActive = storeFileLock(this.path + ".active");
       if (!this.#releaseActive) throw new Error("Cette session est déjà active dans un autre processus.");
     }
-    try { this.#fd = openSync(this.path, "a", 0o600); }
+    try { if (!encryptedStore(this.path)) this.#fd = openSync(this.path, "a", 0o600); }
     catch (error) { this.#releaseActive?.(); this.#releaseActive = undefined; throw error; }
   }
 
@@ -107,7 +109,10 @@ export class TranscriptWriter {
       ts: this.#clock().toISOString(),
       data,
     };
-    if (this.#fd !== undefined && !this.#failed) {
+    if (!this.#failed && encryptedStore(this.path)) {
+      try { storeAppend(this.path, `${JSON.stringify(record)}\n`); }
+      catch (error) { this.#failed = true; this.warning = error instanceof Error ? error.message : "Enregistrement chiffré suspendu."; }
+    } else if (this.#fd !== undefined && !this.#failed) {
       try {
         writeSync(this.#fd, `${JSON.stringify(record)}\n`);
       } catch {
@@ -149,15 +154,16 @@ export interface ReadResult {
 
 /** Reads a transcript; an unreadable line (interrupted write) is skipped without invalidating the rest (EF-04). */
 export function readTranscript(path: string): ReadResult {
-  if (!existsSync(path)) return { records: [], skippedLines: 0 };
+  if (!storeExists(path)) return { records: [], skippedLines: 0 };
   const records: TranscriptRecord[] = [];
   let skippedLines = 0;
-  for (const line of readFileSync(path, "utf8").split("\n")) {
+  for (const line of storeRead(path, "utf8").split("\n")) {
     if (line.trim() === "") continue;
     try {
       const record = JSON.parse(line) as TranscriptRecord;
       records.push(decodeRecordContent(record, path));
-    } catch {
+    } catch (error) {
+      if (error instanceof ArchiveFailure) throw error;
       skippedLines++;
     }
   }

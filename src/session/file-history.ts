@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { storeExists, storeStat, storeRead, storeWrite, storeMkdir } from "./private-storage";
 
 /** State of a path, as the agent last knew it or as it is now (SPEC-SES-006 § 5.7 point 1: absence, type, link target). */
 export type FileState =
@@ -72,16 +73,16 @@ export class BlobStore {
       return;
     }
     const path = join(this.#dir, hash);
-    const valid = () => lstatSync(path).isFile() && this.get(hash) !== undefined;
-    if (existsSync(path)) {
+    const valid = () => storeStat(path).isFile() && this.get(hash) !== undefined;
+    if (storeExists(path)) {
       if (!valid()) throw new Error("The existing backup is not a recoverable regular file.");
       return;
     }
-    mkdirSync(this.#dir, { recursive: true, mode: 0o700 });
-    try { writeFileSync(path, bytes, { mode: 0o600, flag: "wx" }); }
+    storeMkdir(this.#dir, { recursive: true, mode: 0o700 });
+    try { storeWrite(path, bytes, { mode: 0o600, flag: "wx" }); }
     catch (error) {
       // A concurrent identical backup may have won creation; no existing content is overwritten.
-      if (!existsSync(path) || !valid()) throw error;
+      if (!storeExists(path) || !valid()) throw error;
     }
     if (!valid()) throw new Error("The backup could not be verified after creation.");
   }
@@ -89,7 +90,7 @@ export class BlobStore {
   get(hash: string): Buffer | undefined {
     if (this.#dir === undefined) return this.#memory.get(hash);
     try {
-      const bytes = readFileSync(join(this.#dir, hash));
+      const bytes = storeRead(join(this.#dir, hash));
       return hashBytes(bytes) === hash ? bytes : undefined; // a damaged copy is never restored
     } catch {
       return undefined;

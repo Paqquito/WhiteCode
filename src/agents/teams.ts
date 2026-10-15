@@ -1,13 +1,16 @@
+// Supports: SPEC-SES-001 (protected storage access), gap E-181.
+import { storeAppend as appendFileSync, storeExists as existsSync, storeMkdir as mkdirSync, storeStat as statSync } from "../session/private-storage";
 // Implements: SPEC-AGT-011, SPEC-AGT-012 (in-process mode), SPEC-AGT-013 (ordered delivery), SPEC-OUT-019, SPEC-OUT-017.
 // Supports: SPEC-AGT-014 (leader-owned execution), gap E-168.
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { TaskList } from "../engine/task-list";
 import { ordinaryPrivateFile } from "../shared/private-text";
 import { writeAtomic } from "../tools/text-file";
 import { currentPlatform } from "../platform/system";
 import { securePrivateDirectory } from "../platform/private-file";
+import { encryptedStore, storeRemove } from "../session/private-storage";
 
 export interface TeamNotice { readonly type: "idle" | "message" | "stopped" | "error"; readonly from: string; readonly text: string; readonly forced?: boolean }
 export interface TeamInput { readonly name: string; readonly prompt: string; readonly role?: string; readonly model?: string; readonly resume?: string }
@@ -29,7 +32,7 @@ export class Teams {
     this.#check(); if (this.#active) throw new Error("A team is already active.");
     if (!namePattern.test(team)) throw new Error("Invalid team name.");
     const folder = join(resolve(this.options.folder), randomUUID()), tasksFile = join(folder, "tasks.json");
-    ordinaryPrivateFile(tasksFile, 1024 * 1024); mkdirSync(folder, { recursive: true, mode: 0o700 }); securePrivateDirectory(folder);
+    ordinaryPrivateFile(tasksFile, 1024 * 1024); mkdirSync(folder, { recursive: true, mode: 0o700 }); if (!encryptedStore(folder)) securePrivateDirectory(folder);
     const tasks = new TaskList();
     const save = () => { ordinaryPrivateFile(tasksFile, 1024 * 1024); writeAtomic(tasksFile, Buffer.from(JSON.stringify(tasks.tasks)), currentPlatform(), true); };
     save(); tasks.onChange(save); this.#tasks = tasks;
@@ -116,7 +119,7 @@ export class Teams {
   disband(): void {
     this.#check(); if (!this.#active) throw new Error("No team is active.");
     const live = this.members.filter(member => member.state !== "stopped"); if (live.length) throw new Error("Stop all teammates before dissolving the team: " + live.map(member => member.name).join(", "));
-    ordinaryPrivateFile(this.#active.tasksFile, 1024 * 1024); rmSync(this.#active.folder, { recursive: true });
+    ordinaryPrivateFile(this.#active.tasksFile, 1024 * 1024); storeRemove(this.#active.folder, true);
     this.#active = undefined; this.#tasks = undefined; this.#members.clear();
   }
   async close(): Promise<void> { this.#closed = true; for (const member of this.#members.values()) this.#stop(member); await Promise.allSettled([...this.#members.values()].flatMap(member => [member.work, member.cleanup])); }

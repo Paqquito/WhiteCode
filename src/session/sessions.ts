@@ -1,12 +1,15 @@
+// Supports: SPEC-SES-001 (protected storage access), gap E-181.
+import { storeExists as existsSync, storeList as readdirSync, storeRead as readFileSync, storeStat as statSync } from "./private-storage";
 // Implements: SPEC-SES-002 (§ 5.3 steps 1, 2 and 5, EF-02, EF-04, ERR-02, ERR-03, RG-01), SPEC-SES-004 (§ 5.3, EF-01 to EF-03, ERR-01, ERR-02),
 //             SPEC-SES-015 (§ 5.1, § 5.3 steps 1 and 2, EF-01, EF-02, ERR-01), SPEC-SES-001 (EF-03 branches, EF-04 partial lines, CA-03 last title)
 // Reading of transcripts: sessions of a project, designation by identifier or title, active branch, rebuilt history.
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+
 import { join } from "node:path";
 import type { ContentPart, HistoryMessage, ToolCall, ToolResultPart } from "../providers/types";
 import { decodeProjectKey, projectKey, type TranscriptRecord } from "./transcript";
 import { decodeRecordContent, retainedHistory } from "./retained-history";
+import { ArchiveFailure } from "./archive-crypto";
 // Implements: SPEC-SES-009 (EF-02/03, CA-03), gap E-149.
 
 export function sessionLabels(records: readonly TranscriptRecord[]): string[] {
@@ -32,7 +35,8 @@ export function readTranscript(path: string): { records: TranscriptRecord[]; ski
   let text: string;
   try {
     text = readFileSync(path, "utf8");
-  } catch {
+  } catch (error) {
+    if (error instanceof ArchiveFailure) throw error;
     throw new SessionError("Cette conversation ne peut pas être rechargée."); // ERR-03
   }
   const records: TranscriptRecord[] = [];
@@ -43,7 +47,8 @@ export function readTranscript(path: string): { records: TranscriptRecord[]; ski
       const r = JSON.parse(line) as TranscriptRecord;
       if (typeof r.id === "string" && typeof r.type === "string") records.push(decodeRecordContent(r, path));
       else skipped++;
-    } catch {
+    } catch (error) {
+      if (error instanceof ArchiveFailure) throw error;
       skipped++;
     }
   }

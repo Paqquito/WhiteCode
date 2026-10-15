@@ -23,15 +23,16 @@ export class SkillDiscovery {
   }
 }
 
-export function createDiscoverSkillsTool(discovery: SkillDiscovery): Tool<{ description: string; max_results?: number }> {
+export function createDiscoverSkillsTool(discovery: SkillDiscovery, remote?: (description: string, maximum: number, signal: AbortSignal) => Promise<Skill[]>): Tool<{ description: string; max_results?: number }> {
   return {
     name: "discover_skills",
     description: () => "Find local skills relevant to your next action before changing direction. Give a precise description. Skills already suggested or loaded are excluded. Discovery returns metadata and never grants permissions or loads instructions; invoke use_skill to load a selected skill.",
     inputSchema: { type: "object", properties: { description: { type: "string", minLength: 1, maxLength: 8192 }, max_results: { type: "integer", minimum: 1, maximum: 10 } }, required: ["description"], additionalProperties: false },
     flags: () => ({ readOnly: true, concurrencySafe: false, destructive: false, requiresPermission: false, openWorld: false }),
     isEnabled: () => true, ruleSubject: () => ({ kind: "none" }), permissionContribution: () => "allow", summary: () => "Discover relevant local skills",
-    async execute(input) {
+    async execute(input, ctx) {
       const skills = discovery.select(input.description, input.max_results ?? 5);
+      if (remote && skills.length < (input.max_results ?? 5)) skills.push(...await remote(input.description, (input.max_results ?? 5) - skills.length, ctx.signal));
       return textOutcome(skills.length ? JSON.stringify(skills.map(skill => ({ name: skill.name, description: skill.description }))) : "No new relevant skills found.");
     },
   };

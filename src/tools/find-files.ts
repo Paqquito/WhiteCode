@@ -8,6 +8,7 @@ import description from "../../prompts/tools/find_files.md" with { type: "text" 
 import { insideAllowed } from "../permissions/paths";
 import { absolute, isAbsolutePath } from "../platform/system";
 import { walkFiles } from "./file-walk";
+import { encryptedStore, storeStat, storeReference, walkStoreFiles } from "../session/private-storage";
 import { textOutcome, type Tool, type ToolContext, type ToolOutcome } from "./types";
 
 export interface FindFilesInput {
@@ -83,12 +84,12 @@ export const findFilesTool: Tool<FindFilesInput> = {
   async execute(input, ctx): Promise<ToolOutcome> {
     const folder = folderOf(input, ctx);
     try {
-      if (!statSync(folder).isDirectory()) return textOutcome(`Not a folder: ${folder}.`, true, "invalid_input");
+      if (!(encryptedStore(folder) ? storeStat(folder) : statSync(folder)).isDirectory()) return textOutcome(`Not a folder: ${folder}.`, true, "invalid_input");
     } catch {
       return textOutcome(`Folder not found: ${folder}.`, true, "invalid_input"); // ERR-02
     }
     const matcher = compileGlob(input.pattern, caseInsensitive(ctx)) as (p: string) => boolean;
-    const walked = walkFiles(
+    const walked = encryptedStore(folder) ? walkStoreFiles(folder, Date.now() + ctx.settings.findTimeoutMs, ctx.signal, matcher) : walkFiles(
       folder,
       { respectIgnoreFiles: ctx.settings.respectIgnoreFiles, caseInsensitive: caseInsensitive(ctx), deadline: Date.now() + ctx.settings.findTimeoutMs, signal: ctx.signal },
       matcher,
@@ -104,6 +105,6 @@ export const findFilesTool: Tool<FindFilesInput> = {
     const notes: string[] = [];
     if (found.length > max) notes.push(`Showing ${max} of ${found.length} files, most recently modified first. Narrow the pattern to see the others.`); // EF-04
     if (walked.timedOut) notes.push(`The search stopped after ${Math.round(ctx.settings.findTimeoutMs / 1000)} s: results are partial.`); // FA-02
-    return textOutcome(shown.map((f) => f.path).join("\n") + (notes.length > 0 ? `\n\n[${notes.join(" ")}]` : ""));
+    return textOutcome(shown.map((f) => storeReference(f.path)).join("\n") + (notes.length > 0 ? `\n\n[${notes.join(" ")}]` : ""));
   },
 };

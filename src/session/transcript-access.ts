@@ -1,6 +1,7 @@
 // Supports: SPEC-SES-001 (§ 5.7 invocation-scoped transcript references, CA-12/13/15), SPEC-HOK-001 (transcriptRef), gap E-137.
 import { randomBytes } from "node:crypto";
 import { readLoopback, startLoopbackServer } from "../platform/loopback-server";
+import { bindPrivateStorage } from "./private-storage";
 
 export interface TranscriptGrant { readonly reference: string; release(): void }
 export interface TranscriptInvocation { readonly event: string; readonly fields: Readonly<Record<string, unknown>> }
@@ -33,7 +34,7 @@ export class TranscriptAccess {
     const port = await this.#start();
     if (this.#closed) throw new Error("Accès à la session terminé.");
     const token = randomBytes(32).toString("base64url"); this.#grants.add(token);
-    activeReads.set(token, () => this.read(invocation));
+    activeReads.set(token, bindPrivateStorage(() => this.read(invocation)));
     return { reference: `session:v1:${port}:${token}`, release: () => { this.#grants.delete(token); activeReads.delete(token); } };
   }
   close(): void {

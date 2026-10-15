@@ -11,6 +11,20 @@ import type { InternalCommand } from "./catalog";
 import { buildFlag, buildProfile } from "../extension-points/build-flags" with { type: "macro" };
 
 export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
+  { name: "footer-line", description: "Confie la ligne d’état à l’agent spécialisé ; toute écriture protégée exige l’accord habituel.", kind: "action", widening: true, usage: "<description>" },
+  { name: "praise", description: "Signale un échange réussi après relecture ; sa transcription reste facultative.", kind: "action", widening: false, interactiveOnly: true, usage: "[commentaire]" },
+  { name: "merge-request-subscribe", description: "Liste, crée ou résilie les abonnements aux événements de forge.", kind: "action", widening: false, usage: "[numéro|off]" },
+  ...(buildFlag("remote_sessions") ? [
+    { name: "deep-plan", description: "Confie un plan au service distant après accord et importe la version approuvée.", kind: "action", widening: false, usage: "<consigne>" },
+    { name: "deep-review", description: "Présente l’estimation et demande l’accord avant une revue distante.", kind: "action", widening: false, usage: "[numéro]" },
+    { name: "cloud-environment", description: "Choisit un environnement distant accessible et mémorise ce choix.", kind: "action", widening: false },
+    { name: "configure-remote", description: "Accompagne le parcours humain de forge et vérifie l’accès au dépôt.", kind: "action", widening: false },
+    { name: "session", description: "Affiche le lien et le code QR de la dernière tâche distante.", kind: "display", widening: false },
+    { name: "share", description: "Partage une copie relue de la conversation après confirmation.", kind: "action", widening: false },
+  ] as readonly InternalCommand[] : []),
+  ...(buildFlag("remote_control") ? [{ name: "remote-access", description: "Rattache la session locale au service distant ; off déconnecte.", kind: "action", widening: true, usage: "[nom|off]" }] as readonly InternalCommand[] : []),
+  ...(buildFlag("remote_control") && buildProfile() === "internal" ? [{ name: "remote-access-reset", description: "Injecte une défaillance locale dans le relais distant pour vérifier sa reprise.", kind: "action", widening: false, usage: "<disconnect|expired-token|service-error>" }] as readonly InternalCommand[] : []),
+  { name: "usage-report", description: "Analyse les sessions récentes et leurs frictions ; cache local des facettes et synthèse.", kind: "action", widening: false },
   ...(buildFlag("ui_companion")?[{name:"companion",description:"Fait éclore le compagnon décoratif local et règle son affichage.",kind:"action",widening:false,interactiveOnly:true}] as readonly InternalCommand[]:[]),
   {name:"editor-link",description:"Connecte cette session à un IDE local compatible choisi.",kind:"action",widening:false,interactiveOnly:true},
   ...(buildFlag("terminal_setup")?[{ name: "configure-terminal", description: "Configure Maj+Entrée après confirmation et sauvegarde ; restore rétablit une sauvegarde.", kind: "action", widening: true, usage: "[restore <sauvegarde>]", interactiveOnly: true }] as readonly InternalCommand[]:[]),

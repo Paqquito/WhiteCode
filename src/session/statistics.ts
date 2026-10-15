@@ -1,12 +1,16 @@
 // Implements: SPEC-IHM-030 (CA-01, EF-01/03), SPEC-IHM-031 (CA-01, EF-01/02), SPEC-CMD-066 (CA-01), gap E-150.
-import { readdir, lstat } from "node:fs/promises";
+import { readdir as diskNames, lstat as diskStat } from "node:fs/promises";
 import { createReadStream } from "node:fs";
+import { Readable } from "node:stream";
+import { encryptedStore, storeList, storeStat, storeRead } from "./private-storage";
 import { createInterface } from "node:readline";
 import { join } from "node:path";
 import type { TranscriptRecord } from "./transcript";
 
 export interface SessionStatistics { readonly days: ReadonlyMap<string, number>; readonly attempts: readonly number[]; readonly sessions: number; readonly userMessages: number }
 const dayKey = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+const readdir = async (path: string) => encryptedStore(path) ? storeList(path) : diskNames(path);
+const lstat = async (path: string) => encryptedStore(path) ? storeStat(path) : diskStat(path);
 
 /** Asynchronous disk reads yield to input handling; the report never needs an external service. */
 export async function loadSessionStatistics(directory: string): Promise<SessionStatistics> {
@@ -20,7 +24,7 @@ export async function loadSessionStatistics(directory: string): Promise<SessionS
       const path = join(folder, file); let count = 0; const activeDays = new Set<string>();
       try {
         if (!(await lstat(path)).isFile()) continue;
-        const input = createReadStream(path, { encoding: "utf8" });
+        const input = encryptedStore(path) ? Readable.from([storeRead(path, "utf8")]) : createReadStream(path, { encoding: "utf8" });
         const lines = createInterface({ input, crlfDelay: Infinity });
         try {
           for await (const line of lines) {

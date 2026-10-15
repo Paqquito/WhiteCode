@@ -74,7 +74,7 @@ export function parseRule(raw: string, decision: RuleDecision, scope: RuleScope,
     if (depth < 0) break;
   }
   if (depth !== 0) return { code: "ERR-02", severity: "warning", message: `Règle mal formée : ${raw}.` };
-  if (!/^[a-z][a-z0-9_]*$/.test(name)) return { code: "ERR-02", severity: "warning", message: `Règle mal formée : ${raw}.` };
+  if (!/^(?:[a-z][a-z0-9_]*|cnx_[a-zA-Z0-9_-]+)$/.test(name)) return { code: "ERR-02", severity: "warning", message: `Règle mal formée : ${raw}.` };
   if (!KNOWN_TOOL_NAMES.has(name) && !name.startsWith("cnx_")) return { code: "ERR-01", severity: "warning", message: `Règle ignorée : outil inconnu ${name}.` };
   const pattern = open === -1 ? undefined : text.slice(open + 1, -1).trim();
   if (pattern === "") return { code: "ERR-02", severity: "warning", message: `Règle mal formée : ${raw}.` };

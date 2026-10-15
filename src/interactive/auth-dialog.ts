@@ -2,8 +2,10 @@
 // Supports: gap E-135 (no history, draft, queue or transcript receives secret input).
 import type { Terminal } from "../platform/terminal";
 import { KeyParser, type InputEvent } from "../ui/keys";
+import { sanitize } from "../ui/text";
 
 export function authDialog(terminal: Terminal, title: string, secret: boolean, signal?: AbortSignal, afterFinish?: () => void): Promise<string | boolean | undefined> {
+  const safeTitle = sanitize(title);
   if (signal?.aborted) return Promise.resolve(undefined);
   return new Promise((resolve) => {
     const parser = new KeyParser();
@@ -12,7 +14,7 @@ export function authDialog(terminal: Terminal, title: string, secret: boolean, s
     let escapeTimer: ReturnType<typeof setTimeout> | undefined;
     const draw = () => {
       if (drawn) terminal.write("\u001b[2F\u001b[J");
-      terminal.write(`${title}\r\n${secret ? "•".repeat(Math.min(60, [...value].length)) + " — Entrée : valider · Échap : annuler" : "o : accepter · n ou Entrée : refuser"}\r\n`);
+      terminal.write(`${safeTitle}\r\n${secret ? "•".repeat(Math.min(60, [...value].length)) + " — Entrée : valider · Échap : annuler" : "o : accepter · n ou Entrée : refuser"}\r\n`);
       drawn = true;
     };
     const finish = (answer: string | boolean | undefined) => {

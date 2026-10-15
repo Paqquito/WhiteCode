@@ -2,13 +2,16 @@
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { realPathOrSelf } from "../platform/system";
+import { encryptedStore, storeExists, storeStat, storeRead } from "../session/private-storage";
 export function ordinaryPrivateFile(input: string, maxBytes: number): void {
+  if (encryptedStore(input)) { if (storeExists(input)) { const stat = storeStat(input); if (!stat.isFile() || stat.size > maxBytes) throw new Error("Invalid private file."); } return; }
   const path = resolve(input); let ancestor = dirname(path);
   for (;;) { if (existsSync(ancestor)) { const stat = lstatSync(ancestor); if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Linked private directory."); } const parent = dirname(ancestor); if (parent === ancestor) break; ancestor = parent; }
   if (realPathOrSelf(path) !== path) throw new Error("Linked private path.");
   if (existsSync(path)) { const stat = lstatSync(path); if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > maxBytes) throw new Error("Invalid private file."); }
 }
 export function readPrivateSnapshot(input: string, maxBytes: number): { text: string; modifiedMs: number; size: number } {
+  if (encryptedStore(input)) { ordinaryPrivateFile(input, maxBytes); const stat = storeStat(input); return { text: storeRead(input, "utf8"), modifiedMs: stat.mtimeMs, size: stat.size }; }
   const path = resolve(input); ordinaryPrivateFile(path, maxBytes);
   const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   try {

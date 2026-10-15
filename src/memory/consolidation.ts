@@ -1,9 +1,9 @@
 // Implements: SPEC-MOT-039, SPEC-AGT-022 (exclusive staged consolidation, visible task and cancellation without partial edits).
 // Supports: SPEC-EXT-035, gap E-172.
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync } from "node:fs";
+import { storeExists as existsSync, storeStat as lstatSync, storeMkdir as mkdirSync, storeRead as readFileSync } from "../session/private-storage";
 import { join } from "node:path";
-import { tryFileLock } from "../platform/file-lock";
+import { storeFileLock as tryFileLock } from "../session/private-storage";
 import { currentPlatform } from "../platform/system";
 import { writeAtomic } from "../tools/text-file";
 import type { BackgroundTasks } from "../engine/background";

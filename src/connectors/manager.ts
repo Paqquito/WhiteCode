@@ -129,6 +129,17 @@ export class ConnectorManager {
   }
 
   /** Step 1: every connection in parallel, at most `mcp.maxParallelConnects` at once; never awaited (EF-01). */
+  addDeclarations(declarations: readonly ConnectorDeclaration[]): void {
+    if (this.#closed) return;
+    for (const d of declarations) { if (this.#entries.has(d.name)) continue; let settle!: () => void; const settled = new Promise<void>(resolve => { settle = resolve; });
+      this.#entries.set(d.name, { d, state: this.#o.disabledConnectors?.includes(d.name) && !d.required ? "disabled" : "pending", connectionRevision: 0, tools: new Map(), live: new Set(), prompts: [], attempts: 0, stderr: [], overflows: 0, settled, settle }); }
+    this.start();
+  }
+  /** Independent connections, with the parent's admitted declarations and transport policy. */
+  fork(names: readonly string[]): ConnectorManager {
+    const declarations = names.map(name => { const entry = this.#entries.get(name); if (!entry || entry.state !== "connected") throw new Error("Agent connector is not admitted and connected in its parent."); return entry.d; });
+    return new ConnectorManager({ ...this.#o, connectors: declarations, changed: () => {}, onInbound: undefined });
+  }
   start(): void {
     for (const e of this.#entries.values()) this.#schedule(e);
   }

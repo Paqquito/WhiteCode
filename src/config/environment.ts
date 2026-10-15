@@ -20,6 +20,8 @@ export interface OwnVariableDef {
 
 /** Catalogue of own variables (SPEC-CFG-007 § 5.1), generated from this single definition (EF-03). */
 export const OWN_VARIABLES: readonly OwnVariableDef[] = [
+  { name: "REMOTE_WORKER", type: "boolean", owner: "SPEC-MOD-023" },
+  { name: "SESSION_MIRROR", type: "boolean", owner: "SPEC-MOD-017" },
   { name: "CONFIG_HOME", type: "path", owner: "SPEC-CAD-002" },
   { name: "STREAM_PROFILE", type: "string", owner: "SPEC-OBS-022", setting: "ui.streamProfile" },
   { name: "PROVIDER", type: "string", owner: "SPEC-API-001", setting: "api.provider" },

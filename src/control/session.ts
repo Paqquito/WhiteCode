@@ -200,6 +200,14 @@ export class ControlSession {
     this.#ops?.record("escalation_refused", { kind, outcome: outcome.kind });
     throw ESCALATION_REFUSED();
   }
+  /** Confirm one external, billable or publishing operation through the designated human host. */
+  async confirmExternal(question: string, signal: AbortSignal): Promise<boolean> {
+    if (!this.designated || !this.#o.allowEscalation) return false;
+    const escalationId = randomUUID(), outcome = await this.channel.demand("confirm_escalation", { escalationId, kind: "external_operation", question }, signal);
+    const result = outcome.kind === "answer" && outcome.ok ? outcome.result : undefined;
+    const confirmed = !signal.aborted && !!result && typeof result === "object" && "decision" in result && result.decision === "confirm" && "escalationId" in result && result.escalationId === escalationId;
+    this.#ops?.record(confirmed ? "external_confirmed" : "external_refused", { escalationId }); return confirmed;
+  }
 
   async #setMode(params: Readonly<Record<string, unknown>>): Promise<unknown> {
     if (!this.designated) throw NOT_DESIGNATED(); // RG-05, CA-08

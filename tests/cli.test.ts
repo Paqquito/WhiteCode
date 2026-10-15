@@ -202,10 +202,11 @@ describe("SPEC-MOD-002 non-interactive mode", () => {
     expect(empty.stderr).toContain("Aucune demande");
   });
 
-  test("E-013 — encrypted storage requested: the persistent session refuses to start, nothing written in clear", async () => {
-    const ws = workspace();
-    const r = await cli(["--non-interactive", "x"], ws, { provider: new ScriptedProvider([{ text: "ok" }]), userConfig: { storage: { encryption: { enabled: true } } } });
+  test("SPEC-SES-001/CA-07 — encrypted storage with a locked vault refuses persistent startup without a clear transcript", async () => {
+    const ws = workspace(), provider = new ScriptedProvider([]);
+    const r = await cli(["--non-interactive", "x"], ws, { provider, userConfig: { storage: { encryption: { enabled: true } }, engine: { nonInteractive: { persistSession: true } } }, extra: { credentialVault: { read() { throw new Error("locked fixture"); }, write() { throw new Error("must not write"); }, remove() {} } } });
     expect(r.code).toBe(2);
+    expect(r.stderr).toContain("coffre"); expect(provider.requests).toHaveLength(0);
     expect(existsSync(join(ws.configHome, "sessions"))).toBe(false);
   });
 

@@ -6,17 +6,19 @@ import { cli, loadIdentity, workspace } from "./helpers/env";
 import { interactive, KEY } from "./helpers/interactive";
 import { ScriptedProvider } from "./helpers/scripted-provider";
 import { VTerm } from "./helpers/vterm";
+import type { CredentialVault } from "../src/platform/credential-vault";
+const fixtureVault = (): CredentialVault => { const entries = new Map<string, string>(); return { read: (s,a) => entries.get(s+a), write: (s,a,v) => { entries.set(s+a,v); }, remove: (s,a) => { entries.delete(s+a); } }; };
 
 const prefix = loadIdentity().get("ENV_PREFIX");
 test("SPEC-OBS-012/CA-03 — encrypted ephemeral mode keeps default debug output limited to technical metadata", async () => {
   const ws = workspace(), provider = new ScriptedProvider([{ text: "SECRET_RESPONSE_WITNESS" }]);
-  const result = await cli(["--ephemeral", "--non-interactive", "--debug", "api", "SECRET_REQUEST_WITNESS"], ws, { provider, userConfig: { storage: { encryption: { enabled: true } } } });
+  const result = await cli(["--ephemeral", "--non-interactive", "--debug", "api", "SECRET_REQUEST_WITNESS"], ws, { provider, userConfig: { storage: { encryption: { enabled: true } } }, extra: { credentialVault: fixtureVault() } });
   expect(result.code).toBe(0); const log = readFileSync(join(ws.configHome, "debug.log"), "utf8");
   expect(log).toContain("[api]"); expect(log).not.toContain("SECRET_REQUEST_WITNESS"); expect(log).not.toContain("SECRET_RESPONSE_WITNESS");
 });
 test("SPEC-OBS-012/CA-04 — an explicit debug export in encrypted ephemeral mode is announced as unencrypted", async () => {
   const ws = workspace(), path = join(ws.root, "explicit.log");
-  const result = await cli(["--ephemeral", "--non-interactive", "--debug", "api", "--debug-output", path, "Work."], ws, { provider: new ScriptedProvider([{ text: "done" }]), userConfig: { storage: { encryption: { enabled: true } } } });
+  const result = await cli(["--ephemeral", "--non-interactive", "--debug", "api", "--debug-output", path, "Work."], ws, { provider: new ScriptedProvider([{ text: "done" }]), userConfig: { storage: { encryption: { enabled: true } } }, extra: { credentialVault: fixtureVault() } });
   expect(result.code).toBe(0); expect(result.stderr).toContain("non chiffré"); expect(result.stderr).toContain(path); expect(existsSync(path)).toBe(true);
 });
 

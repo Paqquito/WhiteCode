@@ -44,7 +44,7 @@ export const OPTIONS: readonly OptionDef[] = [
   { name: "assign-session-id", value: "required", type: "string", group: "Session et exécution", description: "Impose l'identifiant de la session créée.", delivered: true, owner: "SPEC-SES-001" },
   { name: "ephemeral", value: "none", group: "Session et exécution", description: "N'enregistre pas la session.", delivered: true, owner: "SPEC-SES-012" },
   { name: "remote-session", value: "required", type: "string", group: "Session et exécution", description: "Crée et suit une session distante avec une clé confiée au service.", delivered: buildFlag("remote_sessions"), owner: "SPEC-MOD-014" },
-  { name: "reopen-remote", value: "optional", type: "string", group: "Session et exécution", description: "Rapatrie une session distante.", delivered: false, owner: "SPEC-MOD-015" },
+  { name: "reopen-remote", value: "required", type: "string", group: "Session et exécution", description: "Rapatrie une session distante terminée dans un clone propre du même dépôt.", delivered: buildFlag("remote_sessions"), owner: "SPEC-MOD-015" },
   { name: "background", value: "required", type: "string", group: "Session et exécution", description: "Lance une session d'arrière-plan.", delivered: false, owner: "SPEC-MOD-022" },
   { name: "orchestrator", value: "none", group: "Session et exécution", description: "Active le mode coordinateur.", delivered: false, owner: "SPEC-MOD-028" },
   { name: "max-iterations", value: "required", type: "integer", group: "Session et exécution", description: "Nombre maximal d'itérations (allers-retours avec le modèle).", defaultText: "50 en exécution automatisée", delivered: true, owner: "SPEC-MOD-005" },

@@ -1,6 +1,8 @@
+// Supports: SPEC-SES-001 (protected storage access), gap E-181.
+import { storeStat as lstatSync, storeList as readdirSync } from "./private-storage";
 // Implements: SPEC-SES-005 (EF-01), SPEC-SES-010 (CA-01/02), SPEC-CMD-082 (CA-01, EF-01/02).
 // Supports: gap E-171 (bounded in-memory candidates, explicit search and local zero-cost reindex).
-import { lstatSync, readdirSync } from "node:fs";
+
 import { join } from "node:path";
 import { activeChain, readTranscript, sessionLabels, sessionTitle, type SessionInfo } from "./sessions";
 import { decodeProjectKey, projectKey, TranscriptWriter } from "./transcript";

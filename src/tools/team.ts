@@ -1,12 +1,13 @@
 // Implements: SPEC-OUT-019, SPEC-OUT-017 (team routing); Supports: SPEC-AGT-011/014, gap E-168.
 import type { Teams } from "../agents/teams";
 import { textOutcome, type Tool } from "./types";
+import { storeDirectoryReference, storeReference } from "../session/private-storage";
 export function teamTools(teams: () => Teams, changed: (event: "team_created" | "team_removed") => void): Tool<never>[] {
   const flags = () => ({ readOnly: false, concurrencySafe: false, destructive: false, requiresPermission: true, openWorld: false });
   const form: Tool<{ team: string; description?: string }> = {
     name: "form_team", description: () => "Create one local team led by this session, with a private shared task list and mailboxes. Start named teammates with spawn_agent. Their tools and permissions never exceed your own.",
     inputSchema: { type: "object", properties: { team: { type: "string", pattern: "^[a-z][a-z0-9-]{0,47}$" }, description: { type: "string", maxLength: 500 } }, required: ["team"], additionalProperties: false }, flags, isEnabled: () => true, ruleSubject: () => ({ kind: "none" }), permissionContribution: () => "allow", summary: input => `Équipe ${input.team}`,
-    async execute(input) { const active = teams().form(input.team); changed("team_created"); return textOutcome(JSON.stringify({ ...active, leader: "lead" })); },
+    async execute(input) { const active = teams().form(input.team); changed("team_created"); return textOutcome(JSON.stringify({ ...active, folder: storeDirectoryReference(active.folder), tasksFile: storeReference(active.tasksFile), leader: "lead" })); },
   };
   const disband: Tool<Record<string, never>> = {
     name: "disband_team", description: () => "Dissolve only your own local team after every teammate has stopped. Idle teammates are still alive; ask them to shut down first. This deletes its task list and mailboxes.",

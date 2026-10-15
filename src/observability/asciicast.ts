@@ -4,15 +4,23 @@ import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, writeS
 import { dirname, resolve } from "node:path";
 import type { Terminal } from "../platform/terminal";
 import { restrictFileToOwner } from "../platform/private-file";
+import { encryptedStore, storeExists, storeAppend, storeWrite } from "../session/private-storage";
 
 /** Outputs only: neither keyboard input nor the environment is recorded. Exclusive creation forbids overwriting. */
 export class Asciicast {
   #fd?: number;
   readonly #origin = performance.now();
-  readonly #identity: { dev: number; ino: number };
+  readonly #identity: { dev: number; ino: number } = { dev: 0, ino: 0 };
+  readonly #encrypted: boolean;
+  #closed = false;
   #bytes = 0;
   #failed = false;
   constructor(readonly path: string, width: number, height: number, readonly warn: (message: string) => void) {
+    this.#encrypted = encryptedStore(path);
+    if (this.#encrypted) {
+      if (storeExists(path)) throw new Error("Recording already exists");
+      storeWrite(path, Buffer.alloc(0), { flag: "wx" }); this.#line({ version: 2, width: Math.max(1, width || 80), height: Math.max(1, height || 24), timestamp: Math.floor(Date.now() / 1000) }); return;
+    }
     for (let directory = dirname(resolve(path));; directory = dirname(directory)) {
       try { const entry = lstatSync(directory); if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("Unsafe recording directory"); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -25,6 +33,7 @@ export class Asciicast {
     catch (error) { this.close(); throw error; }
   }
   #line(value: unknown): void {
+    if (this.#encrypted) { if (this.#closed) return; const data = JSON.stringify(value) + "\n"; if (this.#bytes + Buffer.byteLength(data) > 104857600) throw new Error("Recording size limit"); storeAppend(this.path, data); this.#bytes += Buffer.byteLength(data); return; }
     if (this.#fd === undefined) return;
     const current = lstatSync(this.path); if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || current.dev !== this.#identity.dev || current.ino !== this.#identity.ino) throw new Error("Recording file changed");
     const data = Buffer.from(JSON.stringify(value) + "\n"); if (this.#bytes + data.length > 104857600) throw new Error("Recording size limit");
@@ -38,5 +47,5 @@ export class Asciicast {
   terminal(original: Terminal): Terminal {
     return { write: text => { this.output(text); original.write(text); }, get columns() { return original.columns; }, get rows() { return original.rows; }, setRawMode: enabled => original.setRawMode(enabled), onInput: listener => original.onInput(listener), onProcessExit: listener => original.onProcessExit(listener), onResize: listener => original.onResize(() => { this.#event("r", `${original.columns}x${original.rows}`); listener(); }) };
   }
-  close(): void { if (this.#fd !== undefined) { closeSync(this.#fd); this.#fd = undefined; } }
+  close(): void { this.#closed = true; if (this.#fd !== undefined) { closeSync(this.#fd); this.#fd = undefined; } }
 }

@@ -14,6 +14,8 @@ import { readPdf } from "./pdf";
 import { decodeText } from "./text-file";
 import { walkFiles } from "./file-walk";
 import { textOutcome, type Tool, type ToolContext, type ToolOutcome } from "./types";
+import { encryptedStore, storeRead, storeStat } from "../session/private-storage";
+import { ArchiveFailure } from "../session/archive-crypto";
 
 export interface ReadFileInput {
   readonly path: string;
@@ -27,6 +29,7 @@ const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bm
 const NOTEBOOK_OUTPUT_MAX_CHARS = 4000;
 
 function readAll(path: string, size: number): Buffer {
+  if (encryptedStore(path)) return storeRead(path).subarray(0, size);
   const fd = openSync(path, "r");
   try {
     const buffer = Buffer.alloc(size);
@@ -103,8 +106,9 @@ export const readFileTool: Tool<ReadFileInput> = {
     if (ctx.readDenied(input.path) || ctx.readDenied(realPathOrSelf(input.path))) return textOutcome("This file is not accessible.", true, "permission_denied");
     let stats: Stats;
     try {
-      stats = statSync(input.path);
-    } catch {
+      stats = encryptedStore(input.path) ? storeStat(input.path) : statSync(input.path);
+    } catch (error) {
+      if (error instanceof ArchiveFailure) return textOutcome("Stored content is altered or unreadable; access was refused.", true, "unavailable");
       const near = suggestions(input.path, ctx);
       return textOutcome(`File not found: ${input.path}.${near.length > 0 ? ` Did you mean: ${near.join(", ")}?` : ""}`, true);
     }
