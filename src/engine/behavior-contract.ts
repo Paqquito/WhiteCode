@@ -1,11 +1,12 @@
 // Implements: SPEC-MOT-045 (§ 5.1 clauses, variants, family adaptation, EF-01, EF-03, EF-06, ERR-01, RG-01)
 // Supports: decision D-06 and gap E-014 (texts not evaluated yet), gap E-001 (texts written from scratch)
 
-import contractV3 from "../../prompts/contract/v3/contract.md" with { type: "text" };
+import contractV4 from "../../prompts/contract/v4/contract.md" with { type: "text" };
 import contractFallback from "../../prompts/contract/fallback/contract.md" with { type: "text" };
 
-/** v3: C-04 reworded (decision D-22); v0, v1 and v2 stay in `prompts/contract/` as measured references. */
-export const CONTRACT_VERSION = "v3";
+/** v4: exact project checks after the final change, explicit remaining work (gap E-247).
+ * Earlier versions remain in `prompts/contract/` as measured references. */
+export const CONTRACT_VERSION = "v4";
 
 export type Variant = "main" | "subagent" | "minimal";
 
@@ -82,7 +83,7 @@ export function assembleContract(contract: ContractText, variant: Variant, nonIn
   };
 }
 
-export const CURRENT_CONTRACT = (): ContractText => parseContract(contractV3);
+export const CURRENT_CONTRACT = (): ContractText => parseContract(contractV4);
 export const FALLBACK_CONTRACT = (): ContractText => parseContract(contractFallback);
 
 /** Family layer to use (§ 5.1 "Adaptation par famille"): only the generic layer exists in v0. */

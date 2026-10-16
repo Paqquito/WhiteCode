@@ -13,7 +13,7 @@
     },
     {
       "type": "result_matches",
-      "pattern": "inventory|warehouse|items"
+      "pattern": "inventory|warehouse|items|inventaire|entrep[oô]t|articles"
     },
     {
       "type": "result_matches",

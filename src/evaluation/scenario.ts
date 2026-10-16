@@ -1,4 +1,5 @@
 // Implements: SPEC-MOT-045 (§ 3 evaluation set, EF-04, EF-07), gap E-014 (scenario format: id, clauses, starting repository, instruction, checks)
+// Supports: gap E-248 (verification requires a returned tool result after the final completed change).
 
 import { Type, type Static } from "@sinclair/typebox";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -15,7 +16,7 @@ const Check = Type.Union([
   Type.Object({ type: Type.Literal("result_matches"), pattern: Type.String() }, { additionalProperties: false }),
   Type.Object({ type: Type.Literal("result_not_contains"), text: Type.String() }, { additionalProperties: false }),
   Type.Object({ type: Type.Literal("tool_called"), names: Type.Array(Type.String(), { minItems: 1 }) }, { additionalProperties: false }),
-  Type.Object({ type: Type.Literal("command_run"), pattern: Type.String() }, { additionalProperties: false }),
+  Type.Object({ type: Type.Literal("command_run"), pattern: Type.String(), afterChange: Type.Optional(Type.Boolean()) }, { additionalProperties: false }),
   Type.Object({ type: Type.Literal("no_repeated_call"), max: Type.Integer({ minimum: 1 }) }, { additionalProperties: false }),
   Type.Object({ type: Type.Literal("halt_reason"), value: Type.String() }, { additionalProperties: false }),
 ]);
@@ -113,7 +114,7 @@ export interface RunObservation {
   readonly original: string;
   readonly result: string;
   readonly haltReason: string;
-  readonly toolCalls: ReadonlyArray<{ readonly toolId: string; readonly input: unknown }>;
+  readonly toolCalls: ReadonlyArray<{ readonly toolId: string; readonly input: unknown; readonly errored?: boolean }>;
 }
 
 /** Evaluates one check; returns the failure message, or undefined when it holds. */
@@ -146,7 +147,9 @@ export function evaluateCheck(check: ScenarioCheck, run: RunObservation): string
       return run.toolCalls.some((c) => check.names.includes(c.toolId)) ? undefined : `one of ${check.names.join(", ")} should be called`;
     case "command_run": {
       const re = new RegExp(check.pattern, "i");
-      const commands = run.toolCalls.filter((c) => c.toolId === "run_shell" || c.toolId === "run_powershell").map((c) => String((c.input as { command?: unknown })?.command ?? ""));
+      const lastChange = check.afterChange ? run.toolCalls.findLastIndex(call => ["write_file", "edit_file", "edit_notebook"].includes(call.toolId) && call.errored === false) : -1;
+      if (check.afterChange && lastChange < 0) return "no completed file change was observed before verification";
+      const commands = run.toolCalls.slice(lastChange + 1).filter((c) => (c.toolId === "run_shell" || c.toolId === "run_powershell") && c.errored === false).map((c) => String((c.input as { command?: unknown })?.command ?? ""));
       return commands.some((c) => re.test(c)) ? undefined : `a command matching /${check.pattern}/i should be run`;
     }
     case "no_repeated_call": {

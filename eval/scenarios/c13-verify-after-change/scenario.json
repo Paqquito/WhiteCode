@@ -14,7 +14,8 @@
     },
     {
       "type": "command_run",
-      "pattern": "test\\.js"
+      "pattern": "test\\.js",
+      "afterChange": true
     },
     {
       "type": "file_unchanged",

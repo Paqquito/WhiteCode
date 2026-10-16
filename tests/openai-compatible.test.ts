@@ -70,6 +70,27 @@ describe("openai_compatible: request", () => {
 });
 
 describe("openai_compatible: end to end through the SDK", () => {
+  for (const omitToolIndexes of [false, true]) test(`TECH — opaque metadata and distinct calls survive streamed arguments with tool indexes ${omitToolIndexes ? "absent" : "present"}`, async () => {
+    const ws = workspace();
+    const file = ws.write("project/opaque.txt", "OPAQUE-ROUNDTRIP\n");
+    const first = { protocol: { signature: "opaque-signature-a", other: [1, "two"] } };
+    const second = { protocol: { signature: "opaque-signature-b" } };
+    server = startFakeOpenAI([
+      { omitToolIndexes, toolCalls: [{ id: "opaque_a", name: "read_file", arguments: JSON.stringify({ path: file }), extraContent: first }, { id: "opaque_b", name: "read_file", arguments: JSON.stringify({ path: file }), extraContent: second }] },
+      { text: "OPAQUE-ROUNDTRIP confirmed." },
+    ]);
+    const result = await cli(["--non-interactive", "--result-format", "json", "Read the file twice."], ws, { userConfig: withServer(server.baseURL) });
+    expect(result.code).toBe(0);
+    const messages = server.requests[1]!.body["messages"] as Array<Record<string, unknown>>;
+    const assistant = messages.find(message => message["role"] === "assistant")!;
+    expect(assistant["tool_calls"]).toEqual([
+      { id: "opaque_a", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: file }) }, extra_content: first },
+      { id: "opaque_b", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: file }) }, extra_content: second },
+    ]);
+    expect(messages.filter(message => message["role"] === "tool")).toHaveLength(2);
+    expect(result.stdout).not.toContain("opaque-signature");
+  });
+
   test("D-10 — a tool call streamed in fragments is executed; the result goes back as a tool message after the verbatim assistant message", async () => {
     const ws = workspace();
     const file = ws.write("project/note.txt", "ARTICHOKE\n");

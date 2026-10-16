@@ -1,4 +1,5 @@
 // Supports: SPEC-OBS-016, gap E-161.
+// Supports: gap E-245 (compatible-service credentials are excluded from child environments).
 // Implements: SPEC-CFG-007 (EF-01 to EF-05, RG-01, RG-02, ERR-01, ERR-02, § 5.3 priority), SPEC-CAD-002 (FA-02 environment overrides)
 // Single entry point to the process environment (P-07): own variables use the identity prefix, public ones keep their names.
 
@@ -82,6 +83,7 @@ export const PUBLIC_SECRET_VARIABLES: readonly string[] = [
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
   "OPENAI_API_KEY",
+  "GEMINI_API_KEY",
   "AWS_SECRET_ACCESS_KEY",
   "AWS_SESSION_TOKEN",
   "AZURE_API_KEY",

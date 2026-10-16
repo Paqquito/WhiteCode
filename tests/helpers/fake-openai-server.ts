@@ -3,7 +3,7 @@
 export interface FakeChatTurn {
   readonly text?: string;
   readonly reasoning?: string;
-  readonly toolCalls?: ReadonlyArray<{ id?: string; name: string; arguments: string }>;
+  readonly toolCalls?: ReadonlyArray<{ id?: string; name: string; arguments: string; extraContent?: unknown }>;
   readonly finishReason?: string;
   readonly status?: number;
   readonly hang?: boolean;
@@ -11,6 +11,7 @@ export interface FakeChatTurn {
   readonly delayMs?: number;
   /** Omits the usage chunk. */
   readonly noUsage?: boolean;
+  readonly omitToolIndexes?: boolean;
 }
 
 export interface CapturedChatRequest {
@@ -50,10 +51,11 @@ export function startFakeOpenAI(turns: FakeChatTurn[]): FakeChatServer {
           if (turn.reasoning) chunk({ reasoning_content: turn.reasoning });
           if (turn.text) for (const piece of turn.text.match(/.{1,5}/gs) ?? []) chunk({ content: piece });
           (turn.toolCalls ?? []).forEach((c, index) => {
-            chunk({ tool_calls: [{ index, id: c.id ?? `call_${index}`, type: "function", function: { name: c.name, arguments: "" } }] });
+            const position = turn.omitToolIndexes ? {} : { index };
+            chunk({ tool_calls: [{ ...position, id: c.id ?? `call_${index}`, type: "function", function: { name: c.name, arguments: "" } }] });
             const half = Math.ceil(c.arguments.length / 2);
-            chunk({ tool_calls: [{ index, function: { arguments: c.arguments.slice(0, half) } }] });
-            chunk({ tool_calls: [{ index, function: { arguments: c.arguments.slice(half) } }] });
+            chunk({ tool_calls: [{ ...position, function: { arguments: c.arguments.slice(0, half) } }] });
+            chunk({ tool_calls: [{ ...position, function: { arguments: c.arguments.slice(half) }, ...(c.extraContent === undefined ? {} : { extra_content: c.extraContent }) }] });
           });
           chunk({}, turn.finishReason ?? ((turn.toolCalls?.length ?? 0) > 0 ? "tool_calls" : "stop"));
           if (!turn.noUsage) controller.enqueue(enc.encode(`data: ${JSON.stringify({ id: "chatcmpl-1", object: "chat.completion.chunk", created: 0, model: body["model"], choices: [], usage: { prompt_tokens: 50, completion_tokens: 9, total_tokens: 59 } })}\n\n`));

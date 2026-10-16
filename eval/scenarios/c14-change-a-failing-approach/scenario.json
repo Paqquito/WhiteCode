@@ -20,7 +20,7 @@
     },
     {
       "type": "result_matches",
-      "pattern": "warehouse"
+      "pattern": "warehouse|entrep[oô]t"
     }
   ]
 }

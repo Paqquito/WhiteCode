@@ -1,5 +1,6 @@
 // Implements: SPEC-API-001 (adapters `openai` and `openai_compatible`: mandatory base URL and optional key for the latter, FA-01, EF-01, EF-04, CA-01, CA-02), SPEC-API-002 (EF-01, EF-02, EF-05, EF-07, FA-01, FA-02), SPEC-MOT-025 (EF-02)
 // Supports: decisions D-01 (official SDK of the protocol), D-10 (reference provider), D-13; gaps E-021, E-022, E-032, E-042, E-043
+// Supports: gap E-245 (opaque tool-call metadata remains in native history).
 // Adapter for servers speaking the OpenAI-compatible chat protocol (streamed chat completions with tool calls).
 // Protocol details that differ between servers come from `providerOptions` of the catalogue entry, never from the engine.
 
@@ -127,6 +128,7 @@ interface PendingCall {
   id: string;
   name: string;
   args: string;
+  extraContent?: unknown;
 }
 
 function parseArguments(args: string): unknown {
@@ -174,15 +176,16 @@ export class OpenAICompatibleProvider implements ModelProvider {
         controller.abort();
       }, this.#idleTimeoutMs);
     };
-    const calls = new Map<number, PendingCall>();
-    const emitted = new Set<number>();
+    const calls = new Map<number | string, PendingCall>();
+    const emitted = new Set<number | string>();
+    let unindexedCallId: string | undefined;
     const toolCalls: ToolCall[] = [];
     let text = "";
     let finish: string | null = null;
     let usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
     let usageReported = false;
     let requestId: string | undefined;
-    const complete = (index: number): ToolCall | undefined => {
+    const complete = (index: number | string): ToolCall | undefined => {
       const c = calls.get(index);
       if (!c || emitted.has(index)) return undefined;
       emitted.add(index);
@@ -216,18 +219,27 @@ export class OpenAICompatibleProvider implements ModelProvider {
           yield { type: "text_delta", text: delta.content };
         }
         for (const tc of delta.tool_calls ?? []) {
+          // Compatible servers may omit the numeric index while sending complete calls by ID.
+          // Subsequent fragments without an ID belong to that current unindexed call.
+          if (tc.index === undefined && tc.id) unindexedCallId = tc.id;
+          const position = tc.index ?? unindexedCallId;
+          if (position === undefined) throw new ProviderError("malformed_response", "Appel d'outil sans identifiant ni indice.");
           // A new index means the previous calls are complete (EF-01 of SPEC-MOT-002).
           for (const index of calls.keys()) {
-            if (index < tc.index) {
+            if (typeof index === "number" && typeof position === "number" && index < position) {
               const done = complete(index);
               if (done) yield { type: "tool_call", call: done };
             }
           }
-          const c = calls.get(tc.index) ?? { id: tc.id ?? `call_${chunk.id}_${tc.index}`, name: "", args: "" };
+          const c = calls.get(position) ?? { id: tc.id ?? `call_${chunk.id}_${position}`, name: "", args: "" };
           if (tc.id) c.id = tc.id;
           if (tc.function?.name) c.name += tc.function.name;
           if (tc.function?.arguments) c.args += tc.function.arguments;
-          calls.set(tc.index, c);
+          // Some compatible servers require opaque continuation data on a later request.
+          // It can arrive after the function name, so retain it independently of argument fragments.
+          const extraContent = (tc as typeof tc & { extra_content?: unknown }).extra_content;
+          if (extraContent !== undefined) c.extraContent = extraContent;
+          calls.set(position, c);
         }
         if (choice.finish_reason) finish = choice.finish_reason;
       }
@@ -236,7 +248,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
       if (idle) throw classifyOpenAIError(undefined, true);
       if (signal.aborted) throw new ProviderError("aborted", "Requête annulée.");
       if (finish === null) throw new ProviderError("connection", "Le flux de réponse s'est interrompu avant la fin.");
-      for (const index of [...calls.keys()].sort((a, b) => a - b)) {
+      const orderedCalls = [...calls.entries()].sort(([a], [b]) => typeof a === "number" && typeof b === "number" ? a - b : 0);
+      for (const [index] of orderedCalls) {
         const done = complete(index);
         if (done) yield { type: "tool_call", call: done };
       }
@@ -245,9 +258,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
       // must still have a content, or the server refuses the request.
       const native: OpenAI.Chat.ChatCompletionAssistantMessageParam = { role: "assistant", content: text === "" && toolCalls.length > 0 ? null : text };
       if (toolCalls.length > 0) {
-        native.tool_calls = [...calls.entries()]
-          .sort(([a], [b]) => a - b)
-          .map(([, c]) => ({ id: c.id, type: "function" as const, function: { name: c.name, arguments: c.args } }));
+        native.tool_calls = orderedCalls
+          .map(([, c]) => ({ id: c.id, type: "function" as const, function: { name: c.name, arguments: c.args }, ...(c.extraContent === undefined ? {} : { extra_content: c.extraContent }) }));
       }
       yield {
         type: "message_complete",
