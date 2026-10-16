@@ -63,6 +63,8 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "skills.discovery.remote", schema: Type.Boolean(), default: false, scopes: [U, G], owner: "SPEC-EXT-038" },
   { key: "tools.terminalSession.enabled", schema: Type.Boolean(), default: false, scopes: [U, G], owner: "SPEC-OUT-010" },
   { key: "tools.terminalSession.keepOnExit", schema: Type.Boolean(), default: false, scopes: [U], owner: "SPEC-OUT-010" },
+  { key: "ui.terminal.enabled", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-IHM-041" },
+  { key: "tools.captureTerminal.maxLines", schema: int(1, 2000), default: 2000, scopes: [U], owner: "SPEC-OUT-015" },
   { key: "mcp.web.enabled", schema: Type.Boolean(), default: true, scopes: [U, G], owner: "SPEC-MCP-017" },
   { key: "sessions.outputFiles.enabled", schema: Type.Boolean(), default: false, scopes: [U, G], owner: "SPEC-SES-013" },
   { key: "sessions.outputFiles.directory", schema: Type.String({ minLength: 1, maxLength: 4096 }), default: "outputs", scopes: [U, G], owner: "SPEC-SES-013" },

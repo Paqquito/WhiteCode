@@ -114,6 +114,7 @@ import { migrateLegacyProfile } from "../config/legacy-profile";
 import { expandHome } from "../platform/system";
 import { WebConnectors } from "../connectors/web";
 import { TerminalSessions } from "../tools/terminal-session";
+import { TerminalPanel } from "../interactive/terminal-panel";
 import { RemoteSkillCatalog } from "../skills/remote-catalog";
 import { resumeRemote } from "../remote/resume";
 import { offerMemorySnapshot } from "../agents/memory-snapshot";
@@ -1518,7 +1519,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const toolsetOption = opt("toolset");
   const toolsetNames = typeof toolsetOption === "string" ? (toolsetOption.trim() === "" ? [] : splitList(toolsetOption)) : undefined;
   // `spawn_agent` is a tool of the session, added after the registry is built: it is listed like the others (SPEC-OUT-001).
-  const toolset = toolsetNames?.filter((n) => !["deliver_file", "run_defect_scan", "browse_web", "append_journal", "terminal_session", "start_remote_run", "suggest_background_merge_request", "subscribe_merge_request", "team_memory", "work_item_create", "work_item_get", "work_item_list", "work_item_update", "form_team", "disband_team", "open_isolated_copy", "close_isolated_copy", "list_peers", "message_agent", "wait", "run_workflow", "discover_skills", "message_user", "review_artifact", "search_web", "overflow_test", "check_plan_progress", "consult_advisor", "prune_history", "inspect_context", "consolidate_memory", "configure", "submit_result", "spawn_agent", "code_intelligence", "list_connector_resources", "read_connector_resource", "connector_sign_in", "run_code", "schedule_create", "schedule_list", "schedule_delete"].includes(n));
+  const toolset = toolsetNames?.filter((n) => !["deliver_file", "run_defect_scan", "browse_web", "append_journal", "terminal_session", "capture_terminal", "start_remote_run", "suggest_background_merge_request", "subscribe_merge_request", "team_memory", "work_item_create", "work_item_get", "work_item_list", "work_item_update", "form_team", "disband_team", "open_isolated_copy", "close_isolated_copy", "list_peers", "message_agent", "wait", "run_workflow", "discover_skills", "message_user", "review_artifact", "search_web", "overflow_test", "check_plan_progress", "consult_advisor", "prune_history", "inspect_context", "consolidate_memory", "configure", "submit_result", "spawn_agent", "code_intelligence", "list_connector_resources", "read_connector_resource", "connector_sign_in", "run_code", "schedule_create", "schedule_list", "schedule_delete"].includes(n));
   const agentsInToolset = toolsetNames === undefined || toolsetNames.includes("spawn_agent") || (toolsetNames.length === 1 && toolsetNames[0] === "default");
   let registry: ToolRegistry;
   let ide:IdeClient|undefined;
@@ -2127,6 +2128,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   let fileWatch: HookFileWatch | undefined;
   let refreshFileWatch = () => {};
   let app: InteractiveApp | undefined;
+  let terminalPanel: TerminalPanel | undefined;
   let voice:VoiceInput|undefined;
   const browser = !minimal && !offlineMinimal ? new BrowserSession({env:env.childEnvironment(),...deps.browserLaunch,allowLocalhost:()=>liveSettings.get<boolean>("tools.browser.allowLocalhost"),allowedDomains:()=>liveSettings.get<string[]>("tools.browser.allowedDomains"),changed:panel=>app?.showAside(panel,()=>{},"Navigateur isolé"),note:value=>{conversation.appendNote(value);transcript?.append("system",{event:"browser_control",text:value});}}):undefined;
   if(browser?.available&&inToolset("browse_web"))registry.addStatic(browser.tool() as never);
@@ -3392,6 +3394,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       try { if (controller.signal.aborted) abort(); return await child.exited; } finally { controller.signal.removeEventListener("abort", abort); }
     };
     app = new InteractiveApp({
+      terminalPanel: buildFlag("ui_embedded_terminal") && liveSettings.get<boolean>("ui.terminal.enabled") ? async () => { await terminalPanel?.attach(controller.signal); } : undefined,
       hyperlinks:new Hyperlinks({cwd:()=>cwd,scheme:()=>{const configured=liveSettings.get<string>("ui.links.editorScheme");return configured==="auto"&&env.public("TERM_PROGRAM")==="vscode"?"vscode":configured;}}),
       browserTakeover:()=>{if(browser?.started)browser.takeover();else app?.notice("info","Le navigateur isolé n’est pas encore ouvert.");},
       beforeExit: async () => {
@@ -3787,6 +3790,12 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const qrRemote=(url:string)=>qrCodeText(url,{type:"utf8",errorCorrectionLevel:"M",margin:4});
   const terminalSessions = liveSettings.get<boolean>("tools.terminalSession.enabled") && inToolset("terminal_session") ? new TerminalSessions({ platform: system.platform, multiplexor: deps.terminalMultiplexor, shell: posixShell?.path, cwd: () => shellRuntime?.cwd ?? cwd, environment: () => env.childEnvironment(), redact: value => redactOutput(maskSecrets(value)), limit: liveSettings.get<number>("tools.resultInlineLimit") }) : undefined;
   if (terminalSessions) { const tool = terminalSessions.tool(); registry.addStatic(tool as never); conversation.extendTools([{ name: tool.name, description: tool.description(toolEnv), inputSchema: tool.inputSchema }]); holder.cleanups.push(() => { if (!liveSettings.get<boolean>("tools.terminalSession.keepOnExit")) terminalSessions.close(); }); }
+  if (app && buildFlag("ui_embedded_terminal") && liveSettings.get<boolean>("ui.terminal.enabled")) {
+    terminalPanel = new TerminalPanel({ platform: system.platform, cwd, shell: posixShell?.path, multiplexor: deps.terminalMultiplexor,
+      environment: () => env.childEnvironment(), redact: value => redactOutput(maskSecrets(value)), maxLines: () => liveSettings.get<number>("tools.captureTerminal.maxLines"), read: () => app?.notice("info", "Le modèle vient de lire le panneau terminal.") });
+    holder.cleanups.push(() => terminalPanel?.close());
+    if (inToolset("capture_terminal")) { const tool = terminalPanel.tool(); registry.addStatic(tool as never); conversation.extendTools([{ name: tool.name, description: tool.description(toolEnv), inputSchema: tool.inputSchema }]); }
+  }
   if (!nonInteractive && identity.has("SERVICE_FEEDBACK") && !offlineMinimal) {
     surveys = new Surveys({ enabled: () => liveSettings.get<boolean>("ui.surveys.enabled") && env.ownBoolean("NO_SURVEYS") !== true, available: () => !!app && !policyRefusal(), busy: () => !app || app.running || app.autonomousInputBusy,
       probability: () => featureFlags.snapshot().survey_probability ?? 0.01, shareProbability: () => featureFlags.snapshot().survey_share_probability ?? 0.5, random: deps.surveyRandom,

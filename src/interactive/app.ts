@@ -161,6 +161,7 @@ export interface AppOptions {
   readonly brief?: () => boolean;
   readonly externalEditor?: (draft: string) => Promise<string | undefined>;
   readonly messageActions?: { readonly enabled: boolean; readonly copy: (text: string) => Promise<boolean>; readonly edit?: (item: TranscriptItem) => Promise<void> };
+  readonly terminalPanel?: () => Promise<void>;
   readonly footer?: () => { readonly spans: readonly Span[]; readonly padding: number } | undefined;
   readonly inputDecoration?: (columns:number) => readonly string[];
   readonly onDecorativeTurnEnd?: (success:boolean) => void;
@@ -406,6 +407,27 @@ export class InteractiveApp {
     try { await action(); }
     catch (error) { this.notice("warning", `Éditeur externe : ${(error as Error).message}. Brouillon conservé.`); }
     finally { this.#externalEditing = false; if (!this.#exiting) { this.#o.terminal.setRawMode(true);if(voiceProtocol&&this.#o.voice?.enabled())this.setVoiceProtocol(true); this.#session?.screen.resume(); this.#saveState(); this.#redraw(); } }
+  }
+
+  /** Implements: SPEC-IHM-041. Input and display ownership are lent to the native tmux client. */
+  async openTerminalPanel(): Promise<void> {
+    if (!buildFlag("ui_embedded_terminal") || !this.#o.terminalPanel || this.humanDialogActive || this.#capture || this.#externalEditing || this.#transcriptView || this.#exiting) return;
+    this.#externalEditing = true;
+    this.#o.voice?.cancel(); const voiceProtocol = this.#voiceProtocol; this.setVoiceProtocol(false);
+    this.#session?.screen.suspend();
+    this.#unsubscribeInput?.(); this.#unsubscribeInput = undefined;
+    this.#o.terminal.setRawMode(false);
+    try { await this.#o.terminalPanel(); }
+    catch (error) { this.notice("warning", `Panneau terminal : ${(error as Error).message}`); }
+    finally {
+      this.#externalEditing = false;
+      if (!this.#exiting) {
+        this.#o.terminal.setRawMode(true);
+        this.#unsubscribeInput = this.#o.terminal.onInput(data => this.#input(data));
+        if (voiceProtocol && this.#o.voice?.enabled()) this.setVoiceProtocol(true);
+        this.#session?.screen.resume(); this.#saveState(); this.#redraw();
+      }
+    }
   }
 
   /** Implements: SPEC-IHM-015/018. A local selector never sends its inserted reference. */
@@ -1225,6 +1247,7 @@ export class InteractiveApp {
       this.#o.voice.key(e.phase,!this.humanDialogActive&&!this.#externalEditing);return;
     }
     if(e.kind==="key"&&e.phase==="release")return;
+    if(e.kind==="key"&&this.#keymap.action(e,["app"])==="terminal.toggle"){void this.openTerminalPanel();return;}
     if(e.kind==="key"&&this.#keymap.action(e,["app"])==="browser.takeover"){this.#o.browserTakeover?.();return;}
     if(e.kind==="key")this.#o.voice?.cancel();
     this.#lastInteractionAt = Date.now();

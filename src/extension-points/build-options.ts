@@ -4,6 +4,7 @@ export const BUILD_PROFILES = ["public", "internal", "development", "test"] as c
 export type BuildProfile = (typeof BUILD_PROFILES)[number];
 const option = (value: boolean, description: string, specs: string[], absentMarkers: string[] = []) => ({ description, specs, implemented: value, values: { public: value, internal: value, development: value, test: value }, absentMarkers });
 export const BUILD_OPTIONS = {
+  ui_embedded_terminal: option(true, "Panneau tmux utilisateur avec capture bornée et masquée.", ["SPEC-IHM-041", "SPEC-OUT-015"], ["Read the human-operated terminal panel of this conversation"]),
   ui_year_review:{...option(true,"Rétrospective locale à activation explicite et extension officielle.",["SPEC-IHM-033","SPEC-CMD-078"],["Local annual statistics (no code or conversation content):"]),values:{public:false,internal:true,development:true,test:true}},
   internal_discreet:{...option(true,"Attribution supprimée et bannière persistante en profil interne.",["SPEC-IHM-040"],["Mode discret ·","Discreet mode is active."]),values:{public:false,internal:true,development:false,test:false}},
   defect_scan:option(true,"Campagnes locales de recherche de défauts vérifiés.",["SPEC-EXT-036"],["Start a bounded local background defect campaign"]),

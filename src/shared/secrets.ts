@@ -1,10 +1,11 @@
 // Supports: SPEC-IHM-008 (RG-04 sensitive values never recorded), SPEC-IHM-012 (CA-06 masking before the context), SPEC-IHM-010 (§ 12 warning before sending a pasted secret)
 // Detection and masking of values that look like secrets in a free text: keys and tokens of the usual services, private
 // keys, connection strings and assignments of a password or a key.
+// Supports: SPEC-OUT-015/CA-02 (also redact token prefixes following literal escaped whitespace), gap E-229.
 
 const PATTERNS: readonly RegExp[] = [
   // Keys and tokens with a recognisable prefix.
-  /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}/g,
+  /(?:\b|(?<=\\[nrt]))(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}/g,
   /\bgh[pousr]_[A-Za-z0-9]{20,}/g,
   /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
   /\bglpat-[A-Za-z0-9_-]{16,}/g,
