@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { IsolatedCopies } from "../src/integrations/isolated-copies";
 import { runToCompletion } from "../src/platform/process";
@@ -7,6 +7,38 @@ import { findExecutable } from "../src/platform/system";
 import { workspace } from "./helpers/env";
 const git = (cwd: string, args: readonly string[]) => runToCompletion(findExecutable("git")!, ["--no-optional-locks", ...args], { cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } as Record<string, string>, timeoutMs: 10000 });
 function fixture() { const ws = workspace(); for (const args of [["init"], ["config", "user.email", "fixture@example.test"], ["config", "user.name", "Fixture"], ["add", "."], ["commit", "--allow-empty", "-m", "Initial"]]) if (git(ws.project, args).code !== 0) throw new Error("Git fixture failed"); return { ws, manager: new IsolatedCopies(ws.project, { git, directory: ".copies", branchPrefix: "fixture/", copyFiles: () => [".env.fixture"] }) }; }
+const plainFactory = async (request: { path: string; branch: string }) => { mkdirSync(request.path, { recursive: true }); writeFileSync(join(request.path, "custom.txt"), "custom baseline"); return request; };
+test("TECH — a custom non-Git tree is excluded, detects later changes and requires confirmation before owned removal", async () => {
+  const { ws, manager } = fixture(), copy = await manager.openWithFactory("custom", plainFactory, new AbortController().signal);
+  expect(manager.changed()).toBe(false); expect(git(ws.project, ["status", "--porcelain"]).stdout.trim()).toBe("");
+  writeFileSync(join(copy.path, "custom.txt"), "retain uncommitted work");
+  expect(manager.changed()).toBe(true); expect(() => manager.close("remove")).toThrow("confirmation");
+  expect(readFileSync(join(copy.path, "custom.txt"), "utf8")).toBe("retain uncommitted work");
+  manager.close("remove", true); expect(existsSync(copy.path)).toBe(false); expect(manager.active).toBeUndefined();
+  expect(git(ws.project, ["show-ref", "--verify", "refs/heads/fixture/custom"]).code).not.toBe(0);
+}, 20000);
+test("TECH — an unexpected custom target is never adopted or removed and its failed lease is released", async () => {
+  const { ws, manager } = fixture(), unrelated = ws.write("unrelated/keep.txt", "UNRELATED_FACTORY_WITNESS");
+  await expect(manager.openWithFactory("wrong", async () => ({ path: join(ws.root, "unrelated"), branch: "fixture/wrong" }), new AbortController().signal)).rejects.toThrow("different from the requested copy");
+  expect(manager.active).toBeUndefined(); expect(readFileSync(unrelated, "utf8")).toBe("UNRELATED_FACTORY_WITNESS");
+  const copy = manager.open("wrong"); manager.close("remove"); expect(existsSync(copy.path)).toBe(false);
+}, 20000);
+test("TECH — replacement of a custom-copy directory refuses even confirmed removal", async () => {
+  const { manager } = fixture(), copy = await manager.openWithFactory("replaced", plainFactory, new AbortController().signal);
+  renameSync(copy.path, copy.path + "-moved"); mkdirSync(copy.path); writeFileSync(join(copy.path, "replacement.txt"), "REPLACEMENT_MUST_SURVIVE");
+  expect(() => manager.close("remove", true)).toThrow("ownership changed"); manager.release();
+  expect(readFileSync(join(copy.path, "replacement.txt"), "utf8")).toBe("REPLACEMENT_MUST_SURVIVE");
+  expect(readFileSync(join(copy.path + "-moved", "custom.txt"), "utf8")).toBe("custom baseline");
+}, 20000);
+test("TECH — a pending creation retains the manager lease and rejects a second copy name", async () => {
+  const { manager } = fixture();
+  let ready!: () => void, resume!: () => void;
+  const entered = new Promise<void>(resolve => { ready = resolve; }), gate = new Promise<void>(resolve => { resume = resolve; });
+  const first = manager.openWithFactory("pending", async request => { ready(); await gate; return plainFactory(request); }, new AbortController().signal);
+  await entered;
+  try { expect(() => manager.open("second")).toThrow("in progress"); }
+  finally { resume(); await first; manager.close("keep"); }
+}, 20000);
 test("TECH — an isolated copy uses the current revision, stays excluded and reuses its registered folder", () => {
   const { ws, manager } = fixture(); ws.write("project/.gitignore", ".env.fixture\n"); ws.write("project/.env.fixture", "SYNTHETIC_LOCAL_VALUE");
   const copy = manager.open("check"); try { expect(copy.branch).toBe("fixture/check"); expect(git(copy.path, ["rev-parse", "HEAD"]).stdout.trim()).toBe(copy.baseline); expect(readFileSync(join(copy.path, ".env.fixture"), "utf8")).toBe("SYNTHETIC_LOCAL_VALUE"); expect(git(ws.project, ["status", "--porcelain"]).stdout).not.toContain(".copies"); manager.close("keep"); expect(manager.open("check", true).path).toBe(copy.path); } finally { if (manager.active) manager.close("remove", true); }

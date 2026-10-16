@@ -21,12 +21,14 @@ test("SPEC-SES-005/CA-02 — a removed original folder offers only resume-here a
   const run = interactive([], { ...ws, project }, { provider: new ScriptedProvider([]) }); await run.idle(); send(run, `/reopen ${old.id}`); await run.waitFor(text => text.includes("Reprendre ici")); expect(run.screen().join("\n")).not.toContain("Ouvrir dans le dossier"); await sleep(380); run.type("1"); await run.waitFor(text => text.includes("historique")); await stop(run);
 }, 20000);
 test("SPEC-CMD-010/CA-01 — blue applies only to the selected session and default restores its border", async () => {
-  const one = interactive([], workspace(), { provider: new ScriptedProvider([]), env: { TERM: "xterm-256color", FORCE_COLOR: "1" } }), two = interactive([], workspace(), { provider: new ScriptedProvider([]), env: { TERM: "xterm-256color", FORCE_COLOR: "1" } }); await one.idle(); await two.idle();
+  const one = interactive([], workspace(), { provider: new ScriptedProvider([]), env: { TERM: "xterm-256color", FORCE_COLOR: "1" } }), two = interactive([], workspace(), { provider: new ScriptedProvider([]), env: { TERM: "xterm-256color", FORCE_COLOR: "1" } });
+  try { await one.idle(); await two.idle();
   const border = (run: typeof one) => run.term.vt.grid.find(row => row.map(cell => cell.ch).join("").includes("Votre message"))?.find(cell => cell.ch === "│")?.sgr;
   const original = border(one); expect(original).toBeDefined(); expect(border(two)).toBe(original);
-  send(one, "/session-color blue"); await one.waitFor(text => text.includes("Couleur de session : blue")); expect(two.all().join("\n")).not.toContain("Couleur de session : blue");
+  send(one, "/session-color blue"); await one.waitFor(text => text.includes("Couleur de session : blue") && border(one) !== undefined && border(one) !== original); expect(two.all().join("\n")).not.toContain("Couleur de session : blue");
   expect(border(one)).not.toBe(original); expect(border(two)).toBe(original);
-  send(one, "/session-color default"); await one.waitFor(text => text.includes("Couleur de session : default")); expect(border(one)).toBe(original); await stop(one); await stop(two);
+  send(one, "/session-color default"); await one.waitFor(text => text.includes("Couleur de session : default") && border(one) === original); expect(border(one)).toBe(original);
+  } finally { await stop(one); await stop(two); }
 });
 test("SPEC-CMD-005/CA-01 — an aside answers during a blocked main turn without cancelling or joining its history", async () => {
   const p = new ScriptedProvider([{ text: "principal terminé", delayMs: 1500 }, { text: "réponse annexe" }]);

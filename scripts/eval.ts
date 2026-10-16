@@ -3,8 +3,9 @@
 // Usage: bun scripts/eval.ts --suite eval/suite.json --family generic [--runs 5] [--report build/eval-report.json]
 //        [--released build/released.json] [--executable dist/<cli>] [--only c01-report-failing-test] [--max-duration <seconds per run>]
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { dirname, extname, join, resolve } from "node:path";
 import { CONTRACT_VERSION } from "../src/engine/behavior-contract";
 import type { ReleasedReference } from "../src/evaluation/release";
 import { evaluateSuite, type ProductExecutor } from "../src/evaluation/runner";
@@ -21,7 +22,10 @@ const suite = loadSuite(resolve(arg("suite") ?? join(root, "eval", "suite.json")
 const only = arg("only");
 const selected = only ? { ...suite, scenarios: suite.scenarios.filter((s) => s.id === only) } : suite;
 const executable = arg("executable");
-const command = executable ? [resolve(executable)] : [process.execPath, join(root, "src", "main.ts")];
+const artifact = executable ? { path: resolve(executable), sha256: createHash("sha256").update(readFileSync(resolve(executable))).digest("hex") } : undefined;
+const out = resolve(arg("report") ?? join(root, "build", "eval-report.json"));
+if (artifact && existsSync(out) && realpathSync(out) === realpathSync(artifact.path)) throw new Error("The evaluation report cannot replace the measured artifact.");
+const command = artifact ? /\.[cm]?js$/i.test(extname(artifact.path)) ? [process.execPath, artifact.path] : [artifact.path] : [process.execPath, join(root, "src", "main.ts")];
 const released = arg("released") ? (JSON.parse(readFileSync(resolve(arg("released")!), "utf8")) as ReleasedReference) : undefined;
 
 // Optional cap of each run, in seconds (a looping run on a slow machine would otherwise last up to the iteration limit).
@@ -43,13 +47,13 @@ const report = await evaluateSuite(selected, execute, {
       `${r.passed ? "ok  " : "FAIL"} ${id} #${i + 1} — ${Math.round(r.elapsedMs / 1000)} s, ${r.iterations} it., ${r.inputTokens}/${r.outputTokens} tokens, ${r.haltReason}, tools: ${r.tools.join(" ") || "none"}${r.failures.length > 0 ? ` — ${r.failures.join("; ")}` : ""}`,
     ),
 });
+if (artifact && createHash("sha256").update(readFileSync(artifact.path)).digest("hex") !== artifact.sha256) throw new Error("The measured artifact changed during evaluation; no qualifying report is saved.");
 
 console.log("");
 for (const [clause, c] of Object.entries(report.byClause).sort()) console.log(`${clause}: ${c.passed}/${c.total} scenario(s)`);
 console.log(`Global rate: ${(report.decision.rate * 100).toFixed(1)} % — ${report.decision.releasable ? "releasable" : "NOT releasable"}`);
 for (const reason of report.decision.reasons) console.log(`- ${reason}`);
-const out = resolve(arg("report") ?? join(root, "build", "eval-report.json"));
 mkdirSync(dirname(out), { recursive: true });
-writeFileSync(out, JSON.stringify(report, null, 2));
+writeFileSync(out, JSON.stringify({ ...report, ...(artifact ? { artifact } : {}) }, null, 2));
 console.log(`Report: ${out}`);
 process.exit(report.decision.releasable ? 0 : 1);

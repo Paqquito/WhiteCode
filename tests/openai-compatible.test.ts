@@ -211,11 +211,14 @@ describe("D-09 / D-10 configuration of the provider and the model", () => {
     server = startFakeOpenAI([{ text: "local ok" }]);
     const entry = { id: "some-local-model", provider: "openai_compatible", family: "local", label: "Local", contextWindow: 8192, maxOutputTokens: 2048, capabilities: { toolCalling: true } };
     const shadow = { ...entry, id: "test-no-tools" };
-    const r = await cli(["--non-interactive", "--model", "some-local-model", "x"], workspace(), { userConfig: withServer(server.baseURL, { models: { extraCatalog: [entry, shadow] } }) });
+    const oversized = await cli(["--non-interactive", "--model", "some-local-model", "x"], workspace(), { userConfig: withServer(server.baseURL, { models: { extraCatalog: [entry, shadow] } }) });
+    expect(oversized.code).toBe(1); expect(oversized.stderr).toContain("--toolset"); expect(server.requests).toHaveLength(0);
+    const r = await cli(["--non-interactive", "--toolset", "read_file", "--model", "some-local-model", "x"], workspace(), { userConfig: withServer(server.baseURL, { models: { extraCatalog: [entry, shadow] } }) });
     expect(r.code).toBe(0);
     expect(r.stdout).toBe("local ok\n");
     expect(r.stderr).toContain("test-no-tools appartient au catalogue de la distribution");
     expect(server.requests[0]!.body["max_tokens"]).toBe(2048);
+    expect((server.requests[0]!.body["tools"] as Array<{ function: { name: string } }>).map(tool => tool.function.name)).toEqual(["read_file"]);
   });
 
   test("D-16 — an entry of models.extraCatalog without an explicit toolCalling is ignored with a warning", async () => {

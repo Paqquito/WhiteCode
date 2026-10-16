@@ -13,6 +13,20 @@ import { ScriptedProvider, type ScriptedResponse } from "./helpers/scripted-prov
 
 const model = testModel("default");
 
+test.each(["system", "tools"])("TECH — oversized fixed %s context is refused before provider admission", async part => {
+  const f = setup([{ text: "Must not be requested." }], { toolset: [] });
+  const conversation = new Conversation([{ text: part === "system" ? "fixed ".repeat(6000) : "system" }], part === "tools" ? [{ name: "oversized", description: "schema ".repeat(5000), inputSchema: { type: "object" } }] : []);
+  const result = await runTurn({ ...f.deps, model: { ...model, contextWindow: 8192 }, maxOutputTokens: 2048, conversation }, "Do the task.", new AbortController().signal);
+  expect(result.stopCause).toBe("error"); expect(f.provider.requests).toHaveLength(0);
+  expect(result.message).toContain("--toolset");
+});
+test("TECH — fixed context admission measures the effective projected toolset", async () => {
+  const f = setup([{ text: "Done." }], { toolset: [] });
+  const conversation = new Conversation([{ text: "system" }], [{ name: "oversized", description: "schema ".repeat(5000), inputSchema: { type: "object" } }]);
+  const result = await runTurn({ ...f.deps, model: { ...model, contextWindow: 8192 }, maxOutputTokens: 2048, conversation, projectHistory: request => ({ ...request, tools: [] }) }, "Do the task.", new AbortController().signal);
+  expect(result.stopCause).toBe("completed"); expect(f.provider.requests).toHaveLength(1);
+});
+
 test("TECH — permission revocation during asynchronous classification is checked again immediately before execution",async()=>{
   const trace:Trace={log:[]};let prepared=0,revoked=false;
   const f=setup([{toolCalls:[{name:"revocable",input:{id:"must-not-run"}}]},{text:"Permission revoked."}],{tools:[probe("revocable",false,trace)as Tool<never>]});

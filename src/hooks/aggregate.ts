@@ -5,6 +5,7 @@ import type { HookDecision, HookEventInfo } from "./events";
 import type { ElicitationResponse } from "../connectors/elicitation";
 
 export interface HookResponse {
+  readonly isolatedCopy?: { readonly path: string; readonly branch: string };
   readonly elicitationResponse?: ElicitationResponse;
   readonly question?: { readonly text: string; readonly options: readonly string[]; readonly allowFreeText?: boolean };
   readonly decision?: HookDecision;
@@ -64,6 +65,10 @@ export function parseResponse(stdout: string): { response?: HookResponse; nonCon
   const r = raw as Record<string, unknown>;
   if (!r || Array.isArray(r)) return { nonConforming: "objet attendu" };
   const problems: string[] = [];
+  if (r["isolatedCopy"] !== undefined) {
+    const copy = r["isolatedCopy"] as HookResponse["isolatedCopy"];
+    if (!copy || typeof copy.path !== "string" || !copy.path || copy.path.length > 4096 || typeof copy.branch !== "string" || !copy.branch || copy.branch.length > 200 || /[\u0000\r\n]/.test(copy.path + copy.branch)) problems.push("isolatedCopy exige un chemin et une branche valides");
+  }
   if (r["decision"] !== undefined && !DECISIONS.has(String(r["decision"]))) problems.push(`décision inconnue « ${String(r["decision"])} »`);
   for (const key of ["reason", "context", "userMessage", "haltReason"]) if (r[key] !== undefined && typeof r[key] !== "string") problems.push(`${key} doit être un texte`);
   for (const key of ["stopTurn", "hideOutput"]) if (r[key] !== undefined && typeof r[key] !== "boolean") problems.push(`${key} doit être un booléen`);

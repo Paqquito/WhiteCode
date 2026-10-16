@@ -1,5 +1,6 @@
 // Implements: SPEC-MOD-021 (single local supervisor), SPEC-MOD-022 (private registry and attachment leases).
 // Supports: SPEC-PER-001 (bounded detached approvals), SPEC-SES-001 (private storage facade).
+// Supports: gap E-244 (an endpoint removed during a bounded service read is unavailable).
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, lstatSync, unlinkSync } from "node:fs";
 import { join, isAbsolute, resolve } from "node:path";
@@ -26,10 +27,13 @@ export interface ResidentEndpoint {
 }
 export function readResidentEndpoint(
   root: string,
+  read: typeof readPrivateText = readPrivateText,
 ): ResidentEndpoint | undefined {
   const path = join(root, "resident-endpoint.json");
   if (!existsSync(path)) return;
-  const raw: unknown = JSON.parse(readPrivateText(path, 4096));
+  let raw: unknown;
+  try { raw = JSON.parse(read(path, 4096)); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
   if (
     !object(raw) ||
     !Number.isSafeInteger(raw["port"]) ||

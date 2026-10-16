@@ -237,7 +237,7 @@ export class HookRuntime implements HookBus {
   /** Steps 2 to 4 of SPEC-HOK-001 § 5.4 and the user-facing effects; undefined when no hook matched (FA-01). */
   async fire(event: string, fields: Record<string, unknown>, signal?: AbortSignal): Promise<Aggregated | undefined> {
     if (this.#closed) return undefined;
-    const started = this.#start(event, fields, this.#select(event, fields), signal);
+    const started = this.#start(event, fields, this.#select(event, fields).filter(declaration => !declaration.copyFactory), signal);
     if (started.length === 0) return undefined;
     const pending = Promise.all(started.map(s => s.outcome)); this.#pending.add(pending);
     try {
@@ -246,8 +246,28 @@ export class HookRuntime implements HookBus {
     } finally { this.#pending.delete(pending); }
   }
 
+  /** Implements: SPEC-OUT-026/CA-03. Only explicitly declared factories replace creation; notifications never run here. */
+  async createIsolatedCopy(fields: Record<string, unknown>, signal: AbortSignal): Promise<{ readonly path: string; readonly branch: string } | undefined> {
+    if (this.#closed) throw new Error("Isolated-copy hooks are closed.");
+    const selected = this.#select("isolated_copy_created", fields).filter(declaration => declaration.copyFactory);
+    if (selected.length === 0) return undefined;
+    if (selected.length !== 1) throw new Error("Several isolated-copy creation methods are configured; creation refused.");
+    const started = this.#start("isolated_copy_created", { ...fields, operation: "create" }, selected, signal, true);
+    const pending = Promise.all(started.map(start => start.outcome)); this.#pending.add(pending);
+    try {
+      const outcomes = await pending;
+      signal.throwIfAborted();
+      const current = this.#select("isolated_copy_created", fields).filter(declaration => declaration.copyFactory && declaration.authorityCurrent?.() !== false);
+      if (this.#closed || this.#o.policyRefusal?.() || current.length !== 1 || current[0]!.fingerprint !== selected[0]!.fingerprint || current[0]!.label !== selected[0]!.label || current[0]!.file !== selected[0]!.file) throw new Error("The custom creation hook changed or was revoked while running; preserve its output for inspection.");
+      this.#apply("isolated_copy_created", HOOK_EVENTS["isolated_copy_created"]!, outcomes);
+      const outcome = outcomes[0];
+      if (outcome?.failure || !outcome?.response?.isolatedCopy) throw new Error("The isolated-copy creation hook failed or returned no valid isolatedCopy result.");
+      return outcome.response.isolatedCopy;
+    } finally { this.#pending.delete(pending); }
+  }
+
   /** Launches the selected hooks; those not awaited run in the background (SPEC-HOK-007). Returns the awaited ones, which run in parallel (RG-02). */
-  #start(event: string, fields: Record<string, unknown>, selected: readonly HookDeclaration[], signal?: AbortSignal): Started[] {
+  #start(event: string, fields: Record<string, unknown>, selected: readonly HookDeclaration[], signal?: AbortSignal, creationMethod = false): Started[] {
     if (selected.length === 0) return [];
     const info = HOOK_EVENTS[event]!;
     const payload = this.#payload(event, fields);
@@ -256,7 +276,7 @@ export class HookRuntime implements HookBus {
     const waited: Started[] = [];
     for (const d of selected)
       d.actions.forEach((_, i) => {
-        if (!info.synchronous || d.async) this.#background(d, i, payload, event, fields, info, grouped);
+        if ((!info.synchronous && !creationMethod) || d.async) this.#background(d, i, payload, event, fields, info, grouped);
         else waited.push({ d, outcome: this.#runAction(d, i, payload, event, fields, signal).then(o => { grouped(o); return o; }) });
       });
     return waited;

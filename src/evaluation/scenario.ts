@@ -66,6 +66,7 @@ export interface LoadedScenario extends Scenario {
 export interface LoadedSuite {
   readonly suiteVersion: string;
   readonly scenarios: readonly LoadedScenario[];
+  readonly declaredScenarioIds?: readonly string[];
 }
 
 export class SuiteError extends Error {}
@@ -88,7 +89,7 @@ export function loadSuite(suiteFile: string): LoadedSuite {
     if (ids.has(s.id)) throw new SuiteError(`Duplicate scenario id ${s.id}.`);
     ids.add(s.id);
   }
-  return { suiteVersion: suite.value.suiteVersion, scenarios };
+  return { suiteVersion: suite.value.suiteVersion, scenarios, declaredScenarioIds: [...ids] };
 }
 
 /** Files of a folder, relative, with forward slashes. */

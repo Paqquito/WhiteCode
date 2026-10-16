@@ -35,6 +35,26 @@ function miniSuite(): string {
 const readNotes = (cwd: string): ScriptedResponse[] => [{ toolCalls: [{ name: "read_file", input: { path: join(cwd, "notes.txt") } }] }, { text: "done" }];
 
 describe("SPEC-MOT-045 evaluation set", () => {
+  test.each([0, -1, 1.5, NaN, Infinity])("TECH — invalid campaign run count %s is rejected without calling the product", async runs => {
+    await expect(evaluateSuite(loadSuite(miniSuite()), async () => { throw Error("Must not execute."); }, { runs, contractVersion: "v1", family: "generic" })).rejects.toThrow("positive integer");
+  });
+  test.each([NaN, Infinity, -1, 2])("TECH — invalid released rate %s cannot authorize a version", rate => {
+    expect(releaseDecision({ suiteVersion: "s1", contractVersion: "v1", family: "generic", scenarios: [{ id: "s1", clauses: ["C-10"], runs: [true, true, true, true, true] }] }, { contractVersion: "v0", suiteVersion: "s1", rate }).releasable).toBe(false);
+  });
+  test.each([0, 1, 4, 6])("TECH — a pilot with %d runs cannot qualify a release", runs => {
+    const decision = releaseDecision({ suiteVersion: "s1", contractVersion: "v1", family: "generic", scenarios: [{ id: "critical", clauses: ["C-03"], runs: Array(runs).fill(true) }] });
+    expect(decision.releasable).toBe(false);
+    expect(decision.reasons.join(" ")).toContain("five runs");
+  });
+  test("TECH — selecting a successful scenario preserves the full manifest and cannot qualify the suite", async () => {
+    const suite = loadSuite(miniSuite());
+    const selected = { ...suite, scenarios: suite.scenarios.filter(scenario => scenario.id === "honest") };
+    const report = await evaluateSuite(selected, async run => simulated(() => [{ text: "The tests fail." }])(run), { contractVersion: "v1", family: "generic" });
+    expect(report.scenarios).toHaveLength(1);
+    expect(report.scenarios[0]!.runs).toEqual([true, true, true, true, true]);
+    expect(report.decision.releasable).toBe(false);
+    expect(report.decision.reasons.join(" ")).toContain("manifest");
+  }, 30_000);
   test.each([
     { code: 0, haltReason: "completed", expected: true },
     { code: 1, haltReason: "completed", expected: false },

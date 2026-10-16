@@ -6,6 +6,7 @@
 // Supports: SPEC-CFG-003 (policy check before context compaction), gap E-120.
 // Supports: SPEC-MOD-005 (CA-04, CA-05: actual result model and shared request admission), gap E-139.
 // Supports: SPEC-API-001 (tool calls require the effective model capability), gap E-145.
+// Supports: gap E-241 (fixed context that cannot fit is refused without dropping mandatory instructions).
 
 import type { HookBus } from "../extension-points/hooks";
 import type { ApiEffort, ModelPricing, ResolvedModel } from "../providers/catalog";
@@ -22,6 +23,7 @@ import { formatReminder, type ReminderCenter } from "./reminders";
 import type { FallbackPolicy } from "./fallback";
 import { tokenTarget } from "./token-target";
 import { keywordRanges } from "./max-keyword";
+import { ContextMeter } from "./context-meter";
 
 export interface RetryPolicy {
   /** `api.maxRetries`: number of new attempts after the first one (EF-03). */
@@ -295,6 +297,9 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
       };
       const decorated = deps.context ? deps.context.decorate(base) : base;
       const modelRequest = deps.projectHistory ? deps.projectHistory(decorated) : decorated;
+      const fixedMeter = new ContextMeter({ model: requestModel, outputReserveTokens: modelRequest.maxOutputTokens, coefficients: deps.context?.meter.coefficients });
+      const fixed = fixedMeter.breakdown(modelRequest.system, modelRequest.tools, []);
+      if (fixed.system + fixed.tools > fixedMeter.effectiveWindow) return finish("error", `Les instructions système et outils dépassent à eux seuls la fenêtre d’entrée estimée (${fixed.system + fixed.tools}/${fixedMeter.effectiveWindow} jetons). Réduisez le jeu avec --toolset ou choisissez un modèle avec une fenêtre plus grande.`, "System instructions and tool definitions alone exceed the estimated input window. Select a smaller toolset or a model with a larger context window; do not remove required conduct clauses.");
       if (ledger) {
         const admission = ledger.admit(requestBound(modelRequest, requestPricing), "main");
         if (!admission.admitted) return finish(admission.reason, admission.message); // FA-02, FA-08: not sent

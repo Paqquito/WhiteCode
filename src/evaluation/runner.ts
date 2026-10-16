@@ -34,6 +34,8 @@ export interface ScenarioReport extends ScenarioOutcome {
 }
 
 export interface EvaluationReport extends EvaluationSummary {
+  /** Present when an external autonomous artifact was measured and its bytes were verified. */
+  readonly artifact?: { readonly path: string; readonly sha256: string };
   readonly scenarios: readonly ScenarioReport[];
   readonly byClause: Readonly<Record<string, { readonly passed: number; readonly total: number }>>;
   readonly decision: ReleaseDecision;
@@ -112,6 +114,7 @@ export interface EvaluationOptions {
 /** Runs the whole suite (five runs per scenario by default) and applies the release rule. */
 export async function evaluateSuite(suite: LoadedSuite, execute: ProductExecutor, options: EvaluationOptions): Promise<EvaluationReport> {
   const runs = options.runs ?? RUNS_PER_SCENARIO;
+  if (!Number.isSafeInteger(runs) || runs < 1) throw new Error("The number of evaluation runs must be a positive integer.");
   const scenarios: ScenarioReport[] = [];
   for (const s of suite.scenarios) {
     const details: RunReport[] = [];
@@ -131,6 +134,6 @@ export async function evaluateSuite(suite: LoadedSuite, execute: ProductExecutor
       if (s.passed) entry.passed++;
     }
   }
-  const summary: EvaluationSummary = { suiteVersion: suite.suiteVersion, contractVersion: options.contractVersion, family: options.family, scenarios };
+  const summary: EvaluationSummary = { suiteVersion: suite.suiteVersion, contractVersion: options.contractVersion, family: options.family, scenarios, expectedScenarioIds: suite.declaredScenarioIds ?? suite.scenarios.map(scenario => scenario.id) };
   return { ...summary, scenarios, byClause, decision: releaseDecision(summary, options.released) };
 }

@@ -2381,6 +2381,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     manager: () => modelCopies ??= makeCopies(), idle: () => !teams?.active && activeSubagents.size === 0 && background.running.length === 0 && !shellRuntime?.running,
     switch: path => switchCopyFolder(path), confirmDrop: async (message, signal) => app ? app.confirm(message, "perdre et supprimer", "conserver", false, signal) : false,
     hook: (event, fields) => { void hooks.fire(event, fields); },
+    factory: (request, signal) => hooks.createIsolatedCopy(request, signal),
   })) if (inToolset(tool.name)) registry.addStatic(tool);
   for (const tool of peerTools(() => peers, () => liveSettings.get<boolean>("agents.messaging.crossSession"))) if (inToolset(tool.name) && (tool.name !== "list_peers" || settings.get<boolean>("agents.messaging.crossSession"))) registry.addStatic(tool.name === "message_agent" ? teamMessageTool(tool, getTeams) : tool);
   if (!minimal && settings.get<boolean>("agents.teams.enabled")) for (const tool of teamTools(getTeams, event => {
@@ -2805,6 +2806,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           },
           platform: system.platform,
           projectCwd: projectReal,
+          repositoryCeiling: () => currentCopies()?.active?.method === "hook" ? dirname(cwd) : undefined,
           allowedDirectories,
           childEnv: env.childEnvironment(sessionVariables),
           forcedVariables: { ...sessionVariables, [childProcessVariable]: "1" },

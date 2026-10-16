@@ -109,6 +109,8 @@ const BEGIN = "#--snapshot-begin--";
 const END = "#--snapshot-end--";
 
 export interface ShellRuntimeOptions {
+  /** A non-Git custom copy must not accidentally discover the original enclosing repository. */
+  readonly repositoryCeiling?: () => string | undefined;
   readonly hintTag?: string;
   readonly recommend?: (ref: string, command: string) => void;
   readonly platform: PlatformName;
@@ -225,6 +227,7 @@ export class ShellRuntime {
       this.#snapshotText ? ". /dev/stdin >/dev/null 2>&1 || :" : "",
       this.options.initFile ? `. ${quotePosix(p(this.options.initFile))}` : "",
       `cd -- ${quotePosix(p(this.#cwd))} || exit 1`,
+      this.options.repositoryCeiling?.() ? `export GIT_CEILING_DIRECTORIES=${quotePosix(p(this.options.repositoryCeiling()!))}` : "",
       `eval ${quotePosix(command)}`,
       "__status=$?",
       metadata ? `printf '\\036${metadata}:'; pwd -W 2>/dev/null || pwd -P; printf '\\037'` : `{ pwd -W 2>/dev/null || pwd -P; } > ${quotePosix(p(cwdFile))} 2>/dev/null`,
@@ -257,6 +260,7 @@ export class ShellRuntime {
       "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false",
       "$OutputEncoding = [Console]::OutputEncoding",
       `Set-Location -LiteralPath ${quotePs(this.#cwd)}`,
+      this.options.repositoryCeiling?.() ? `$env:GIT_CEILING_DIRECTORIES = ${quotePs(this.options.repositoryCeiling()!)}` : "",
       `$__source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))`,
       "try { $__block = [ScriptBlock]::Create($__source) } catch { [Console]::Out.WriteLine('Syntax error: ' + $_.Exception.InnerException.Message); if (-not $_.Exception.InnerException) { [Console]::Out.WriteLine($_.Exception.Message) }; exit 1 }",
       "$global:LASTEXITCODE = 0",

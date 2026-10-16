@@ -1,5 +1,6 @@
-// Implements: SPEC-INT-007 (CA-01/02), SPEC-OUT-026 (CA-01/02).
+// Implements: SPEC-INT-007 (CA-01/02), SPEC-OUT-026 (CA-01/02/03).
 // Supports: gap E-167.
+// Supports: gap E-243 (explicit creation hook and session-owned custom tree).
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, appendFileSync, copyFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -7,13 +8,16 @@ import picomatch from "picomatch";
 import type { Tool } from "../tools/types";
 import { textOutcome } from "../tools/types";
 import { tryFileLock } from "../platform/file-lock";
-export interface Copy { readonly name: string; readonly path: string; readonly branch: string; readonly baseline: string }
+import { CustomCopyTree } from "./custom-copy";
+export interface Copy { readonly name: string; readonly path: string; readonly branch: string; readonly baseline: string; readonly method?: "hook" }
+export type CopyFactory = (request: { readonly path: string; readonly branch: string; readonly revision: string }, signal: AbortSignal) => Promise<{ readonly path: string; readonly branch: string } | undefined>;
 type Git = (cwd: string, args: readonly string[]) => { readonly code: number | null; readonly stdout: string; readonly stderr: string };
 function ordinary(path: string): void { for (let cursor = resolve(path); ; cursor = dirname(cursor)) { if (existsSync(cursor)) { const stat = lstatSync(cursor); if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error("Isolated-copy directory is not ordinary."); } if (cursor === dirname(cursor)) return; } }
 export class IsolatedCopies {
   #active?: Copy;
   #release?: () => void;
   #ignored = new Map<string, string>();
+  #custom?: CustomCopyTree;
   readonly root: string;
   readonly folder: string;
   constructor(readonly original: string, readonly options: { readonly git: Git; readonly directory: string; readonly branchPrefix: string; readonly copyFiles: () => readonly string[]; readonly warn?: (message: string) => void }) {
@@ -26,14 +30,43 @@ export class IsolatedCopies {
   get cwd(): string { return this.#active?.path ?? this.original; }
   run(args: readonly string[], cwd = this.original): string { const result = this.options.git(cwd, args); if (result.code !== 0) throw new Error(`Git failed: ${result.stderr.slice(0, 1000) || "operation refused"}`); return result.stdout; }
   release(): void { this.#release?.(); this.#release = undefined; }
-  open(requested?: string, reuse = false): Copy {
+  #lease(requested?: string): string {
     if (this.#active) throw new Error("An isolated copy is already active.");
+    if (this.#release) throw new Error("An isolated-copy creation is already in progress.");
     const name = requested ?? `task-${randomUUID().slice(0, 8)}`;
     if (!/^[a-z][a-z0-9-]{0,47}$/.test(name)) throw new Error("Invalid isolated-copy name.");
     ordinary(this.folder); const leases = join(this.folder, ".leases"); ordinary(leases); mkdirSync(leases, { recursive: true });
     const lock = join(leases, name + ".lock"); if (existsSync(lock)) { const stat = lstatSync(lock); if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error("Invalid isolated-copy lease."); }
     this.#release = tryFileLock(lock); if (!this.#release) throw new Error("The isolated copy is already used by another session.");
+    return name;
+  }
+  open(requested?: string, reuse = false): Copy {
+    const name = this.#lease(requested);
     try { return this.#open(name, reuse); } catch (error) { this.release(); throw error; }
+  }
+  async openWithFactory(requested: string | undefined, factory: CopyFactory, signal: AbortSignal): Promise<Copy> {
+    const name = this.#lease(requested), path = join(this.folder, name), branch = this.options.branchPrefix + name;
+    try {
+      if (existsSync(path)) throw new Error("A custom creation method cannot adopt an existing copy.");
+      this.#excludeFolder();
+      const baseline = this.run(["rev-parse", "HEAD"], this.root).trim();
+      const result = await factory({ path, branch, revision: baseline }, signal);
+      signal.throwIfAborted();
+      if (!result) return this.#open(name, false);
+      if (resolve(result.path) !== resolve(path) || result.branch !== branch) throw new Error("Custom creation returned a path or branch different from the requested copy; no folder switch performed.");
+      ordinary(this.folder); ordinary(path);
+      this.#custom = new CustomCopyTree(path, this.folder);
+      return this.#active = { name, path: realpathSync(path), branch, baseline, method: "hook" };
+    } catch (error) { this.release(); throw error; }
+  }
+  #excludeFolder(): void {
+    ordinary(this.folder); mkdirSync(this.folder, { recursive: true });
+    const exclude = resolve(this.root, this.run(["rev-parse", "--git-path", "info/exclude"], this.root).trim());
+    ordinary(dirname(exclude));
+    if (existsSync(exclude)) { const stat = lstatSync(exclude); if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error("The Git exclude file is not ordinary."); }
+    const pattern = "/" + relative(this.root, this.folder).replace(/\\/g, "/") + "/";
+    const old = existsSync(exclude) ? readFileSync(exclude, "utf8") : "";
+    if (!old.split(/\r?\n/).includes(pattern)) appendFileSync(exclude, `\n${pattern}\n`);
   }
   #open(requested: string, reuse: boolean): Copy {
     if (this.#active) throw new Error("An isolated copy is already active.");
@@ -51,13 +84,7 @@ export class IsolatedCopies {
       branch = this.run(["symbolic-ref", "--short", "HEAD"], path).trim();
       if (!branch.startsWith(this.options.branchPrefix)) throw new Error("The existing worktree is not an owned isolated copy.");
     } else {
-      mkdirSync(this.folder, { recursive: true });
-      const exclude = resolve(this.root, this.run(["rev-parse", "--git-path", "info/exclude"], this.root).trim());
-      ordinary(dirname(exclude));
-      if (existsSync(exclude)) { const stat = lstatSync(exclude); if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error("The Git exclude file is not ordinary."); }
-      const pattern = "/" + relative(this.root, this.folder).replace(/\\/g, "/") + "/";
-      const old = existsSync(exclude) ? readFileSync(exclude, "utf8") : "";
-      if (!old.split(/\r?\n/).includes(pattern)) appendFileSync(exclude, `\n${pattern}\n`);
+      this.#excludeFolder();
       branch = this.options.branchPrefix + name;
       for (let index = 2; this.options.git(this.root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]).code === 0; index++) { if (index > 100) throw new Error("No free isolated branch name."); branch = `${this.options.branchPrefix}${name}-${index}`; }
       this.run(["check-ref-format", "--branch", branch], this.root);
@@ -82,6 +109,7 @@ export class IsolatedCopies {
   }
   changed(): boolean {
     const active = this.#active; if (!active) return false;
+    if (this.#custom) return this.#custom.changed();
     if (this.run(["status", "--porcelain", "--untracked-files=all"], active.path).trim()) return true;
     if (this.run(["rev-parse", "HEAD"], active.path).trim() !== active.baseline) return true;
     if (this.run(["rev-parse", "--verify", `refs/heads/${active.branch}`], this.root).trim() !== active.baseline) return true;
@@ -103,21 +131,24 @@ export class IsolatedCopies {
     const active = this.#active; if (!active) throw new Error("No isolated copy belongs to this session.");
     if (action === "remove") {
       ordinary(active.path);
+      if (this.#custom) {
+        this.#custom.remove(confirmed); this.#custom = undefined; this.#active = undefined; this.release(); return active;
+      }
       if (this.changed() && !confirmed) throw new Error("Uncommitted changes or new commits would be lost. Explicit confirmation is required.");
       this.run(["worktree", "remove", "--force", "--", active.path], this.root);
       this.#active = undefined;
       try { this.run(["branch", "-D", "--", active.branch], this.root); }
       catch { this.options.warn?.(`Copie supprimée ; branche ${active.branch} conservée, nettoyage Git à reprendre manuellement.`); }
     }
-    this.#active = undefined; this.release(); return active;
+    this.#custom = undefined; this.#active = undefined; this.release(); return active;
   }
 }
-export function isolatedCopyTools(options: { readonly manager: () => IsolatedCopies; readonly idle: () => boolean; readonly switch: (path: string) => void; readonly confirmDrop: (message: string, signal: AbortSignal) => Promise<boolean>; readonly hook: (event: "isolated_copy_created" | "isolated_copy_removed", fields: Record<string, unknown>) => void }): Tool<never>[] {
+export function isolatedCopyTools(options: { readonly manager: () => IsolatedCopies; readonly idle: () => boolean; readonly switch: (path: string) => void; readonly confirmDrop: (message: string, signal: AbortSignal) => Promise<boolean>; readonly factory?: CopyFactory; readonly hook: (event: "isolated_copy_created" | "isolated_copy_removed", fields: Record<string, unknown>) => void }): Tool<never>[] {
   const flags = () => ({ readOnly: false, concurrencySafe: false, destructive: false, requiresPermission: false, openWorld: false });
   const open: Tool<{ name?: string }> = {
     name: "open_isolated_copy", inputSchema: { type: "object", properties: { name: { type: "string", pattern: "^[a-z][a-z0-9-]{0,47}$" } }, additionalProperties: false },
-    description: () => "Enter a new isolated Git worktree from the current revision, with ordinary permission checks. Local ignored configuration is copied only from the configured allowlist. Return to the original folder with close_isolated_copy.", flags: () => ({ ...flags(), requiresPermission: true }), isEnabled: () => true, ruleSubject: () => ({ kind: "none" }), summary: input => `Copie isolée ${input.name ?? "nouvelle"}`,
-    async execute(input, ctx) { ctx.signal.throwIfAborted(); if (!options.idle()) return textOutcome("Stop active background tasks before changing the working folder.", true, "unavailable"); const copy = options.manager().open(input.name); options.switch(copy.path); options.hook("isolated_copy_created", { path: copy.path, branch: copy.branch }); return textOutcome(`Working folder: ${copy.path}\nBranch: ${copy.branch}`); },
+    description: () => "Enter a new isolated working copy using the configured creation hook, or a Git worktree from the current revision by default, with ordinary permission checks. Default local configuration copying uses only the configured allowlist. A custom hook owns its creation method. Return to the original folder with close_isolated_copy.", flags: () => ({ ...flags(), requiresPermission: true }), isEnabled: () => true, ruleSubject: () => ({ kind: "none" }), summary: input => `Copie isolée ${input.name ?? "nouvelle"}`,
+    async execute(input, ctx) { ctx.signal.throwIfAborted(); if (!options.idle()) return textOutcome("Stop active background tasks before changing the working folder.", true, "unavailable"); const manager = options.manager(); const copy = options.factory ? await manager.openWithFactory(input.name, options.factory, ctx.signal) : manager.open(input.name); options.switch(copy.path); options.hook("isolated_copy_created", { path: copy.path, branch: copy.branch }); return textOutcome(`Working folder: ${copy.path}\nBranch: ${copy.branch}`); },
   };
   const close: Tool<{ action: "keep" | "remove"; drop_changes?: boolean }> = {
     name: "close_isolated_copy", inputSchema: { type: "object", properties: { action: { enum: ["keep", "remove"] }, drop_changes: { type: "boolean" } }, required: ["action"], additionalProperties: false },

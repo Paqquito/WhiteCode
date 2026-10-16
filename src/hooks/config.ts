@@ -49,6 +49,8 @@ export interface HookDeclaration {
   /** Managed control hook (SPEC-HOK-012 EF-04): its failure refuses the action it frames. */
   readonly mandatory: boolean;
   readonly async?: boolean;
+  /** Explicit replacement method; ordinary notifications retain their asynchronous event semantics. */
+  readonly copyFactory?: boolean;
   readonly scope: HookScope;
   /** Settings file (or option) that declares the hook. */
   readonly file: string;
@@ -202,11 +204,15 @@ export function buildSnapshot(
           ignored.push({ label, reason: "aucune action utilisable" });
           return;
         }
+        if (d["copyFactory"] === true && (event !== "isolated_copy_created" || d["async"] === true || actions.length !== 1 || actions[0]!.type !== "command")) {
+          ignored.push({ label, reason: "copyFactory exige un unique crochet de commande de création, sans async" });
+          return;
+        }
         // EF-02: exact duplicates are merged within one scope only.
         const key = fingerprintOf(event, raw, installation);
         if (seen.has(key)) return;
         seen.add(key);
-        declarations.push({ event, match, matches, actions, id, mandatory, async: d["async"] === true ? true : undefined, scope, file: file ?? scope, fingerprint: fingerprintOf(event, raw,installation), label, ...(authorityCurrent?{authorityCurrent}:{}) });
+        declarations.push({ event, match, matches, actions, id, mandatory, async: d["async"] === true ? true : undefined, ...(d["copyFactory"] === true ? { copyFactory: true } : {}), scope, file: file ?? scope, fingerprint: fingerprintOf(event, raw,installation), label, ...(authorityCurrent?{authorityCurrent}:{}) });
       });
     }
   }
