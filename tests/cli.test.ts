@@ -22,7 +22,7 @@ test("TECH — a value-taking option cannot swallow a coordination flag and laun
 
 test("TECH — an unavailable coordination role cannot enter the authentication command shortcuts", async () => {
   for (const command of ["/login", "/logout"]) {
-    const result = await cli(["--orchestrator", command], workspace());
+    const result = await cli(["--orchestrator", command], workspace(), { extra: { coordinatorAvailable: false } });
     expect(result.code).toBe(2); expect(result.stderr).toContain("ne dispose pas de la capacité de coordination");
     expect(result.stdout).toBe("");
   }
@@ -58,7 +58,7 @@ test("SPEC-MOD-011/CA-10 — the coordination role belongs to a session and is r
 test("SPEC-MOD-011/CA-11 — a session engine without coordination capability refuses before any session or model request", async () => {
   for (const args of [["--non-interactive", "--orchestrator", "go"], ["direct-server", "connect", "wss://example.test", "--orchestrator"], ["job", "create", "sample", "--orchestrator"]]) {
     const ws = workspace(); const provider = new ScriptedProvider([]);
-    const result = await cli(args, ws, { provider });
+    const result = await cli(args, ws, { provider, extra: { coordinatorAvailable: false } });
     expect(result.code).toBe(2); expect(result.stderr).toContain("ne dispose pas de la capacité de coordination");
     expect(provider.requests).toHaveLength(0); expect(existsSync(join(ws.configHome, "sessions"))).toBe(false);
   }

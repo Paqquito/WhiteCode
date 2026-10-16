@@ -170,7 +170,7 @@ export interface ParsedSubcommand {
 
 export class SubcommandUsageError extends Error {}
 
-/** The coordination role belongs to a session; the current engine exposes no coordination capability. */
+/** The coordination role belongs to a capable session, never to an administrative operation or supervisor. */
 export function orchestratorRefusal(family?: string, operation?: string): string {
   const invocation = family && operation ? family + " " + operation : undefined;
   const services = ["connector-server start", "direct-server start", "remote-access start", "service start", "session-runner start", "job-runner start"];

@@ -37,7 +37,13 @@ export function record(ws: Workspace, name: string, response?: unknown) {
   const print = response === undefined ? "" : `\nconsole.log(${JSON.stringify(JSON.stringify(response))});`;
   return {
     command: hook(ws, name, `const fs = await import("node:fs"); fs.appendFileSync(${JSON.stringify(out)}, JSON.stringify(payload) + "\\n");${print}`),
-    read: (): any[] => (existsSync(out) ? readFileSync(out, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []),
+    read: (): any[] => {
+      if (!existsSync(out)) return [];
+      const snapshot = readFileSync(out, "utf8");
+      // A polling reader can catch appendFileSync before the final LF; wait for a complete snapshot.
+      // Complete malformed records still throw, and an unfinished trailing record cannot satisfy a count assertion.
+      return snapshot.endsWith("\n") ? snapshot.split("\n").slice(0, -1).map(line => JSON.parse(line)) : [];
+    },
   };
 }
 

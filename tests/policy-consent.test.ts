@@ -35,7 +35,7 @@ function attest(ws: Workspace) {
 test("TECH — unavailable coordination is refused before a policy dialog or consent receipt", async () => {
   const ws = workspace(); provision(ws, { hooksConfig: { disabled: false } });
   const provider = new ScriptedProvider([]);
-  const terminal = interactive(["--orchestrator"], ws, { provider, rows: 60, extra: { now } });
+  const terminal = interactive(["--orchestrator"], ws, { provider, rows: 60, extra: { now, coordinatorAvailable: false } });
   const result = await terminal.done;
   expect(result.code).toBe(2); expect(result.stderr).toContain("capacité de coordination");
   expect(terminal.all().join("\n")).not.toContain("Paramètres sensibles de votre organisation");

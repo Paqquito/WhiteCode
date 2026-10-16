@@ -42,7 +42,7 @@ import { MarkdownRenderer, type MarkdownOptions } from "../ui/markdown";
 import { isShellLine } from "./shell-mode";
 import { ModalEngine } from "../ui/modal";
 import { maskSecrets } from "../shared/secrets";
-import { newViewState, TranscriptView, type ItemKind, type TranscriptItem, type ViewSettings } from "./transcript-view";
+import { newViewState, TranscriptView, type ItemKind, type TranscriptItem, type ViewSettings, type MessageActions } from "./transcript-view";
 import { containsSecret } from "../shared/secrets";
 import { diffNode, type DiffOptions } from "../ui/diff-view";
 import { activityView, connectorResultView, interruptionView, modelView, noticeView, toolCallView, toolResultView, userView, type ViewContext } from "./views";
@@ -160,7 +160,7 @@ export interface AppOptions {
   readonly autonomousStatus?: () => string | undefined;
   readonly brief?: () => boolean;
   readonly externalEditor?: (draft: string) => Promise<string | undefined>;
-  readonly messageActions?: { readonly enabled: boolean; readonly copy: (text: string) => Promise<boolean>; readonly edit?: (item: TranscriptItem) => Promise<void> };
+  readonly messageActions?: MessageActions;
   readonly terminalPanel?: () => Promise<void>;
   readonly footer?: () => { readonly spans: readonly Span[]; readonly padding: number } | undefined;
   readonly inputDecoration?: (columns:number) => readonly string[];

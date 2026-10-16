@@ -8,6 +8,7 @@ import { MODEL_TIERS, VARIABLES, VARIABLE_BY_NAME, type ModelTier, type Section,
 import { PROTECTED_COMMANDS } from "./protected-commands";
 import { applyTransform, isTransform, parseTemplate } from "./template";
 import { suggest } from "../shared/suggest";
+import { isSecureIdentityUrl } from "./identity";
 
 export const SUPPORTED_SCHEMA_VERSIONS = [1] as const;
 
@@ -107,6 +108,15 @@ export function runtimeIdentity(identity: ResolvedIdentity): ResolvedIdentity {
   return { ...body, hash: createHash("sha256").update(canonicalJson(body)).digest("hex") };
 }
 
+/** Supports: SPEC-API-028. This normative field names an endpoint, never a supplied token. */
+function publicTokenEndpoint(value: unknown): boolean {
+  if (typeof value !== "string" || !isSecureIdentityUrl(value)) return false;
+  return ![...new URL(value).searchParams.keys()].some(key => {
+    const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+    return SECRET_MARKERS.some(marker => normalized.includes(marker));
+  });
+}
+
 function findSecretKeys(value: unknown, path: string, out: string[]): void {
   if (Array.isArray(value)) {
     value.forEach((v, i) => findSecretKeys(v, `${path}[${i}]`, out));
@@ -115,7 +125,8 @@ function findSecretKeys(value: unknown, path: string, out: string[]): void {
   if (!isPlainObject(value)) return;
   for (const [k, v] of Object.entries(value)) {
     const normalized = k.toLowerCase().replace(/[^a-z0-9]/g, "");
-    if (SECRET_MARKERS.some((m) => normalized.includes(m))) out.push(`${path}.${k}`);
+    const endpoint = path === "$.services" && k === "SERVICE_OAUTH_TOKEN" && publicTokenEndpoint(v);
+    if (SECRET_MARKERS.some((m) => normalized.includes(m)) && !endpoint) out.push(`${path}.${k}`);
     findSecretKeys(v, `${path}.${k}`, out);
   }
 }

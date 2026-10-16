@@ -54,6 +54,7 @@ const enumOf = (values: readonly string[]) => Type.Union(values.map((v) => Type.
 const mode = () => enumOf(PERMISSION_MODES);
 
 export const SETTINGS: readonly SettingDef[] = [
+  { key: "modes.coordinator", schema: bool(), default: false, scopes: [U, P], owner: "SPEC-MOD-028" },
   {key:"voice.input.enabled",schema:bool(),default:false,scopes:[U],owner:"SPEC-VOX-001",hot:true},
   {key:"voice.autoSubmit",schema:bool(),default:false,scopes:[U],owner:"SPEC-VOX-001",hot:true},
   {key:"voice.language",schema:Type.String({pattern:"^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$"}),scopes:[U],owner:"SPEC-VOX-001",hot:true},

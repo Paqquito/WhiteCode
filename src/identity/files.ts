@@ -118,7 +118,10 @@ export function renderDirectory(source: string, output: string, identity: Identi
   const inputRoot = realpathSync(source), outputRoot = physical(output);
   if (within(inputRoot, outputRoot) || within(outputRoot, inputRoot)) throw new Error("Sortie et source doivent être des dossiers distincts, sans inclusion.");
   if (existsSync(output) && (lstatSync(output).isSymbolicLink() || !lstatSync(output).isDirectory() || readdirSync(output).length > 0)) throw new Error("La sortie doit être vide ou inexistante, sans lien.");
-  const options = { lookup: (name: string) => (MODEL_TIERS as readonly string[]).includes(name) ? identity.tierLabel(name as ModelTier, language) : identity.has(name) ? identity.get(name, language) : undefined, onUnknownVariable: (name: string) => { throw new Error(`[ERR-06] Variable inconnue : ${name}.`); }, onUnknownTransform: (name: string) => { throw new Error(`[ERR-07] Transformation inconnue : ${name}.`); } };
+  const options = { lookup: (name: string) => {
+    const tier = name === "MODEL_DEFAULT" ? identity.modelDefault : name === "MODEL_BACKGROUND" ? identity.modelBackground : name;
+    return (MODEL_TIERS as readonly string[]).includes(tier) ? identity.tierLabel(tier as ModelTier, language) : identity.has(name) ? identity.get(name, language) : undefined;
+  }, onUnknownVariable: (name: string) => { throw new Error(`[ERR-06] Variable inconnue : ${name}.`); }, onUnknownTransform: (name: string) => { throw new Error(`[ERR-07] Transformation inconnue : ${name}.`); } };
   const rendered = files(source).map((file) => {
     const name = renderTemplate(relative(source, file), options);
     const target = resolve(outputRoot, name);

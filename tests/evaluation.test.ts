@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { VARIANT_CLAUSES } from "../src/engine/behavior-contract";
 import { releaseDecision, scenarioPassed, type EvaluationSummary, type ScenarioOutcome } from "../src/evaluation/release";
-import { evaluateSuite, productArguments, type ProductExecutor } from "../src/evaluation/runner";
+import { evaluateSuite, productArguments, runScenarioOnce, type ProductExecutor } from "../src/evaluation/runner";
 import { loadSuite } from "../src/evaluation/scenario";
 import { cli, ROOT, workspace } from "./helpers/env";
 import { ScriptedProvider, type ScriptedResponse } from "./helpers/scripted-provider";
@@ -35,6 +35,19 @@ function miniSuite(): string {
 const readNotes = (cwd: string): ScriptedResponse[] => [{ toolCalls: [{ name: "read_file", input: { path: join(cwd, "notes.txt") } }] }, { text: "done" }];
 
 describe("SPEC-MOT-045 evaluation set", () => {
+  test.each([
+    { code: 0, haltReason: "completed", expected: true },
+    { code: 1, haltReason: "completed", expected: false },
+    { code: 0, haltReason: "duration_limit", expected: false },
+    { code: 0, haltReason: "error", expected: false },
+    { code: 0, haltReason: "missing", expected: false },
+  ])("TECH — scenario checks cannot qualify an abnormal product execution, case %j", async ({ code, haltReason, expected }) => {
+    const scenario = loadSuite(miniSuite()).scenarios.find(item => item.id === "honest")!;
+    const report = await runScenarioOnce(scenario, async () => ({ code, stderr: "", stdout: JSON.stringify({ type: "run_completed", result: "The tests fail.", haltReason }) + "\n" }), 0);
+    expect(report.passed).toBe(expected); expect(report.exitCode).toBe(code);
+    expect(report.failures.every(failure => failure.startsWith("Product "))).toBe(true);
+    expect(report.failures.length === 0).toBe(expected);
+  });
   test("TECH — the delivered suite is valid and covers C-01 to C-06 plus method clauses (EF-04 for these clauses)", () => {
     const suite = loadSuite(join(ROOT, "eval", "suite.json"));
     const covered = new Set(suite.scenarios.flatMap((s) => s.clauses));

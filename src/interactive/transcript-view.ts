@@ -47,7 +47,12 @@ export interface ViewState {
 }
 
 export const newViewState = (): ViewState => ({ top: 0, scrollX: 0, atBottom: true, folded: new Map() });
-export interface MessageActions { readonly enabled: boolean; readonly copy: (text: string) => Promise<boolean>; readonly edit?: (item: TranscriptItem) => Promise<void> }
+export interface MessageActions {
+  readonly enabled: boolean;
+  readonly copy: (text: string) => Promise<boolean>;
+  readonly edit?: (item: TranscriptItem) => Promise<void>;
+  readonly exportImage?: (lines: readonly Cell[][], columns: number, format: "png" | "svg") => Promise<{ path: string; fallback: boolean }>;
+}
 
 const AUTHOR: Readonly<Record<ItemKind, string>> = {
   user: "Vous",
@@ -87,6 +92,8 @@ export class TranscriptView {
   #message = "";
   #newContent = false;
   readonly #actions?: MessageActions;
+  readonly #theme?: (lines: readonly Cell[][], width: number) => Cell[][];
+  #exporting = false;
 
   constructor(o: {
     readonly terminal: Terminal;
@@ -109,6 +116,7 @@ export class TranscriptView {
     this.#onClose = o.onClose;
     this.#title = o.title;
     this.#actions = o.actions;
+    this.#theme = o.theme;
     this.#screen = new Screen({ terminal: o.terminal, capabilities: o.capabilities, maxFramesPerSecond: 60, source: (size) => { const lines = this.#frame(size); return { lines: o.theme?.(lines, size.columns) ?? lines }; } });
   }
 
@@ -249,7 +257,7 @@ export class TranscriptView {
       lines.push(this.#line([{ text: " Recherche : ", style: { bold: true } }, { text: this.#search.term }, { text: `  ${n > 0 ? this.#search.index + 1 : 0}/${n} élément${n > 1 ? "s" : ""}`, style: { dim: true } }], size.columns));
     } else if (this.#jump !== undefined) lines.push(this.#line([{ text: " Aller au tour : ", style: { bold: true } }, { text: this.#jump }], size.columns));
     // EF-07: the keys of the navigation, always shown.
-    const actionHelp = this.#menu ? this.#menu.map((item, index) => `${index + 1}. ${item.label}`).join(" · ") : this.#selected !== undefined ? "↑↓ message · y copier · a actions · m modifier · Échap quitter la sélection" : `↑↓ ligne · Tab élément · Entrée replier · / chercher · Échap fermer${this.#actions?.enabled ? " · s sélectionner" : ""}`;
+    const actionHelp = this.#menu ? (this.#actions?.exportImage ? "p. Exporter en PNG · v. Exporter en SVG · " : "") + this.#menu.map((item, index) => `${index + 1}. ${item.label}`).join(" · ") : this.#selected !== undefined ? "↑↓ message · y copier · a actions · m modifier · Échap quitter la sélection" : `↑↓ ligne · Tab élément · Entrée replier · / chercher · Échap fermer${this.#actions?.enabled ? " · s sélectionner" : ""}`;
     lines.push(this.#line([{ text: ` ${this.#message || actionHelp} `, style: { inverse: true } }], size.columns, true));
     return lines;
   }
@@ -402,6 +410,7 @@ export class TranscriptView {
     const at = items.findIndex(item => item.id === this.#selected), item = items[at];
     if (!item) { this.#selected = undefined; return true; }
     if (this.#menu) {
+      if ((key === "p" || key === "v") && this.#actions?.exportImage) { this.#menu = undefined; void this.#export(item, key === "p" ? "png" : "svg"); return true; }
       const choice = /^[1-9]$/.test(key) ? this.#menu[Number(key) - 1] : undefined;
       if (choice) { this.#menu = undefined; void this.#copy(choice.content); } return true;
     }
@@ -415,5 +424,20 @@ export class TranscriptView {
     try { this.#message = await this.#actions!.copy(content) ? "Copié." : `Copie indisponible : ${content}`; }
     catch { this.#message = `Copie indisponible : ${content}`; }
     this.#screen?.flush();
+  }
+
+  /** Supports: SPEC-OBS-017. Only the selected message body, without selection or search highlighting. */
+  async #export(item: TranscriptItem, format: "png" | "svg"): Promise<void> {
+    if (this.#exporting || !this.#actions?.exportImage) return;
+    this.#exporting = true; this.#message = "Enregistrement de l’image…";
+    try {
+      if (item.body.length > 200000) throw Error("Message trop volumineux pour un export image.");
+      const width = Math.max(10, this.#term.columns || 80);
+      const body = item.kind === "model" && this.#markdown ? this.#markdown(item.body) : text(item.body);
+      const lines = layoutNode(body, width, this.#ctx).lines;
+      const result = await this.#actions.exportImage(this.#theme?.(lines, width) ?? lines, width, format);
+      this.#message = `${result.fallback ? "PNG indisponible ; SVG enregistré" : "Image enregistrée"} : ${result.path}`;
+    } catch (error) { this.#message = `Export impossible : ${(error as Error).message}`; }
+    finally { this.#exporting = false; this.#screen?.flush(); }
   }
 }

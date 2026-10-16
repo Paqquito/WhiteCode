@@ -46,7 +46,7 @@ export const OPTIONS: readonly OptionDef[] = [
   { name: "remote-session", value: "required", type: "string", group: "Session et exécution", description: "Crée et suit une session distante avec une clé confiée au service.", delivered: buildFlag("remote_sessions"), owner: "SPEC-MOD-014" },
   { name: "reopen-remote", value: "required", type: "string", group: "Session et exécution", description: "Rapatrie une session distante terminée dans un clone propre du même dépôt.", delivered: buildFlag("remote_sessions"), owner: "SPEC-MOD-015" },
   { name: "background", value: "required", type: "string", group: "Session et exécution", description: "Lance une session d'arrière-plan.", delivered: true, owner: "SPEC-MOD-022" },
-  { name: "orchestrator", value: "none", group: "Session et exécution", description: "Active le mode coordinateur.", delivered: false, owner: "SPEC-MOD-028" },
+  { name: "orchestrator", value: "none", group: "Session et exécution", description: "Active le mode coordinateur.", delivered: buildFlag("mode_orchestrator"), owner: "SPEC-MOD-028" },
   { name: "max-iterations", value: "required", type: "integer", group: "Session et exécution", description: "Nombre maximal d'itérations (allers-retours avec le modèle).", defaultText: "50 en exécution automatisée", delivered: true, owner: "SPEC-MOD-005" },
   { name: "max-cost", value: "required", type: "amount", group: "Session et exécution", description: "Plafond de coût de l'exécution, montant à point décimal sans devise (ex. 2.50).", delivered: true, owner: "SPEC-MOD-005" },
   { name: "max-duration", value: "required", type: "seconds", group: "Session et exécution", description: "Durée maximale, en secondes.", delivered: true, owner: "SPEC-MOD-005" },

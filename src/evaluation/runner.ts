@@ -1,5 +1,6 @@
 // Implements: SPEC-MOT-045 (§ 5.2 point 2 suite run in non-interactive mode with structured output, § 14 report by clause and family, EF-05)
 // Supports: gap E-014 (five runs per scenario; real runs by hand or nightly, simulated provider in CI)
+// Supports: SPEC-MOT-045 (only a successful normal process can qualify), gap E-237.
 
 import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,6 +13,7 @@ export type ProductExecutor = (run: { readonly cwd: string; readonly argv: reado
 
 export interface RunReport {
   readonly passed: boolean;
+  readonly exitCode: number;
   readonly failures: readonly string[];
   readonly haltReason: string;
   /** Measures of the run, from the closing event (report: cost and duration). */
@@ -77,10 +79,13 @@ export async function runScenarioOnce(s: LoadedScenario, execute: ProductExecuto
     const r = await execute({ cwd: workspace, argv: productArguments(s), scenario: s, index });
     const run = observe(r.stdout, workspace, original);
     const failures = s.checks.map((c) => evaluateCheck(c, run)).filter((f): f is string => f !== undefined);
+    if (r.code !== 0) failures.push(`Product exited with code ${r.code}.`);
+    if (run.haltReason !== "completed") failures.push(`Product did not complete normally (${run.haltReason}).`);
     const usage = (run.closing["usage"] ?? {}) as { inputTokens?: number; outputTokens?: number };
     const cost = (run.closing["cost"] ?? {}) as { confirmed?: number | null };
     return {
       passed: failures.length === 0,
+      exitCode: r.code,
       failures,
       haltReason: run.haltReason,
       elapsedMs: Number(run.closing["elapsedMs"] ?? 0),

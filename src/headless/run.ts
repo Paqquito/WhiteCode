@@ -115,6 +115,7 @@ import { expandHome } from "../platform/system";
 import { WebConnectors } from "../connectors/web";
 import { TerminalSessions } from "../tools/terminal-session";
 import { TerminalPanel } from "../interactive/terminal-panel";
+import { exportTerminalImage } from "../ui/image-export";
 import { RemoteSkillCatalog } from "../skills/remote-catalog";
 import { resumeRemote } from "../remote/resume";
 import { offerMemorySnapshot } from "../agents/memory-snapshot";
@@ -214,7 +215,8 @@ import { maskSecrets } from "../shared/secrets";
 import { fingerprint } from "../shared/fingerprint";
 import { absolute, comparablePath, findExecutable, isWithin, realPathOrSelf, type SystemInfo } from "../platform/system";
 import type { StandardStreams } from "../platform/io";
-import { projectKey, TranscriptWriter, type TranscriptRecord } from "../session/transcript";
+import { projectKey, TranscriptWriter, effectiveMeta, type TranscriptRecord } from "../session/transcript";
+import { coordinatorDirectory, coordinatorInstructions, coordinatorRole, coordinatorToolAllowed, coordinatorWorker } from "../engine/coordinator";
 import { activeChain, assistantRecord, designateSession, projectSessions, protocolOf, readTranscript, rebuildHistory, SessionError, sessionTitle, withResults, type RebuiltHistory, type SessionInfo } from "../session/sessions";
 import { allSessions, reindexSessions, searchSessions } from "../session/discovery";
 import { sdkTools } from "../connectors/sdk";
@@ -437,6 +439,8 @@ export interface RunDependencies {
   readonly feedbackFetch?: typeof fetch;
   readonly surveyRandom?: () => number;
   readonly terminalMultiplexor?: string | null;
+  /** An embedding engine may explicitly decline the local coordination capability. */
+  readonly coordinatorAvailable?: boolean;
   readonly skillCatalogFetch?: typeof fetch;
   /** Embedders that own authentication and welcome may opt out; native launches use the welcome by default. */
   readonly onboarding?: boolean;
@@ -731,7 +735,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     streams.writeOut(versionText(identity));
     return ExitCode.Success;
   }
-  if (parsed.options.has("orchestrator")) throw new RunError(orchestratorRefusal(), ExitCode.UsageOrConfiguration);
+  if (parsed.options.has("orchestrator") && (!buildFlag("mode_orchestrator") || deps.coordinatorAvailable === false)) throw new RunError(orchestratorRefusal(), ExitCode.UsageOrConfiguration);
   if (["/login", "/logout"].includes(parsed.prompt?.trim() ?? "") && opt("request-format") !== "jsonl" && opt("result-format") !== "jsonl" && !opt("non-interactive") && !opt("control-channel") && !opt("control-listen") && !opt("control-connect")) {
     return runSubcommand(["auth", parsed.prompt!.trim().slice(1)], { streams, identity, catalog: deps.catalog, env, cwd: deps.cwd, system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, profilePolicyReader: deps.profilePolicyReader, policyFileProtection: deps.policyFileProtection, cachePolicy, credentialVault: deps.credentialVault, validateCredential: deps.validateCredential, signal: deps.signal, assertPolicy });
   }
@@ -1149,6 +1153,13 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     if (!mergeSession) err("Aucune conversation liée à cette demande ; nouvelle session. Vous pouvez joindre les commentaires avec /review-comments.");
   }
   const reopened = reopening && (fromMergeRequest === undefined || mergeSession) ? findSessionToReopen({ sessionsDir: locations.sessionsDir, projectReal, reopenLast, reopenOption: mergeSession ?? reopenOption, reopenAt, providerId, platform: system.platform, err, reopenHere, sourceProject: reopenProject ? absolute(reopenProject, cwd) : undefined }) : undefined;
+  const previousCoordinator = reopened ? effectiveMeta(reopened.chain)["coordinator"] === true : undefined;
+  let coordination: ReturnType<typeof coordinatorRole>;
+  try { coordination = coordinatorRole({ configured: settings.get<boolean>("modes.coordinator"), requested: opt("orchestrator") === true, previous: previousCoordinator }); }
+  catch (error) { throw new RunError((error as Error).message, ExitCode.UsageOrConfiguration); }
+  const coordinator = coordination.active;
+  if (coordinator && (!buildFlag("mode_orchestrator") || deps.coordinatorAvailable === false || serve || opt("minimal") === true || offlineMinimal || settings.get<number>("agents.maxDepth") < 1 || settings.get<boolean>("tools.scriptMode.enabled"))) throw new RunError(orchestratorRefusal(), ExitCode.UsageOrConfiguration);
+  if (coordination.warning) err(`avertissement : ${coordination.warning}`);
 
   // Model (SPEC-API-006, SPEC-API-007): tiers are neutral, mapped by `models.identifierMap` (gap E-040).
   const local = deps.catalog.validateExtraEntries(settings.get<unknown[]>("models.extraCatalog"));
@@ -1244,6 +1255,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     );
   }
   warnMinimalModel(resolvedModel);
+  const coordinatorShared = buildFlag("mode_orchestrator") && coordinator ? coordinatorDirectory(system.tmp) : undefined;
+  if (coordinatorShared) holder.cleanups.push(() => { if (!coordinatorShared.close()) err(`Dossier partagé temporaire conservé : ${coordinatorShared.path}.`); });
   if (resolvedModel.source === "extra") err(`avertissement : capacités du modèle ${resolvedModel.id} lues dans models.extraCatalog (catalogue complémentaire).`);
 
   // Credentials and endpoint of the configured provider.
@@ -1760,7 +1773,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       local.spawn(input.name!, input.prompt, input.role ?? "general", input.model); app?.refresh();
       return `Teammate ${input.name} started in process in team ${input.team}. Send messages with message_agent; the teammate remains alive when idle. Ask for shutdown before disbanding.`;
     }, launch: (input, def, signal, progress) => runSubagent(input, def, signal, depth, caller, parentContext, callerMaxIterations, progress) }) as never;
-  if (maxAgentDepth >= 1 && agentsInToolset) registry.addStatic(spawnTool(0, registry));
+  if (coordinator && !agentsInToolset) throw new RunError("Le coordinateur requiert spawn_agent dans le jeu d’outils.", ExitCode.UsageOrConfiguration);
+  if (maxAgentDepth >= 1 && agentsInToolset) { const tool = spawnTool(0, registry); registry.addStatic(buildFlag("mode_orchestrator") && coordinator ? coordinatorWorker(tool, coordinatorShared!.path) as never : tool); }
   // SPEC-OUT-020, SPEC-OUT-022: the tools of the work items and of the background tasks, named in --toolset like the others.
   const inToolset = (name: string) => toolsetNames === undefined || toolsetNames.includes(name) || (toolsetNames.length === 1 && toolsetNames[0] === "default");
   if (buildFlag("skill_discovery") && skillDiscovery && inToolset("discover_skills")) registry.addStatic(createDiscoverSkillsTool(skillDiscovery, remoteSkillCatalog ? async (description, maximum, signal) => { const found = (await remoteSkillCatalog.discover(description, localSkillSet, signal)).slice(0, maximum); skillSet = remoteSkillCatalog.merge(skillSet); return found; } : undefined) as never);
@@ -2411,7 +2425,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       repositoryAbsent: !minimal && repositoryAbsent,
       identity,
       variant: "main",
-      mechanisms: [assistantMode ? assistantInstructions.trim() : "", buildFlag("context_token_target") ? TOKEN_TARGET_EXPLANATION : "", buildFlag("mode_brief") && briefMode ? BRIEF_INSTRUCTION : ""].filter(Boolean).join("\n") || undefined,
+      mechanisms: [assistantMode ? assistantInstructions.trim() : "", buildFlag("context_token_target") ? TOKEN_TARGET_EXPLANATION : "", buildFlag("mode_brief") && briefMode ? BRIEF_INSTRUCTION : "", buildFlag("mode_orchestrator") && coordinator ? coordinatorInstructions(coordinatorShared!.path) : ""].filter(Boolean).join("\n") || undefined,
       nonInteractive,
       model: resolvedModel,
       cwd,
@@ -2460,6 +2474,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     trust: trust.source,
     contractVersion: built.contractVersion,
     promptFamily: built.family,
+    coordinator,
     entrypoint: nonInteractive ? "non-interactive" : "interactive",
     ...(minimal ? { minimal: true } : {}),
   };
@@ -2765,7 +2780,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // The working folder as given and its real path (a symbolic link, such as /var on macOS, or a short Windows name):
   // the model may use either form, and both designate the same folder (SPEC-PER-010). Shared by the tools and the
   // shells, so that a folder added by `/allow-dir` is reachable by both (SPEC-CMD-002).
-  const allowedDirectories = [...new Set([cwd, ...(holder.isolated?.active ? [realPathOrSelf(cwd)] : [projectReal])])];
+  const allowedDirectories = [...new Set([cwd, ...(holder.isolated?.active ? [realPathOrSelf(cwd)] : [projectReal]), ...(coordinatorShared ? [coordinatorShared.path] : [])])];
   extensionRecommendations = new ExtensionRecommendations({
     stateFile: locations.userStateFile, enabled: () => !!app && !minimal && liveSettings.get<boolean>("extensions.recommendations"),
     threshold: () => liveSettings.get<number>("extensions.lspRecommendationThreshold"), languages: () => liveSettings.get<Record<string, LanguageRecommendation>>("extensions.languageServerRecommendations"),
@@ -3474,7 +3489,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           return "";
         }
       },
-      messageActions: buildFlag("ui_message_menu") ? { enabled: settings.get<boolean>("ui.messageActions.enabled"), copy: async source => {
+      messageActions: buildFlag("ui_message_menu") ? { enabled: settings.get<boolean>("ui.messageActions.enabled"), exportImage: async (lines, columns, format) => {
+        const result = await exportTerminalImage({ lines, columns, format, cwd, environment: env.childEnvironment(), assertAllowed: assertPolicy });
+        app?.notice("info", `${result.fallback ? "PNG indisponible ; SVG enregistré" : "Image enregistrée"} : ${result.path}`); return result;
+      }, copy: async source => {
         return copyForSession(source);
       }, edit: async item => {
         if (!transcript || !item.recordId || app?.running) throw new Error("Ce message ne peut pas être repris.");
@@ -3617,7 +3635,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const loopDeps: LoopDeps = {
     maxKeyword: buildFlag("thinking_max_keyword") ? settings.get<string>("thinking.maxKeyword") : undefined,
     tokenTarget: { enabled: buildFlag("context_token_target") && settings.get<boolean>("context.tokenBudget.enabled"), completionRatio: settings.get<number>("context.tokenBudget.completionRatio") },
-    projectHistory: pruning || folding ? request => { if (request.agent) return request; const pruned = pruning ? pruning.decorate(request) : request; return folding ? folding.decorate(pruned) : pruned; } : undefined,
+    projectHistory: pruning || folding || coordinator ? request => { if (request.agent) return request; const pruned = pruning ? pruning.decorate(request) : request; const projected = folding ? folding.decorate(pruned) : pruned; return coordinator ? { ...projected, tools: projected.tools.filter(tool => coordinatorToolAllowed(tool.name)) } : projected; } : undefined,
     takeSubmittedResult: () => submittedResult.take(),
     postSampling: (assistant, agent) => postSampling.dispatch({ assistant, agent, minimal, ephemeral: transcript === undefined }),
     beforeRequest: () => {
@@ -3676,7 +3694,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     executor: {
       redactOutput,
       policyRefusal,
-      get registry(){return scriptModeActive?restrictedView(registry,name=>name==="run_code"):registry;},
+      get registry(){return coordinator?restrictedView(registry,coordinatorToolAllowed):scriptModeActive?restrictedView(registry,name=>name==="run_code"):registry;},
       hooks,
       // SPEC-PER-001 § 5.3 point c: the habilitated `approval_needed` hooks answer before any other authority.
       prepareDescriptiveRules:(query,context,signal)=>descriptiveRules?.prepare(query,context,signal)??Promise.resolve(),
