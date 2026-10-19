@@ -6,6 +6,7 @@ import { encryptedStore, storeList, storeStat, storeRead } from "./private-stora
 import { createInterface } from "node:readline";
 import { join } from "node:path";
 import type { TranscriptRecord } from "./transcript";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 export interface SessionStatistics { readonly days: ReadonlyMap<string, number>; readonly attempts: readonly number[]; readonly sessions: number; readonly userMessages: number }
 const dayKey = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -47,7 +48,7 @@ export async function loadSessionStatistics(directory: string, year?: number): P
 
 export function renderSessionStatistics(statistics: SessionStatistics): string {
   if (!statistics.sessions) return "Aucune session avec échange utilisateur dans l'historique local.";
-  const lines = [`Statistiques locales : ${statistics.sessions} sessions, ${statistics.userMessages} tentatives.`, "Carte d'activité : nombre de sessions actives pour chaque jour ; . = aucune."];
+  const lines = [buildFlag("ui_attempt_stats") ? `Statistiques locales : ${statistics.sessions} sessions, ${statistics.userMessages} tentatives.` : `Statistiques locales : ${statistics.sessions} sessions.`, "Carte d'activité : nombre de sessions actives pour chaque jour ; . = aucune."];
   const months = [...new Set([...statistics.days.keys()].map(day => day.slice(0, 7)))].sort();
   for (const month of months) {
     const [year, index] = month.split("-").map(Number) as [number, number];
@@ -57,6 +58,7 @@ export function renderSessionStatistics(statistics: SessionStatistics): string {
     lines.push(`Calendrier ${month}`, "Lun   Mar   Mer   Jeu   Ven   Sam   Dim");
     for (let index = 0; index < cells.length; index += 7) lines.push(cells.slice(index, index + 7).join(" "));
   }
+  if (!buildFlag("ui_attempt_stats")) return lines.join("\n");
   lines.push("Tentatives par session :");
   const bins = [statistics.attempts.filter(count => count === 1).length, statistics.attempts.filter(count => count >= 2 && count <= 5).length, statistics.attempts.filter(count => count >= 6 && count <= 10).length, statistics.attempts.filter(count => count >= 11).length];
   const labels = ["1", "2 à 5", "6 à 10", "11 et plus"];

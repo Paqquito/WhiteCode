@@ -1,5 +1,7 @@
+import { profiledTest } from "./helpers/profiled-test";
 // Supports: SPEC-CMD-081 (real Git commit/push, independently confirmed plan and publication).
-import {expect,test} from 'bun:test';
+import {expect} from 'bun:test';
+const test = profiledTest(import.meta.path, "internal");
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {readFileSync,writeFileSync} from 'node:fs';

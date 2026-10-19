@@ -28,7 +28,7 @@ export function compileProfileProbe(profile: "public" | "internal" | "test", fil
   const source = readFileSync(output, "utf8").replace(/\\x([a-f0-9]{2})|\\u([a-f0-9]{4})/gi, (_match, hex, unicode) => String.fromCharCode(parseInt(hex ?? unicode, 16)));
   return { ...f, output, source };
 }
-export function profiledTest(file: string, profile: "public" | "test" = "test") {
+export function profiledTest(file: string, profile: "public" | "internal" | "test" = "test") {
   let compiled: ReturnType<typeof compileProfileProbe> | undefined, setup = false;
   const register = (name: string, body: () => unknown | Promise<unknown>, timeout?: number) => {
     if (!setup && file.endsWith(".ts") && buildProfile() !== profile) {

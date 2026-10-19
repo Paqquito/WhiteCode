@@ -14,7 +14,7 @@ const identity = loadIdentity(),
   version = "999999.0.1",
   requests: string[] = [],
   prefix = identity.get("ENV_PREFIX");
-if (!buildFlag("installation_test_versions"))
+if (!buildFlag("update_prerelease_channel"))
   throw Error("The probe requires a test build.");
 const env = new EnvironmentView(prefix, {
   [prefix + "TEST_INSTALL_SERVICE"]: "https://private.example.test/install/",

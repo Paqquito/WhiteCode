@@ -1,8 +1,10 @@
+import { profiledTest } from "./helpers/profiled-test";
 import { expect, test } from "bun:test";
 import { Identity } from "../src/identity/identity";
 import { loadIdentity, workspace } from "./helpers/env";
 import { interactive, KEY, sleep } from "./helpers/interactive";
 import { ScriptedProvider } from "./helpers/scripted-provider";
+const internalProfileTest = profiledTest(import.meta.path, "internal");
 
 const reportIdentity = () => { const old = loadIdentity().resolved; return new Identity({ ...old, values: { ...old.values, SERVICE_FEEDBACK: { value: "https://feedback.fixture.test/report", origin: "provided" } } }); };
 
@@ -26,8 +28,16 @@ async function canceledReport(command: "report-issue" | "perf-report") {
       await sleep(380); run.type(KEY.enter); await run.waitFor(text => text.includes("aucun envoi")); expect(calls).toBe(0);
     } finally { controller.abort(); await run.done; }
 }
+{
+  const test = internalProfileTest;
 test("SPEC-CMD-093/CA-01 — the full issue payload is previewed and cancellation sends nothing", () => canceledReport("report-issue"), 15_000);
+}
+
+{
+  const test = internalProfileTest;
 test("SPEC-CMD-098/CA-01 — the performance payload is previewed and cancellation sends nothing", () => canceledReport("perf-report"), 15_000);
+}
+
 
 test("TECH — a long signalement preview can be read to its final line before deciding", async () => {
   let calls = 0; const controller = new AbortController();
@@ -39,6 +49,8 @@ test("TECH — a long signalement preview can be read to its final line before d
   } finally { controller.abort(); await run.done; }
 }, 15_000);
 
+{
+  const test = internalProfileTest;
 test("SPEC-CMD-107/CA-01 — trace on displays the identifier actually attached to exported spans", async () => {
   const controller = new AbortController(), provider = new ScriptedProvider([{ text: "TRACE_DONE" }]); const prefix = loadIdentity().get("ENV_PREFIX");
   const exports: string[] = [];
@@ -48,3 +60,4 @@ test("SPEC-CMD-107/CA-01 — trace on displays the identifier actually attached 
     await run.idle(); run.type("Work." + KEY.enter); await run.waitFor(text => text.includes("TRACE_DONE")); await run.idle(); run.type("/trace off" + KEY.enter); await run.waitFor(text => text.includes("Traçage manuel inactif"));
   } finally { controller.abort(); await run.done; expect(exports.join()).toContain(`"traceId":"${id}"`); }
 }, 15_000);
+}

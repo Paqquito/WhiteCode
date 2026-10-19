@@ -1,6 +1,8 @@
+import { profiledTest } from "./helpers/profiled-test";
 // Supports: SPEC-PER-020, SPEC-MOD-013/016/017, SPEC-AGT-019, SPEC-OUT-032/047, SPEC-CMD-017/018/055/056/057/064/103/105, SPEC-EXT-027.
 import { test, expect } from "bun:test";
 import { CloudWorkflows } from "../src/remote/workflows";
+const internalProfileTest = profiledTest(import.meta.path, "internal");
 function fixture() {
   let authenticated = true,
     accepted = true,
@@ -102,6 +104,8 @@ test("SPEC-CMD-018/CA-01 — estimation availability is disclosed before any bil
   expect(f.calls.some((c) => c.path === "create")).toBe(false);
   await f.c.close();
 });
+{
+const test = internalProfileTest;
 test("SPEC-CMD-017/CA-01 — a remote plan has an early link and only the approved revision is imported", async () => {
   const f = fixture();
   await f.c.command(
@@ -129,6 +133,8 @@ test("SPEC-CMD-017/CA-01 — a remote plan has an early link and only the approv
   expect(f.contexts.join(" ")).toContain("approved witness");
   await f.c.close();
 });
+}
+
 test("SPEC-AGT-019/CA-01 — recorded remote review identity restores its current service state after closing", async () => {
   const f = fixture();
   await f.c.command("deep-review", "", new AbortController().signal);
@@ -152,6 +158,8 @@ test("SPEC-CMD-057/CA-01 — remote configuration follows the human forge flow a
   expect(f.calls.some((c) => c.path === "repository-access")).toBe(true);
   await f.c.close();
 });
+{
+  const test = internalProfileTest;
 test("SPEC-CMD-105/CA-01 — sharing sends the reviewed history only after confirmation and returns its link", async () => {
   const f = fixture();
   f.accept(false);
@@ -164,6 +172,8 @@ test("SPEC-CMD-105/CA-01 — sharing sends the reviewed history only after confi
   expect(f.calls[0].body.messages[0].text).toBe("share witness");
   await f.c.close();
 });
+}
+
 test("SPEC-CMD-064/CA-01 — a known remote task exposes its validated address and QR", async () => {
   const f = fixture();
   await f.c.command("deep-review", "", new AbortController().signal);
@@ -235,6 +245,8 @@ test("TECH — creating a hosted trigger sends the pinned branch, commit, explic
     expect(f.questions.at(-1)).toContain("1.5");
   } finally { await f.c.close(); }
 });
+{
+  const test = internalProfileTest;
 test("SPEC-OUT-047/CA-01 — declining a background proposal records the refusal and never creates a remote session", async () => {
   const f = fixture();
   f.accept(false);
@@ -254,6 +266,8 @@ test("SPEC-OUT-047/CA-01 — declining a background proposal records the refusal
   );
   await f.c.close();
 });
+}
+
 test("TECH — changing the company identity rejects restored remote tasks and malicious links never become available", async () => {
   const f = fixture();
   await f.c.restore(

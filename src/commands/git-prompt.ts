@@ -8,7 +8,7 @@ import { readPrivateText } from "../shared/private-text";
 import { containsSecret } from "../shared/secrets";
 import type { ToolContext } from "../tools/types";
 import type { LocalReview } from "./local-review";
-import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
+import { buildFlag, buildProfile } from "../extension-points/build-flags" with { type: "macro" };
 /** A literal POSIX command: no expansion, redirection, pipeline, substitution or executable path. */
 export function literalCommand(source: string): string[] | undefined {
   if (source.length > 32768) return;
@@ -56,10 +56,10 @@ export function gitPrompt(o: {
   cwd: string;
   environment: Readonly<Record<string, string>>;
 }): LocalReview {
-  const discreet = buildFlag("internal_discreet") && o.discreet;
+  const discreet = buildFlag("ui_internal_notices") && buildProfile() === "internal" && o.discreet;
   const prefix = discreet ? "change/" : o.branchPrefix,
-    attribution = discreet ? "" : o.attribution,
-    footer = discreet ? "" : o.footer;
+    attribution = buildFlag("contribution_attribution") && !discreet ? o.attribution : "",
+    footer = buildFlag("contribution_attribution") && !discreet ? o.footer : "";
   const readPrefix =
       "git --no-optional-locks -c core.fsmonitor=false -c core.hooksPath=",
     reads = [

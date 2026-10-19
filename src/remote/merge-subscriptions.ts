@@ -1,4 +1,5 @@
 // Implements: SPEC-OUT-046, SPEC-CMD-094 (bounded subscriptions and external event provenance), gap E-187.
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 import { randomUUID } from "node:crypto";
 interface Owner {
   account: string;
@@ -59,6 +60,7 @@ export class MergeSubscriptions {
     return [...this.#subscriptions.values()].map((value) => ({ ...value }));
   }
   async #owner() {
+    if (!buildFlag("merge_request_subscriptions")) throw Error("Merge request subscriptions unavailable in this build.");
     this.#controller.signal.throwIfAborted();
     if (!this.options.active())
       throw Error(
@@ -94,6 +96,7 @@ export class MergeSubscriptions {
     }
   }
   async command(argument: string, parent: AbortSignal): Promise<string> {
+    if (!buildFlag("merge_request_subscriptions")) throw Error("Merge request subscriptions unavailable in this build.");
     const signal = AbortSignal.any([parent, this.#controller.signal]),
       owner = await this.#owner(),
       arg = argument.trim();
@@ -179,6 +182,7 @@ export class MergeSubscriptions {
     }
   }
   poll(parent: AbortSignal): Promise<void> {
+    if (!buildFlag("merge_request_subscriptions")) return Promise.resolve();
     if (this.#busy) return this.#busy;
     this.#busy = this.#poll(parent).finally(() => {
       this.#busy = undefined;
@@ -262,6 +266,7 @@ export class MergeSubscriptions {
       }
   }
   async restore(events: readonly unknown[], signal: AbortSignal) {
+    if (!buildFlag("merge_request_subscriptions")) throw Error("Merge request subscriptions unavailable in this build.");
     const owner = await this.#owner();
     for (const raw of events.slice(-2000)) {
       if (

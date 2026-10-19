@@ -7,6 +7,7 @@ import {
 } from "../platform/browser-pipe";
 import { maskSecrets, containsSecret } from "../shared/secrets";
 import { textOutcome, type Tool } from "./types";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 export interface BrowseInput {
   action:
@@ -64,7 +65,7 @@ export class BrowserSession {
   #snapshot = 0;
   #tree = "";
   #console: string[] = [];
-  constructor(readonly options: BrowserOptions) {}
+  constructor(readonly options: BrowserOptions) { if (!buildFlag("browser_embedded")) throw Error("Embedded browser unavailable in this build."); }
   get available(): boolean {
     return !!(this.options.executable ?? browserExecutable(this.options.env));
   }
@@ -123,6 +124,7 @@ export class BrowserSession {
     return this.#pipe.send(method, params, this.#session);
   }
   async #open(): Promise<void> {
+    if (!buildFlag("browser_embedded")) throw Error("Embedded browser unavailable in this build.");
     if (this.#closed) throw Error("Browser session closed.");
     if (this.#session) return;
     return (this.#opening ??= (async () => {
@@ -439,6 +441,7 @@ export class BrowserSession {
     }
   }
   tool(): Tool<BrowseInput> {
+    if (!buildFlag("browser_embedded")) throw Error("Embedded browser unavailable in this build.");
     const subjects = new WeakMap<BrowseInput, string>();
     return {
       name: "browse_web",

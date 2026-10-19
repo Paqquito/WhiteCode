@@ -36,7 +36,7 @@ export class NativeStore {
   // Implements: SPEC-INS-006. The private branch and its environment names are erased outside the test profile.
   #distribution(version:string):{service:string;headers:Record<string,string>;private:boolean}{
     if(isVersion(version)&&Number(version.split('.')[0])>=900000){
-      if(buildFlag("installation_test_versions")){const source=this.o.testDistribution;if(!source?.service||!source.token||source.token.length>8192||/[\x00-\x20\x7f]/.test(source.token))throw fail("distribution privée de test non configurée.");url(source.service);return{service:source.service,headers:{Authorization:"Bearer "+source.token},private:true};}
+      if(buildFlag("update_prerelease_channel")){const source=this.o.testDistribution;if(!source?.service||!source.token||source.token.length>8192||/[\x00-\x20\x7f]/.test(source.token))throw fail("distribution privée de test non configurée.");url(source.service);return{service:source.service,headers:{Authorization:"Bearer "+source.token},private:true};}
       throw fail("version réservée aux essais ; utilisez stable ou latest.");
     }
     return{service:this.o.service,headers:{},private:false};

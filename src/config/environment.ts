@@ -22,7 +22,7 @@ export interface OwnVariableDef {
 
 /** Catalogue of own variables (SPEC-CFG-007 § 5.1), generated from this single definition (EF-03). */
 export const OWN_VARIABLES: readonly OwnVariableDef[] = [
-  ...(buildFlag("installation_test_versions")?[{name:"TEST_INSTALL_SERVICE",type:"string" as const,owner:"SPEC-INS-006"},{name:"TEST_INSTALL_TOKEN",type:"string" as const,secret:true,owner:"SPEC-INS-006"}]:[]),
+  ...(buildFlag("update_prerelease_channel")?[{name:"TEST_INSTALL_SERVICE",type:"string" as const,owner:"SPEC-INS-006"},{name:"TEST_INSTALL_TOKEN",type:"string" as const,secret:true,owner:"SPEC-INS-006"}]:[]),
   { name: "REMOTE_WORKER", type: "boolean", owner: "SPEC-MOD-023" },
   { name: "SESSION_MIRROR", type: "boolean", owner: "SPEC-MOD-017" },
   { name: "CONFIG_HOME", type: "path", owner: "SPEC-CAD-002" },

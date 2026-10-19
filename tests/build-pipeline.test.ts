@@ -9,6 +9,7 @@ import { resolveIdentityText, runtimeIdentity } from "../src/identity/resolver";
 import { bootstrapScript } from "../src/installation/bootstrap";
 import { findExecutable } from "../src/platform/system";
 import { Identity } from "../src/identity/identity";
+import { resolveBuildOptions } from "../src/extension-points/build-options";
 
 /** Builds execute in an ordinary isolated copy; no generation or deletion touches the calling checkout. */
 function fixture() {
@@ -188,7 +189,7 @@ test("SPEC-BLD-001/CA-01, SPEC-BLD-003/CA-02, SPEC-BLD-007/CA-02 — two stable 
 }, 240_000);
 
 test("SPEC-BLD-002/CA-01 — disabled automatic approval: classifier code and its prompt are absent from the product bundle and executable", async () => {
-  const f = fixture(), options = f.ws.write("options.json", JSON.stringify({ engine_speculation: false, memory_living_docs: false, sandbox_commands: false, compaction_cache_edit: false, permission_auto_approve: false, agent_explorer_planner: false, agent_verifier: false, stream_compact_profile: false, ui_fast_find: false, ui_history_browser: false, ui_message_menu: false, prompt_hints: false, mode_template_jobs: false, mode_background_sessions: false }));
+  const f = fixture(), options = f.ws.write("options.json", JSON.stringify({ engine_speculation: false, memory_living_docs: false, sandbox_commands: false, compaction_cache_edit: false, permission_auto_approve: false, agent_explorer_planner: false, agent_verifier: false, stream_compact_profile: false, ui_fast_find: false, ui_history_browser: false, ui_message_menu: false, mode_template_jobs: false, mode_background_sessions: false }));
   const result = await f.build(["--build-options", options]);
   if (result.code !== 0) throw new Error(result.stderr + result.stdout);
   expect(result.code).toBe(0);
@@ -203,7 +204,7 @@ test("SPEC-BLD-002/CA-01 — disabled automatic approval: classifier code and it
   expect(manifest.build.options.agent_verifier).toBe(false);
   expect(manifest.build.options.stream_compact_profile).toBe(false);
   expect(manifest.build.options.ui_fast_find).toBe(false); expect(manifest.build.options.ui_history_browser).toBe(false); expect(manifest.build.options.ui_message_menu).toBe(false);
-  expect(manifest.build.options.prompt_hints).toBe(false); expect(manifest.build.options.mode_template_jobs).toBe(false); expect(manifest.build.options.mode_background_sessions).toBe(false);
+  expect(manifest.build.options).not.toHaveProperty("prompt_hints"); expect(() => resolveBuildOptions("public", { prompt_hints: false })).toThrow("inconnue"); expect(manifest.build.options.mode_template_jobs).toBe(false); expect(manifest.build.options.mode_background_sessions).toBe(false);
   for (const d of manifest.deliverables.filter((d: { target: string }) => ["bundle", "current"].includes(d.target))) {
     const contents = readFileSync(join(f.root, "dist", d.file)).toString("latin1");
     expect(contents).not.toContain("Unsupported speculative target");
@@ -219,7 +220,7 @@ test("SPEC-BLD-002/CA-01 — disabled automatic approval: classifier code and it
     expect(contents).not.toContain("You are the independent feature verifier");
     expect(contents).not.toContain("tool_summary");
     expect(contents).not.toContain("Ouverture rapide"); expect(contents).not.toContain("Recherche globale"); expect(contents).not.toContain("Filtrer mes saisies"); expect(contents).not.toContain("Copier le bloc");
-    expect(contents).not.toContain("Predict one short next user request"); expect(contents).not.toContain("Classify the whole main-agent turn");
+    expect(contents).toContain("Predict one short next user request"); expect(contents).not.toContain("Classify the whole main-agent turn");
     expect(contents).not.toContain("Job workspace must be an ordinary directory"); expect(contents).not.toContain("Summarize this session's task, current progress and next need");
   }
   // An enabled runtime setting cannot silently turn an excluded sandbox into ordinary execution.
@@ -283,8 +284,8 @@ test("TECH — a file asset which would depend on dist at runtime cannot receive
   expect(result.code).not.toBe(0); expect(result.stderr).toContain("Ressource externe non embarquée"); expect(existsSync(join(f.root, "dist/manifest.json"))).toBe(false);
 }, 150_000);
 
-test("SPEC-CMD-012/CA-01 — the included test profile hatches a companion with a proposed name, enforces managed disable and runs the local rescue skill",async()=>{
+test("SPEC-CMD-012/CA-01 — the included internal profile hatches a companion with a proposed name, enforces managed disable and runs the local rescue skill",async()=>{
   const f=fixture();cpSync(join(ROOT,"tests/helpers"),join(f.root,"tests/helpers"),{recursive:true});cpSync(join(ROOT,"tests/fixtures"),join(f.root,"tests/fixtures"),{recursive:true});
-  const generated=runToCompletion(BUN,["scripts/generate.ts","--profile","test"],{cwd:f.root,env:productEnv(f.ws),timeoutMs:15000});expect(generated.code).toBe(0);
+  const generated=runToCompletion(BUN,["scripts/generate.ts","--profile","internal"],{cwd:f.root,env:productEnv(f.ws),timeoutMs:15000});expect(generated.code).toBe(0);
   const probe=runToCompletion(BUN,[join(f.root,"tests/fixtures/companion-probe.ts")],{cwd:f.root,env:productEnv(f.ws),timeoutMs:25000});if(probe.code!==0)throw Error(probe.stderr+probe.stdout);expect(probe.stdout).toContain("COMPANION_AND_RESCUE_PROBE_PASSED");
 },60000);

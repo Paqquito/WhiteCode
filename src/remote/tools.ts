@@ -1,4 +1,5 @@
 // Implements: SPEC-OUT-032/047 (validated tool calls and explicit confirmations); supports SPEC-EXT-027, gap E-184.
+import { buildFlag, buildProfile } from "../extension-points/build-flags" with { type: "macro" };
 import type { CloudWorkflows } from "./workflows";
 import { textOutcome, type Tool } from "../tools/types";
 export function remoteWorkflowTools(
@@ -79,6 +80,7 @@ export function remoteWorkflowTools(
       }
     },
   };
+  if (!buildFlag("remote_task_suggestions") || buildProfile() !== "internal") return [triggers as Tool<never>];
   const suggest: Tool<{ title: string; reason: string; prompt: string }> = {
     name: "suggest_background_merge_request",
     description: () =>

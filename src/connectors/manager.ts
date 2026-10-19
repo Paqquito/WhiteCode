@@ -11,7 +11,6 @@ import type { Tool } from "../tools/types";
 import { expand, type ConnectorDeclaration } from "./declarations";
 import { ConnectionError, StdioConnection, type McpPromptInfo, type McpToolInfo } from "./stdio-client";
 import { AuthenticationRequired, HttpConnection } from "./http-client";
-import { buildFlag } from "../extension-points/build-flags" with {type:"macro"};
 import { WebSocketConnection } from "./ws-client";
 import type { connectWebSocket } from "../platform/websocket";
 import { connectorTool, qualifiedToolName, schemaProblem } from "./tools";
@@ -287,7 +286,6 @@ export class ConnectorManager {
       const headers = Object.fromEntries(Object.entries(e.d.headers).map(([k, v]) => [k, expand(v, this.#o.variables, missing)]));
       if (missing.size > 0) return this.#fail(e, `erreur de configuration : variable ${[...missing].join(", ")} non définie`, false);
       if (e.d.transport !== "stdio") {
-        if(e.d.transport==="ws"&&!buildFlag("connector_websocket"))throw new ConnectionError("Transport WebSocket absent de cette distribution.");
         if(e.d.transport==="ws"&&e.d.oauth)throw new ConnectionError("OAuth WebSocket non disponible ; utilisez un en-tête ou le transport HTTP.");
         if(e.d.transport!=="ws")e.oauth ??= this.#o.oauth?.(e.d, url);
         if (e.d.headersCommand && !e.headers) {

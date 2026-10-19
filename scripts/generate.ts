@@ -10,6 +10,7 @@ import { resolveIdentityText, runtimeIdentity } from "../src/identity/resolver";
 import { Identity } from "../src/identity/identity";
 import { ModelCatalog } from "../src/providers/catalog";
 import { resolveBuildOptions } from "../src/extension-points/build-options";
+import { hostBuildTarget } from "../src/platform/build-target";
 
 const root = resolve(import.meta.dir, "..");
 
@@ -26,7 +27,8 @@ const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { ve
 const compiler = JSON.parse(readFileSync(join(root, "tsconfig.json"), "utf8")).compilerOptions;
 if (!compiler || ["strict", "noUncheckedIndexedAccess", "noImplicitOverride", "noFallthroughCasesInSwitch", "forceConsistentCasingInFileNames", "verbatimModuleSyntax", "noEmit"].some(key => compiler[key] !== true) || compiler.target !== "ESNext" || compiler.module !== "ESNext" || compiler.moduleResolution !== "bundler") throw new Error("Configuration TypeScript non conforme : les contrôles stricts et la résolution de modules sont obligatoires.");
 const profile = arg("--profile", "public"), optionsFile = arg("--build-options", "");
-const options = resolveBuildOptions(profile, optionsFile ? JSON.parse(readFileSync(resolve(root, optionsFile), "utf8")) : {});
+const target = arg("--target", hostBuildTarget());
+const options = resolveBuildOptions(profile, optionsFile ? JSON.parse(readFileSync(resolve(root, optionsFile), "utf8")) : {}, target);
 const result = resolveIdentityText(readFileSync(identityPath, "utf8"), { version: pkg.version, strict: true });
 for (const issue of result.issues) console.error(`[${issue.code}] ${issue.message}`);
 if (!result.identity) process.exit(2);
@@ -39,7 +41,7 @@ const manifestIdentity = new Identity(runtimeIdentity(result.identity));
 const identityValue = (name: string) => manifestIdentity.get(name);
 writeFileSync(join(dirname(outPath), "extension-authors.html"), extensionAuthorDocumentation(manifestIdentity));
 writeFileSync(join(dirname(outPath), "package.json"), JSON.stringify({ name: identityValue("PRODUCT_SLUG"), version: result.identity.version, description: `${identityValue("PRODUCT")} — agent de programmation en ligne de commande`, author: identityValue("SOCIETY"), private: pkg.private ?? true, license: pkg.license ?? "UNLICENSED", type: "module", bin: { [identityValue("PRODUCT_SLUG")]: `${identityValue("PRODUCT_CLI")}.js` }, engines: { bun: ">=1.4.2" }, files: [`${identityValue("PRODUCT_CLI")}.js`, "config.schema.json", "install.ps1", "install.sh", "build-options.json"] }, null, 2) + "\n");
-writeFileSync(join(dirname(outPath), "build-flags.ts"), `// Supports: SPEC-BLD-002 (generated constants; do not edit or commit).\nexport const BUILD_PROFILE = ${JSON.stringify(profile)};\nexport const BUILD_VALUES = ${JSON.stringify(options)} as const;\n`);
+writeFileSync(join(dirname(outPath), "build-flags.ts"), `// Supports: SPEC-BLD-002 (generated constants; do not edit or commit).\nexport const BUILD_PROFILE = ${JSON.stringify(profile)};\nexport const BUILD_TARGET = ${JSON.stringify(target)};\nexport const BUILD_VALUES = ${JSON.stringify(options)} as const;\n`);
 writeFileSync(
   outPath,
   [

@@ -1,4 +1,5 @@
 // Implements: SPEC-CMD-079 (validated local agent publication after an independent human confirmation), gap E-217.
+import { buildFlag, buildProfile } from "../extension-points/build-flags" with { type: "macro" };
 import { createHash } from "node:crypto";
 import { readPrivateText } from "../shared/private-text";
 import { parseAgent, type AgentDefinition } from "./definitions";
@@ -18,6 +19,7 @@ export async function agentsPlatform(
     signal: AbortSignal;
   },
 ): Promise<string> {
+  if (!buildFlag("hosted_agent_management") || buildProfile() !== "internal") throw Error("Administration des agents hébergés indisponible dans ce profil.");
   const words = args.trim().split(/\s+/).filter(Boolean),
     verb = words[0] ?? "list";
   if (

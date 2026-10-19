@@ -36,8 +36,8 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
       op("validate", "Vérifie la validité de toutes les sources de configuration, ou d'un fichier.", { args: "[<fichier>]", delivered: true, options: ["json", "scope"] }),
       op("recover-policy", "Vérifie une version de politique autorisée avant sa remise en place administrative.", { args: "<fichier>", delivered: true, options: ["json"] }),
       op("show-sources", "Affiche les sources chargées et leur ordre de priorité."),
-      op("push", "Envoie les préférences choisies vers le service configuré.", { delivered: buildFlag("settings_sync"), options: ["resolve"] }),
-      op("pull", "Récupère les préférences avec sauvegarde restaurable.", { delivered: buildFlag("settings_sync"), options: ["restore"] }),
+      ...(buildFlag("settings_sync_upload") ? [op("push", "Envoie les préférences choisies vers le service configuré.", { delivered: true, options: ["resolve"] })] : []),
+      ...(buildFlag("settings_sync_download") ? [op("pull", "Récupère les préférences avec sauvegarde restaurable.", { delivered: true, options: ["restore"] })] : []),
     ],
   },
   {
@@ -144,7 +144,7 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
       op("stop", "Arrête une session détachée.", { args: "<id>",delivered:true,options:["json"] }),
     ],
   },
-  { name: "resident-agent", role: "Assistant persistant", operations: [op("attach", "Se rattache à l'assistant persistant.", { args: "[<id>]" })] },
+  ...(buildFlag("mode_assistant_persistent") ? [{ name: "resident-agent", role: "Assistant persistant", operations: [op("attach", "Se rattache à l'assistant persistant.", { args: "[<id>]" })] }] : []),
   {
     name: "job",
     role: "Travaux",
@@ -175,7 +175,7 @@ export function orchestratorRefusal(family?: string, operation?: string): string
   const invocation = family && operation ? family + " " + operation : undefined;
   const services = ["connector-server start", "direct-server start", "remote-access start", "service start", "session-runner start", "job-runner start"];
   if (invocation && services.includes(invocation)) return "--orchestrator : le rôle coordinateur appartient à une session, pas à un service ou à un superviseur.";
-  const sessions = ["direct-server connect", "ssh-session connect", "resident-agent attach", "background-session attach", "job create", "job reply"];
+  const sessions = ["direct-server connect", "ssh-session connect", ...(buildFlag("mode_assistant_persistent") ? ["resident-agent attach"] : []), "background-session attach", "job create", "job reply"];
   if (!family || (invocation && sessions.includes(invocation))) return "--orchestrator : le moteur de session ne dispose pas de la capacité de coordination ; lancement refusé.";
   return "--orchestrator : cette option de session ne s'applique pas à une opération d'administration.";
 }

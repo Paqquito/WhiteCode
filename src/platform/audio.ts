@@ -8,9 +8,10 @@ import { mkdirSync } from "node:fs";
 import { startChild } from "./process";
 import { findExecutable, type PlatformName } from "./system";
 import type { MicrophoneCapture } from "../voice/input";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 // WinMM owns four prepared input buffers. Terminating the helper releases the device with its process.
-const WINDOWS_AUDIO = String.raw`
+const WINDOWS_AUDIO = buildFlag("ui_dictation") ? String.raw`
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -40,8 +41,9 @@ public static class MicrophoneInput {
   }finally{waveInReset(device);for(int i=0;i<4;i++){if(headers[i]!=IntPtr.Zero){waveInUnprepareHeader(device,headers[i],size);Marshal.FreeHGlobal(headers[i]);}if(data[i]!=IntPtr.Zero)Marshal.FreeHGlobal(data[i]);}waveInClose(device);}
  }
 }
-`;
+` : "";
 export function windowsAudioScript(compileOnly = false): string {
+  if (!buildFlag("ui_dictation")) throw Error("Microphone capture unavailable in this build.");
   return (
     "$ErrorActionPreference='Stop'\nAdd-Type -TypeDefinition @'\n" +
     WINDOWS_AUDIO +
@@ -51,7 +53,7 @@ export function windowsAudioScript(compileOnly = false): string {
       : "[MicrophoneInput]::Run()")
   );
 }
-const MAC_AUDIO = String.raw`
+const MAC_AUDIO = buildFlag("ui_dictation") ? String.raw`
 import Foundation
 import AVFoundation
 FileHandle.standardError.write(Data("AUDIO_READY\n".utf8))
@@ -89,13 +91,14 @@ input.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in
 engine.prepare()
 do { try engine.start() } catch { exit(2) }
 RunLoop.main.run()
-`;
+` : "";
 export const nativeAudioSources = {
   macos: MAC_AUDIO,
-  linux:
-    'printf "AUDIO_READY\\n" >&2; IFS= read -r start; [ "$start" = start ] || exit 0; exec 3<&0; "$1" --quiet --format=S16_LE --rate=16000 --channels=1 --type=raw & capture=$!; ( IFS= read -r stop <&3; kill "$capture" 2>/dev/null ) & watcher=$!; trap \'kill "$capture" "$watcher" 2>/dev/null; wait "$capture" "$watcher" 2>/dev/null\' EXIT INT TERM; wait "$capture"; status=$?; kill "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null; exit "$status"',
+  linux: buildFlag("ui_dictation") ?
+    'printf "AUDIO_READY\\n" >&2; IFS= read -r start; [ "$start" = start ] || exit 0; exec 3<&0; "$1" --quiet --format=S16_LE --rate=16000 --channels=1 --type=raw & capture=$!; ( IFS= read -r stop <&3; kill "$capture" 2>/dev/null ) & watcher=$!; trap \'kill "$capture" "$watcher" 2>/dev/null; wait "$capture" "$watcher" 2>/dev/null\' EXIT INT TERM; wait "$capture"; status=$?; kill "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null; exit "$status"' : "",
 } as const;
 async function macProgram(options: AudioOptions): Promise<string> {
+  if (!buildFlag("ui_dictation")) throw Error("Microphone capture unavailable in this build.");
   const compiler = [
     "/Library/Developer/CommandLineTools/usr/bin/swiftc",
     "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
@@ -166,6 +169,7 @@ export interface AudioOptions {
 export async function captureMicrophone(
   options: AudioOptions,
 ): Promise<MicrophoneCapture> {
+  if (!buildFlag("ui_dictation")) throw Error("Microphone capture unavailable in this build.");
   options.signal.throwIfAborted();
   let file: string | undefined, args: string[];
   if (options.platform === "windows") {

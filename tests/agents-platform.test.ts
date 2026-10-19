@@ -1,8 +1,10 @@
+import { profiledTest } from "./helpers/profiled-test";
 // Supports: SPEC-CMD-079 (actual control confirmation, source validation and configured account service).
-import { expect, test } from "bun:test";
+import { expect } from "bun:test";
 import { Host } from "./helpers/control";
 import { companyFixture } from "./helpers/company";
 import { ScriptedProvider } from "./helpers/scripted-provider";
+const internalProfileTest = profiledTest(import.meta.path, "internal");
 const definition =
   '---\nname: local-reviewer\ndescription: "Review only the requested source files."\ntools: [read_file]\n---\nRead the requested files and report concrete findings. Never modify a file.\n';
 async function fixture(
@@ -45,6 +47,8 @@ async function fixture(
     });
   return { f, p, h };
 }
+{
+  const test = internalProfileTest;
 test("SPEC-CMD-079/CA-01 — an independently confirmed local definition is sent only after its full publication preview", async () => {
   const { f, p, h } = await fixture((params, f) => {
     expect(f.sent.some((r) => r.path === "/api/account/agents/publish")).toBe(
@@ -83,6 +87,10 @@ test("SPEC-CMD-079/CA-01 — an independently confirmed local definition is sent
     await h.finish();
   }
 }, 15000);
+}
+
+{
+  const test = internalProfileTest;
 test("TECH — rejection or changed source never publishes an agent", async () => {
   for (const changed of [false, true]) {
     const { f, h } = await fixture((params, f) => {
@@ -112,6 +120,10 @@ test("TECH — rejection or changed source never publishes an agent", async () =
     }
   }
 }, 15000);
+}
+
+{
+  const test = internalProfileTest;
 test("TECH — secrets, local hooks and malformed operations are refused before publication confirmation", async () => {
   const { f, h } = await fixture((params) => ({
     decision: "confirm",
@@ -138,3 +150,4 @@ test("TECH — secrets, local hooks and malformed operations are refused before 
     await h.finish();
   }
 }, 15000);
+}

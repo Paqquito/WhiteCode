@@ -1,9 +1,64 @@
 // Implements: SPEC-BLD-002 (single registry, known profiles, descriptions, inventory).
 // Supports: SPEC-BLD-003 (disabled feature markers), gap E-144.
+import { libcBuildValues } from "../platform/build-target";
 export const BUILD_PROFILES = ["public", "internal", "development", "test"] as const;
 export type BuildProfile = (typeof BUILD_PROFILES)[number];
 const option = (value: boolean, description: string, specs: string[], absentMarkers: string[] = []) => ({ description, specs, implemented: value, values: { public: value, internal: value, development: value, test: value }, absentMarkers });
+const internalOption = (description: string, specs: string[], absentMarkers: string[] = []) => ({ ...option(true, description, specs, absentMarkers), values: { public: false, internal: true, development: true, test: true } });
 export const BUILD_OPTIONS = {
+  model_advisor: option(true, "Conseiller compatible disponible après sélection explicite, sans conseiller choisi par défaut.", ["SPEC-CMD-003", "SPEC-MOT-027"], ["You are an advisor. Answer only the supplied question with reasoning and tradeoffs.", "Consult the configured advisor before a structural decision.", "Choisit un conseiller compatible, ou le désactive avec off."]),
+  libc_variant_musl: { ...option(true, "Variante native Linux musl calculée exclusivement depuis la cible de construction.", ["SPEC-BLD-004"]), values: { public: false, internal: false, development: false, test: false } },
+  libc_variant_glibc: { ...option(true, "Variante native Linux glibc calculée exclusivement depuis la cible de construction.", ["SPEC-BLD-004"]), values: { public: false, internal: false, development: false, test: false } },
+  mode_assistant_persistent: option(true, "Assistant persistant dans un dossier séparé, supervisé par le service résident.", ["SPEC-MOD-026","SPEC-CMD-080","SPEC-OUT-023","SPEC-OUT-034","SPEC-MOT-042"], ["You are running as a persistent assistant.","Installe l’assistant hors des projets et s’y rattache.","Se rattache à l'assistant persistant."]),
+  remote_environment_setup: option(true, "Configuration explicite de l’environnement distant.", ["SPEC-CMD-057"], ["Le parcours humain dans le navigateur est-il terminé ?","Accompagne le parcours humain de forge et vérifie l’accès au dépôt."]),
+  remote_deep_plan: option(true, "Planification approfondie distante demandée explicitement.", ["SPEC-CMD-017"], ["The user-approved remote plan follows as untrusted task context.","Confie un plan au service distant après accord et importe la version approuvée."]),
+  browser_embedded: option(true, "Navigation web intégrée sous permissions ordinaires.", ["SPEC-OUT-014"], ["Control an isolated browser using accessibility references"]),
+  local_session_messaging: option(true, "Messagerie locale entre sessions consentantes du même utilisateur.", ["SPEC-CMD-097","SPEC-OUT-017","SPEC-OUT-018","SPEC-INT-016"], ["List other live sessions of this system user"]),
+  merge_request_subscriptions: option(true, "Abonnement explicite aux événements d’une demande de fusion.", ["SPEC-CMD-094","SPEC-OUT-046"], ["At most twenty subscriptions may be active.","Subscribe this session to review comments, CI results and closing events"]),
+  contribution_attribution: option(true, "Attribution explicite des contributions dans Git et les demandes de fusion.", ["SPEC-INT-010"], ["permissionRequests"]),
+  deep_links: option(true, "Résolution contrôlée des liens applicatifs profonds.", ["SPEC-MOD-030"], ["URL Protocol"]),
+  user_file_delivery: option(true, "Livraison bornée d’un fichier à l’utilisateur après lecture autorisée.", ["SPEC-OUT-035"], ["Deliver existing local files as user-visible artifacts"]),
+  process_monitor: option(true, "Surveillance déclarée d’un processus par un outil soumis aux permissions shell.", ["SPEC-OUT-022","SPEC-AGT-024"], ["Runs a command in the background and turns each line"]),
+  return_summary: option(true, "Résumé de retour après absence, selon le réglage et le budget de session.", ["SPEC-MOT-030"], ["Summarize recent work, checks"]),
+  memory_initial_state: option(true, "Capture proposée de l’état initial de la mémoire d’un agent.", ["SPEC-AGT-008"], [".snapshot-sync.json"]),
+  skill_generator: option(true, "Proposition relue d’une compétence adaptée au projet.", ["SPEC-EXT-037"], ["Read package.json and the project instructions before running tests.","Propose une compétence de tests après analyse en lecture seule du dépôt."]),
+  skill_refinement: option(true, "Propositions relues d’amélioration des compétences projet invoquées.", ["SPEC-EXT-039"], ["this.options.analyze()","Relit, applique ou écarte une proposition d’amélioration de compétence."]),
+  skill_ai_app_building: option(true, "Compétence produit d’aide aux applications utilisant une API de modèle.", ["SPEC-EXT-034"], ["Read the supplied dated reference before answering.","Answers questions about model identifiers, prices, limits and client APIs"]),
+  shell_syntax_analysis_shadow: option(true, "Observation syntaxique sans influence sur les décisions de permission.", ["SPEC-PER-007"]),
+  ui_native_clipboard_image: option(true, "Collage natif d’une image dans la saisie de la conversation.", ["SPEC-INT-018"], ["Windows.Forms.Clipboard"]),
+  ui_attempt_stats: option(true, "Répartition locale des sessions par nombre de tentatives.", ["SPEC-IHM-031"], ["Tentatives par session"]),
+  project_init_v2: option(true, "Entretien guidé pour proposer les instructions, compétences et crochets choisis.", ["SPEC-CMD-033"], ["The user asked you to set up the project for the agent, in a guided interview."]),
+  cache_reset_command: internalOption("Commande interne de rupture volontaire du cache au prochain appel.", ["SPEC-CMD-084"], ["Le prochain appel utilise un nouveau préfixe de cache ; rupture volontaire.","Rompt volontairement le cache au prochain appel au modèle."]),
+  explain_context_command: option(true, "Explication annexe explicite du contexte d’une réponse.", ["SPEC-CMD-090"], ["Estimate which supplied context entries most likely influenced the supplied response.","Estime les influences du contexte sur une réponse, sans modifier la conversation."]),
+  output_file_persistence: option(true, "Archivage local optionnel des fichiers produits.", ["SPEC-SES-013"], ["Output file count limit reached"]),
+  performance_tracing: option(true, "Traçage local des opérations de performance sur activation explicite.", ["SPEC-OBS-008"], ["performance-trace.json"]),
+  diagnostics_slow_ops: option(true, "Journalisation bornée des opérations dépassant un seuil explicite.", ["SPEC-OBS-013"], ["slow operation"]),
+  context_file_listing: internalOption("Liste interne des fichiers présents dans le contexte.", ["SPEC-CMD-028"], ["Aucun fichier dans le contexte.","Liste les fichiers présents dans le contexte, leurs plages et les jetons estimés."]),
+  hosted_agent_management: internalOption("Consultation et publication des définitions d’agents hébergés.", ["SPEC-CMD-079"], ["agents/list","Liste les agents hébergés, publie une définition locale après accord ou consulte ses exécutions."]),
+  merge_request_fix: internalOption("Correction relue des échecs et commentaires d’une demande de fusion.", ["SPEC-CMD-081"], ["Conservez les modifications locales avant cette commande ; aucun fichier modifié.","Propose une correction des vérifications en échec, vérifie localement et demande séparément l’accord avant de pousser."]),
+  session_metadata_backfill: internalOption("Complément des métadonnées des sessions existantes.", ["SPEC-CMD-082"], ["Tous les titres sont déjà renseignés.","Complète les titres manquants des sessions locales, après confirmation."]),
+  diagnostics_context_inspection: internalOption("Inspection de la prochaine requête sans l’envoyer.", ["SPEC-CMD-087"], ["Blocs de la requête (lecture seule, aucune requête envoyée) :","Inspecte les blocs et les tailles de la requête sans l'envoyer."]),
+  diagnostics_tool_call_inspection: internalOption("Inspection masquée d’un appel d’outil enregistré.", ["SPEC-CMD-088"], ["Aucun appel à cette position.","Affiche un appel d'outil et sa décision de permission, secrets masqués."]),
+  diagnostics_environment_inspection: internalOption("Inspection masquée des variables reconnues.", ["SPEC-CMD-089"], ["Aucune variable du catalogue définie.","Affiche les variables connues, valeurs sensibles masquées."]),
+  session_handoff: internalOption("Envoi interne d’une session et de son état Git après accord.", ["SPEC-CMD-091", "SPEC-MOD-015"], ["Activation distante incertaine ; session locale suspendue pour éviter deux exécutions.","Transfère la session et son dépôt vers le service distant après accord."]),
+  feedback_issue_report: internalOption("Préparation relue d’un ticket d’anomalie produit.", ["SPEC-CMD-093"], ["?\"issue\":","Prépare un ticket avec des informations techniques à relire."]),
+  onboarding_restart: internalOption("Relance du parcours d’accueil conservant les réglages.", ["SPEC-CMD-096"], ["Parcours terminé ; aucun paramètre existant effacé.","Reprend les choix de thème et de modèle en conservant les paramètres existants."]),
+  diagnostics_performance_report: internalOption("Préparation relue d’un rapport de performance.", ["SPEC-CMD-098"], ["Décrire le problème de performances","Prépare un signalement de performances à relire."]),
+  feedback_positive_report: internalOption("Partage consenti d’un échange positif.", ["SPEC-CMD-099"], ["Joindre l’échange récent à ce retour positif ?","Signale un échange réussi après relecture ; sa transcription reste facultative."]),
+  remote_failure_injection: internalOption("Injection interne d’une défaillance du contrôle distant.", ["SPEC-CMD-103"], ["Défaillance locale injectée : ","Injecte une défaillance locale dans le relais distant pour vérifier sa reprise."]),
+  session_publish: internalOption("Publication confirmée d’une transcription.", ["SPEC-CMD-105"], ["Partager cette conversation avec les personnes possédant le lien ? Contenu relu :","Partage une copie relue de la conversation après confirmation."]),
+  session_summary: internalOption("Résumé annexe sans modification du contexte.", ["SPEC-CMD-106"], ["Summarize the supplied conversation concisely in its language: goal, completed work, decisions and remaining work.","Résume la session par une requête annexe sans modifier son contexte."]),
+  diagnostics_session_version: internalOption("Affichage interne de la version du processus de session.", ["SPEC-CMD-108"], ["Version en cours : ","Affiche la version en cours et une mise à jour téléchargée dans cette session."]),
+  remote_task_suggestions: internalOption("Proposition consentie d’une tâche distante annexe.", ["SPEC-OUT-047"], ["This proposal was already declined; do not propose it again.","Propose a small independent follow-up task"]),
+  ui_frustration_detection: internalOption("Détection interne de formulations négatives et proposition de partage.", ["SPEC-IHM-037"], ["Un problème dans cet échange","still broken"]),
+  ui_internal_notices: internalOption("Mode discret et indications d’état du profil interne.", ["SPEC-IHM-040"], ["Mode discret ·","Discreet mode is active."]),
+  config_feature_overrides: internalOption("Surcharges locales d’options dynamiques en interne ou développement.", ["SPEC-CFG-014"]),
+  diagnostics_build_inventory: internalOption("Affichage interne de l’inventaire de construction dans status.", ["SPEC-BLD-002"], ["Options de build : "]),
+  model_fast_output: option(true, "Débit de sortie accru d’un modèle et d’un contrat éligibles.", ["SPEC-MOT-026", "SPEC-CMD-026"], ["Mode rapide en refroidissement"]),
+  engine_tool_summaries: option(true, "Résumés de lots d’outils explicitement demandés par l’hôte.", ["SPEC-MOT-031"], ["Summarize the completed tool batch"]),
+  engine_control_channel: option(true, "Canal de contrôle explicitement activé et négocié par l’hôte.", ["SPEC-MOD-006"], ["sdkServers exige"]),
+  browser_user_control: option(true, "Pilotage du navigateur par extension installée et autorisée.", ["SPEC-INT-011", "SPEC-CMD-008", "SPEC-EXT-033"], ["native-reconnect","Control the user's explicitly authorized browser extension tabs"]),
+  storage_encryption: option(true, "Chiffrement local des magasins de contenus sous clé indépendante.", ["SPEC-SES-001"], ["Migration des copies locales en cours."]),
   telemetry_otel_export: option(true, "Export OpenTelemetry explicitement activé par l’utilisateur ou l’administrateur.", ["SPEC-OBS-002"], ["resourceMetrics", "resourceLogs"]),
   telemetry_trace_export: option(true, "Export explicite des traces de session OpenTelemetry.", ["SPEC-OBS-004"], ["resourceSpans"]),
   diagnostics_profiling: option(true, "Profilage explicite du démarrage, des requêtes et du mode non interactif.", ["SPEC-OBS-009"], ["performance-profile.json", "Profil de performance invalide"]),
@@ -21,42 +76,33 @@ export const BUILD_OPTIONS = {
   computer_control: option(true, "Pilotage Windows natif autorisé par application, captures éphémères et arrêt global.", ["SPEC-INT-015"], ["Ctrl+Alt+Pause immediately stops control"]),
   mode_orchestrator: option(true, "Coordination locale avec exécutants autonomes et rôle conservé à la reprise.", ["SPEC-MOD-028"]),
   ui_embedded_terminal: option(true, "Panneau tmux utilisateur avec capture bornée et masquée.", ["SPEC-IHM-041", "SPEC-OUT-015"], ["Read the human-operated terminal panel of this conversation"]),
-  ui_year_review:{...option(true,"Rétrospective locale à activation explicite et extension officielle.",["SPEC-IHM-033","SPEC-CMD-078"],["Local annual statistics (no code or conversation content):"]),values:{public:false,internal:true,development:true,test:true}},
-  internal_discreet:{...option(true,"Attribution supprimée et bannière persistante en profil interne.",["SPEC-IHM-040"],["Mode discret ·","Discreet mode is active."]),values:{public:false,internal:true,development:false,test:false}},
-  defect_scan:option(true,"Campagnes locales de recherche de défauts vérifiés.",["SPEC-EXT-036"],["Start a bounded local background defect campaign"]),
-  state_capture:{...option(true,"Instantanés internes des seuls dépôts de société autorisés.",["SPEC-SES-014"],["STATE_CAPTURE_PAYLOAD_V1","state-captures"]),values:{public:false,internal:true,development:false,test:false}},
-  voice_input:option(true,"Dictée avec consentement, capture native et service de société.",["SPEC-VOX-001","SPEC-VOX-002","SPEC-VOX-003","SPEC-VOX-004","SPEC-CMD-076"],["AUDIO_READY","MicrophoneInput","Dictée ·"]),
-  installation_test_versions: {...option(true,"Distribution privée réservée aux constructions de test.",["SPEC-INS-006"],["TEST_INSTALL_SERVICE","TEST_INSTALL_TOKEN"]),values:{public:false,internal:false,development:false,test:true}},
+  ui_year_in_review:{...option(true, "Rétrospective locale à activation explicite et extension officielle.", ["SPEC-CMD-078","SPEC-IHM-033"], ["Local annual statistics (no code or conversation content):"]),values:{public:false,internal:true,development:true,test:true}},
+  state_capture:{...option(true, "Instantanés internes des seuls dépôts de société autorisés.", ["SPEC-SES-014"], ["STATE_CAPTURE_PAYLOAD_V1","state-captures"]),values:{public:false,internal:true,development:false,test:false}},
+  ui_dictation:option(true, "Dictée avec consentement, capture native et service de société.", ["SPEC-CMD-076","SPEC-VOX-001","SPEC-VOX-002","SPEC-VOX-003","SPEC-VOX-004"], ["AUDIO_READY","MicrophoneInput","Dictée ·"]),
+  update_prerelease_channel: {...option(true, "Distribution privée réservée aux constructions de test.", ["SPEC-INS-006"], ["TEST_INSTALL_SERVICE","TEST_INSTALL_TOKEN"]),values:{public:false,internal:false,development:false,test:true}},
   remote_provided_environment: option(true, "Exécuteur local de sessions avec identifiant de machine distinct.", ["SPEC-MOD-023"]),
   remote_self_hosted_runner: option(true, "Exécuteur local de travaux compatibles et révocation contrôlée.", ["SPEC-MOD-024"]),
   remote_control: option(true, "Relais sortant de session locale et de décisions humaines.", ["SPEC-MOD-013", "SPEC-CMD-055"]),
   remote_auto_connect: option(true, "Rattachement automatique soumis au réglage utilisateur et à l’option dynamique.", ["SPEC-MOD-016"]),
   session_mirroring: option(true, "Réplication distante en lecture seule sur activation explicite.", ["SPEC-MOD-017"]),
   scheduled_triggers_remote: option(true, "Gestion confirmée des déclencheurs du service distant.", ["SPEC-OUT-032", "SPEC-EXT-027"]),
-  ide_bridge: option(true,"Liaison locale authentifiée à un IDE compatible.",["SPEC-INT-001","SPEC-MCP-023"]),
-  connector_websocket: option(true,"Transport WebSocket avec battement de vie.",["SPEC-MCP-004"]),
   inbound_channels: option(true,"Canaux entrants déclarés et autorisés.",["SPEC-MCP-013"]),
-  remote_sessions: option(true,"Client de création et de suivi des sessions distantes.",["SPEC-MOD-014"]),
-  extension_maintenance: option(true,"Maintenance asynchrone, versions conservées et trousseau des options.",["SPEC-EXT-006","SPEC-EXT-015"]),
-  skill_filler_text: option(true,"Remplissage local du contexte sur demande.",["SPEC-EXT-025"]),
-  skill_session_rescue:{...option(true,"Inventaire local des sessions présumées figées.",["SPEC-EXT-030"],["État des autres sessions locales"]),values:{public:false,internal:true,development:true,test:true}},
+  skill_filler_text: internalOption("Remplissage local du contexte sur demande.", ["SPEC-EXT-025"], ["Neutral filler text for context measurement.","Adds bounded neutral text locally to measure estimated context occupancy without making a model request."]),
+  skill_session_rescue:{...option(true, "Inventaire local des sessions présumées figées.", ["SPEC-EXT-030"], ["État des autres sessions locales","État des autres sessions locales (diagnostic présumé, aucun processus arrêté) :","Reports the process and heartbeat state of other local sessions without reading conversation content or stopping processes."]),values:{public:false,internal:true,development:true,test:true}},
   ui_companion:{...option(true,"Compagnon décoratif local, absent de la distribution professionnelle standard.",["SPEC-IHM-032","SPEC-CMD-012"],["Compagnon éclos","companion-v1:"]),values:{public:false,internal:true,development:true,test:true}},
-  company_account: option(true, "Compte de société indépendant des clés de modèles.", ["SPEC-API-028", "SPEC-API-023", "SPEC-API-012"]),
-  settings_sync: option(true, "Synchronisation explicite de préférences sans secrets.", ["SPEC-CFG-006"]),
-  organization_metrics: option(true, "Agrégats d’organisation soumis aux refus locaux et distants.", ["SPEC-OBS-003", "SPEC-API-025"]),
-  team_memory: option(true, "Mémoire d’équipe liée au dépôt et à l’organisation.", ["SPEC-MOT-041"]),
-  agent_memory: option(true, "Mémoire propre aux agents déclarant une portée.", ["SPEC-AGT-007"]),
+  settings_sync_upload: option(true, "Envoi explicite des préférences synchronisables sans secrets.", ["SPEC-CFG-006"], ["Conflit de paramètres : garder le local (--resolve local)","Envoie les préférences choisies vers le service configuré."]),
+  settings_sync_download: option(true, "Récupération explicite des préférences synchronisables sans secrets.", ["SPEC-CFG-006"], ["Paramètres modifiés pendant la récupération ; état humain conservé.","Récupère les préférences avec sauvegarde restaurable."]),
+  memory_team_shared: option(true, "Mémoire d’équipe liée au dépôt et à l’organisation.", ["SPEC-MOT-041"], ["Read, list or synchronize team conventions"]),
   memory_living_docs: option(true, "Documents vivants après lecture et décisions durables.", ["SPEC-MOT-032"], ["Living document update abandoned:"]),
   engine_speculation: option(true, "Anticipation isolée, soumise au réglage explicite de la session.", ["SPEC-MOT-029"], ["Unsupported speculative target", "Speculation buffer limit"]),
   sandbox_commands: option(true, "Confinement des commandes sur une plateforme compatible, activé explicitement.", ["SPEC-PER-015"], ["Sandbox channel unavailable.", "Sandbox mount must be a physical directory."]),
-  terminal_setup: option(true, "Configuration confirmée des raccourcis du terminal.", ["SPEC-INT-021", "SPEC-CMD-071"]),
-  memory_consolidation: option(true, "Consolidation de mémoire sous verrou, copie préalable et tâche visible.", ["SPEC-MOT-039", "SPEC-AGT-022", "SPEC-EXT-035"]),
+  memory_consolidation: option(true, "Outil, compétence et affichage enrichi de consolidation ; moteur automatique indépendant.", ["SPEC-AGT-022", "SPEC-EXT-035"], ["Start a visible background consolidation of project memory"]),
   context_folding: option(true, "Préparation et repli de tours anciens avec inspection bornée.", ["SPEC-MOT-020", "SPEC-OUT-044"]),
   telemetry_memory_metrics: option(true, "Comptages de mémoire sans nom ni contenu, soumis au refus de télémétrie.", ["SPEC-OBS-006"]),
   ui_merch: { ...option(true, "Lien de boutique ouvert uniquement à la demande explicite.", ["SPEC-CMD-043"]), values: { public: false, internal: true, development: false, test: true } },
   api_background_retry: option(true, "Attente bornée de capacité en exécution automatisée explicite.", ["SPEC-API-004"]),
   mode_experiment_baseline: option(true, "Mode de référence respectant les réglages explicites.", ["SPEC-MOD-031"], ["Mode de référence expérimental"]),
-  mode_self_initiated: option(true, "Veille et réveils proactifs explicites par session.", ["SPEC-MOD-027", "SPEC-CMD-100", "SPEC-OUT-023"], ["Wait without a shell process", "Proactive wake at"]),
+  mode_self_initiated: option(true, "Veille et réveils proactifs explicites par session.", ["SPEC-MOD-027", "SPEC-CMD-100", "SPEC-OUT-023"], ["Proactive wake at"]),
   automation_scripts: option(true, "Flux déclaratifs avec permissions et tâches de fond.", ["SPEC-PLA-003", "SPEC-PLA-004", "SPEC-OUT-042", "SPEC-CMD-077"], ["Run a named, validated workflow"]),
   mode_brief: option(true, "Vue des messages adressés avec accès au détail.", ["SPEC-MOD-029", "SPEC-OUT-034", "SPEC-CMD-007"]),
   skill_discovery: option(true, "Sélection locale des compétences pertinentes.", ["SPEC-OUT-038"]),
@@ -64,11 +110,11 @@ export const BUILD_OPTIONS = {
   connector_structured_display: option(true, "Tableaux bornés pour les résultats structurés de connecteurs.", ["SPEC-MCP-015"], ["[Sortie repliée ; contenu brut dans le détail.]"]),
   push_notifications: option(true, "Notifications locales bornées demandées par l’agent.", ["SPEC-OUT-036"], ["Send a brief device notification only"]),
   ui_auto_theme: option(true, "Suivi de la couleur de fond du terminal.", ["SPEC-IHM-020"], ["Automatique selon le terminal"]),
-  review_artifact: option(true, "Décisions humaines sur les constats de revue.", ["SPEC-OUT-045"]),
+  output_review: option(true, "Revue de livrable et campagnes de défauts avec décisions humaines.", ["SPEC-OUT-045","SPEC-EXT-036"], ["Start a bounded local background defect campaign"]),
   ui_fast_find: option(true, "Navigation par fichier et recherche locale au clavier.", ["SPEC-IHM-015", "SPEC-IHM-018"], ["Ouverture rapide", "Recherche globale"]),
   ui_history_browser: option(true, "Sélecteur filtrable de l’historique des saisies.", ["SPEC-IHM-016"], ["Filtrer mes saisies"]),
   ui_message_menu: option(true, "Copie et reprise des messages en vue plein écran.", ["SPEC-IHM-017", "SPEC-IHM-034"], ["Copier le bloc"]),
-  ui_dev_bar: { ...option(true, "Dernières opérations lentes du profil de développement.", ["SPEC-IHM-039"], ["Développement ·"]), values: { public: false, internal: true, development: true, test: true } },
+  ui_dev_bar: { ...option(true, "Dernières opérations lentes du profil de développement.", ["SPEC-IHM-039"], ["Développement ·","Développement · "]), values: { public: false, internal: true, development: true, test: true } },
   hook_questions: option(true, "Questions humaines posées par les crochets synchrones.", ["SPEC-HOK-011"], ["Question du crochet"]),
   scheduled_triggers: option(true, "Déclencheurs locaux et outils de planification.", ["SPEC-PLA-001", "SPEC-PLA-005", "SPEC-OUT-031"], ["Create a local scheduled prompt", "List the local scheduled prompts"]),
   agent_explorer_planner: option(true, "Agents intégrés d’exploration et de planification en lecture seule.", ["SPEC-AGT-003"], ["You are the repository explorer", "You are the implementation planner"]),
@@ -77,7 +123,6 @@ export const BUILD_OPTIONS = {
   permission_auto_approve_powershell: option(true, "Classifieur d’approbation pour PowerShell.", ["SPEC-PER-005"]),
   shell_classifier: option(true, "Classement des règles descriptives de commandes shell.", ["SPEC-PER-006"], ["Determine whether the exact shell command matches"]),
   shell_syntax_analysis: option(true, "Observation syntaxique des commandes shell sans influence sur la décision.", ["SPEC-PER-007"]),
-  prompt_hints: option(true, "Suggestions de saisie filtrées et facultatives.", ["SPEC-MOT-028"], ["Predict one short next user request"]),
   mode_template_jobs: option(true, "Classification bornée de la fin du tour principal.", ["SPEC-MOT-043"], ["Classify the whole main-agent turn", "Job workspace must be an ordinary directory"]),
   mode_background_sessions: option(true, "Métadonnées de progression des sessions.", ["SPEC-MOT-044"], ["Summarize this session's task, current progress and next need"]),
   compaction_on_overflow: option(true, "Compaction après dépassement de contexte.", ["SPEC-MOT-016"]),
@@ -99,16 +144,17 @@ export const BUILD_OPTIONS = {
 export type BuildFlagName = keyof typeof BUILD_OPTIONS;
 export type BuildValues = Readonly<Record<BuildFlagName, boolean>>;
 
-export function resolveBuildOptions(profile: string, overrides: unknown = {}): BuildValues {
+export function resolveBuildOptions(profile: string, overrides: unknown = {}, target?: string): BuildValues {
   if (!BUILD_PROFILES.includes(profile as BuildProfile)) throw new Error(`Profil de build inconnu : ${profile}.`);
   if (!overrides || typeof overrides !== "object" || Array.isArray(overrides)) throw new Error("Objet d’options de build attendu.");
-  const values = Object.fromEntries(Object.entries(BUILD_OPTIONS).map(([name, definition]) => [name, definition.values[profile as BuildProfile]])) as Record<BuildFlagName, boolean>;
+  const values = { ...Object.fromEntries(Object.entries(BUILD_OPTIONS).map(([name, definition]) => [name, definition.values[profile as BuildProfile]])), ...libcBuildValues(target) } as Record<BuildFlagName, boolean>;
   for (const [name, value] of Object.entries(overrides)) {
     if (!Object.hasOwn(BUILD_OPTIONS, name)) throw new Error(`Option de build inconnue : ${name}.`);
     if (typeof value !== "boolean") throw new Error(`Valeur booléenne attendue pour ${name}.`);
-    if (value && profile !== "internal" && ["state_capture","internal_discreet"].includes(name))throw new Error(`Option réservée au profil interne : ${name}.`);
-    if (value && profile === "public" && ["ui_year_review", "telemetry_orchestrator_role", "ui_dev_bar", "strict_failure", "system_instructions_export", "diagnostics_api_replay", "planning_progress_check", "tools_terminal_session", "tools_code_runtime"].includes(name)) throw new Error(`Option réservée aux profils internes : ${name}.`);
-    if (value && profile !== "test" && ["installation_test_versions", "permission_test", "context_overflow_probe"].includes(name)) throw new Error(`Option réservée au profil de test : ${name}.`);
+    if ((name === "libc_variant_musl" || name === "libc_variant_glibc") && value !== values[name]) throw new Error(`Variante libc incompatible avec la cible : ${name}.`);
+    if (value && profile !== "internal" && ["state_capture"].includes(name))throw new Error(`Option réservée au profil interne : ${name}.`);
+    if (value && profile === "public" && ["ui_year_in_review", "telemetry_orchestrator_role", "ui_dev_bar", "strict_failure", "system_instructions_export", "diagnostics_api_replay", "planning_progress_check", "tools_terminal_session", "tools_code_runtime", "context_file_listing", "hosted_agent_management", "merge_request_fix", "session_metadata_backfill", "diagnostics_context_inspection", "diagnostics_tool_call_inspection", "diagnostics_environment_inspection", "session_handoff", "feedback_issue_report", "onboarding_restart", "diagnostics_performance_report", "feedback_positive_report", "remote_failure_injection", "session_publish", "session_summary", "diagnostics_session_version", "remote_task_suggestions", "skill_filler_text", "skill_session_rescue", "ui_frustration_detection", "ui_internal_notices", "config_feature_overrides", "diagnostics_build_inventory", "cache_reset_command"].includes(name)) throw new Error(`Option réservée aux profils internes : ${name}.`);
+    if (value && profile !== "test" && ["update_prerelease_channel", "permission_test", "context_overflow_probe"].includes(name)) throw new Error(`Option réservée au profil de test : ${name}.`);
     if (value && !BUILD_OPTIONS[name as BuildFlagName].implemented) throw new Error(`Option de build réservée, fonctionnalité non livrée : ${name}.`);
     values[name as BuildFlagName] = value;
   }

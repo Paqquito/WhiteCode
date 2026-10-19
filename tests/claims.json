@@ -1,5 +1,5 @@
 {
-  "increment": "lot 9, incrément 63",
+  "increment": "lot 9, incrément 64",
   "claims": {
     "SPEC-AGT-001": [
       "CA-01",
@@ -2461,6 +2461,9 @@
     ],
     "SPEC-CMD-104": [
       "CA-01"
+    ],
+    "SPEC-CAD-003": [
+      "CA-02"
     ]
   }
 }

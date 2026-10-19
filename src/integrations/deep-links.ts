@@ -8,6 +8,7 @@ import {
 } from "../platform/system";
 import { ambiguousPathReason, isNetworkPath } from "../permissions/paths";
 import { currentPlatform } from "../platform/system";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 export interface DeepLink {
   readonly q: string;
   readonly cwd?: string;
@@ -26,6 +27,7 @@ export function repositoryName(value: string): string | undefined {
     : undefined;
 }
 export function parseDeepLink(value: string, scheme: string): DeepLink {
+  if (!buildFlag("deep_links")) throw Error("Deep links unavailable in this build.");
   if (value.length > 40000 || /[\p{Cc}]/u.test(value))
     throw Error("Lien invalide.");
   let u: URL;
@@ -76,6 +78,7 @@ export function resolveDeepLink(
     platform: PlatformName;
   },
 ): { cwd: string; q: string; unknown: boolean } {
+  if (!buildFlag("deep_links")) throw Error("Deep links unavailable in this build.");
   let cwd = link.cwd,
     unknown = false;
   if (link.repo) {

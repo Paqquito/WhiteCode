@@ -1,4 +1,5 @@
 // Implements: SPEC-CMD-081 (reviewed local correction, verification and separately confirmed publication).
+import { buildFlag, buildProfile } from "../extension-points/build-flags" with { type: "macro" };
 import {createHash} from 'node:crypto';
 import {existsSync,lstatSync,realpathSync} from 'node:fs';
 import {isAbsolute,relative,resolve} from 'node:path';
@@ -33,6 +34,7 @@ async function forgeText(args:readonly string[],o:FixOptions):Promise<string>{
 }
 
 export async function fixMergeRequest(argument:string,o:FixOptions):Promise<string>{
+ if(!buildFlag("merge_request_fix")||buildProfile()!=="internal")throw Error("Correction de demande de fusion indisponible dans ce profil.");
  const number=argument.trim();if(number&&!/^[1-9]\d{0,9}$/.test(number))throw Error('Usage : /fix-merge-request [numéro].');
  if(!o.testCommand.trim()||o.testCommand.length>4096)throw Error('Configurez integrations.forge.testCommand avant de proposer une correction.');
  const executable=findExecutable('git');if(!executable)throw Error('Git est requis.');

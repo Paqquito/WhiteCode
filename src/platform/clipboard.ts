@@ -2,9 +2,11 @@
 import { spawnSync } from "node:child_process";
 import { IMAGE_MAX_BYTES } from "../tools/image-header";
 import { readProcessEnvironment } from "./environment";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 // Implements: SPEC-INT-018 (CA-01, explicit keyboard image paste); gap E-162.
 export async function readClipboardImage(environment: Readonly<Record<string, string | undefined>> = readProcessEnvironment()): Promise<Buffer | undefined> {
+  if (!buildFlag("ui_native_clipboard_image")) throw Error("Native clipboard images unavailable in this build.");
   if (environment["SSH_CONNECTION"] || environment["SSH_TTY"]) return undefined;
   const windows = "Add-Type -AssemblyName System.Windows.Forms; $taskImage=[Windows.Forms.Clipboard]::GetImage(); if ($null -ne $taskImage) { $taskStream=New-Object IO.MemoryStream; try { if ($taskImage.Width*$taskImage.Height -gt 32000000) { exit 1 }; $taskImage.Save($taskStream,[Drawing.Imaging.ImageFormat]::Png); [Convert]::ToBase64String($taskStream.ToArray()) } finally { $taskStream.Dispose(); $taskImage.Dispose() } }";
   const commands = process.platform === "win32" ? [["powershell.exe", "-NoProfile", "-NonInteractive", "-Sta", "-Command", windows]] : process.platform === "darwin" ? [["osascript", "-e", "the clipboard as «class PNGf»"]] : [["wl-paste", "--no-newline", "--type", "image/png"], ["xclip", "-selection", "clipboard", "-t", "image/png", "-o"]];

@@ -4,8 +4,10 @@ import { nativeBrowserMessages, nativeBrowserWrite, privateBrowserText } from ".
 import { residentFetch } from "../platform/resident-process";
 import { residentRequest } from "../services/transport";
 import { processExists } from "../platform/process";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 export async function runBrowserNativeHost(args: readonly string[]): Promise<void> {
+  if (!buildFlag("browser_user_control")) throw Error("Browser control unavailable in this build.");
   const [configDir, host, extensionId, origin, ...extra] = args;
   if (!configDir || !isAbsolute(configDir) || !host || !/^[a-z0-9_]+(?:\.[a-z0-9_]+)+$/.test(host) || !extensionId || !/^[a-p]{32}$/.test(extensionId) || ![`chrome-extension://${extensionId}`, `chrome-extension://${extensionId}/`].includes(origin ?? "") || extra.some(value => !/^--parent-window=[0-9]+$/.test(value))) throw Error("Invalid browser native host identity.");
   const directory = join(resolve(configDir), "browser"), registration: unknown = JSON.parse(privateBrowserText(join(directory, "host-registration.json")));

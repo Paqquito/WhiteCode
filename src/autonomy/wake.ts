@@ -26,15 +26,15 @@ export function waitTool(options: { readonly events: WakeEvents; readonly enable
   const bounded = (duration: number) => Math.max(1000, Math.min(3600000, options.maxMs(), duration * 1000));
   return {
     name: "wait", idleWait: true, inputSchema: { type: "object", properties: { duration: { type: "number" }, reason: { type: "string", maxLength: 500 } }, required: ["duration"], additionalProperties: false },
-    description: () => "Wait without a shell process until the deadline, a user message, a task notification or a wake signal. Use this only while autonomous mode is active. Every wake consumes another model request, and the context cache expires after inactivity. Duration is in seconds, clamped to 1–3600 and the configured maximum.",
+    description: () => "Wait without a shell process until the deadline, a user message, a task notification or a wake signal. Use this only while proactive mode or persistent assistant mode is active. Every wake consumes another model request, and the context cache expires after inactivity. Duration is in seconds, clamped to 1–3600 and the configured maximum.",
     flags: () => ({ readOnly: true, concurrencySafe: true, destructive: false, requiresPermission: false, openWorld: false }),
     isEnabled: options.enabled,
-    validate: () => options.enabled() ? undefined : "Waiting requires an active autonomous mode.",
+    validate: () => options.enabled() ? undefined : "Waiting requires an active proactive or persistent assistant mode.",
     permissionContribution: () => "allow", ruleSubject: () => ({ kind: "none" }),
     summary: input => `Veille jusqu’à ${new Date(Date.now() + bounded(input.duration)).toLocaleTimeString("fr-FR")}`,
     timeoutMs: input => bounded(input.duration) + 1000,
     async execute(input, ctx) {
-      if (!options.enabled()) return textOutcome("Waiting requires an active autonomous mode.", true, "unavailable");
+      if (!options.enabled()) return textOutcome("Waiting requires an active proactive or persistent assistant mode.", true, "unavailable");
       const duration = bounded(input.duration); options.waiting(Date.now() + duration);
       try { const result = await options.events.wait(duration, Math.max(1000, options.tickMs()), ctx.signal); return textOutcome(JSON.stringify({ cause: result.cause, duration_seconds: result.elapsedMs / 1000, ...(duration !== input.duration * 1000 ? { adjusted_duration_seconds: duration / 1000 } : {}) })); }
       finally { options.waiting(undefined); }

@@ -6,13 +6,16 @@ import { ownedByCurrentUser, securePrivateDirectory } from "../platform/private-
 import { ordinaryPrivateFile } from "../shared/private-text";
 import { writeAtomic } from "../tools/text-file";
 import { currentPlatform } from "../platform/system";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 export function writeBrowserExtension(configDir: string, slug: string, product: string): string {
+  if (!buildFlag("browser_user_control")) throw Error("Browser control unavailable in this build.");
   const directory = join(browserPrivateDirectory(configDir), "extension"); ordinaryPrivateFile(join(directory, "guard"), 1); mkdirSync(directory, { recursive: true, mode: 0o700 }); securePrivateDirectory(directory);
   for (const [name, content] of Object.entries(browserExtensionFiles(browserHostName(slug), product))) { const path = join(directory, name); ordinaryPrivateFile(path, 65536); if (existsSync(path) && !ownedByCurrentUser(path)) throw Error("Extension file belongs to another user."); writeAtomic(path, Buffer.from(content), currentPlatform(), true); }
   return directory;
 }
 /** Distribution-owned extension files; no code from another automation product is used. */
 export function browserExtensionFiles(host: string, product: string): Readonly<Record<string, string>> {
+  if (!buildFlag("browser_user_control")) throw Error("Browser control unavailable in this build.");
   if (!/^[a-z0-9_]+(?:\.[a-z0-9_]+)+$/.test(host)) throw Error("Invalid browser native host name.");
   return {
     "manifest.json": JSON.stringify({ manifest_version: 3, name: product + " — navigateur", version: "0.1.0", description: "Pilotage explicite des sites autorisés, avec refus des actions sensibles.", permissions: ["nativeMessaging", "tabs", "tabGroups", "scripting", "storage", "debugger", "alarms"], optional_host_permissions: ["http://*/*", "https://*/*"], background: { service_worker: "worker.js" }, action: { default_popup: "settings.html" } }, null, 2),
@@ -21,15 +24,15 @@ export function browserExtensionFiles(host: string, product: string): Readonly<R
     "settings.js": SETTINGS,
   };
 }
-const SETTINGS = String.raw`
+const SETTINGS = buildFlag("browser_user_control") ? String.raw`
 const field=document.querySelector('#origin'),status=document.querySelector('#status');
 async function show(){const state=await chrome.storage.local.get('allowedOrigins');status.textContent=(state.allowedOrigins||[]).join('\n')||'Aucun site autorisé.';}
 function origin(){const url=new URL(field.value);if(!['https:','http:'].includes(url.protocol)||url.username||url.password||url.href!==url.origin+'/')throw Error('Saisissez une origine HTTP(S) exacte, sans chemin, secret ou paramètre.');return url.origin;}
 document.querySelector('#allow').addEventListener('click',async()=>{try{const value=origin();if(!await chrome.permissions.request({origins:[value+'/*']}))throw Error('Autorisation du navigateur refusée.');const previous=(await chrome.storage.local.get('allowedOrigins')).allowedOrigins||[];await chrome.storage.local.set({allowedOrigins:[...new Set([...previous,value])].slice(0,100)});await show();}catch(error){status.textContent=String(error.message);}});
 document.querySelector('#remove').addEventListener('click',async()=>{try{const value=origin(),previous=(await chrome.storage.local.get('allowedOrigins')).allowedOrigins||[];await chrome.storage.local.set({allowedOrigins:previous.filter(item=>item!==value)});await chrome.permissions.remove({origins:[value+'/*']});await show();}catch(error){status.textContent=String(error.message);}});
 document.querySelector('#connect').addEventListener('click',()=>chrome.runtime.sendMessage({action:'connect'}));show();
-`;
-const WORKER = String.raw`
+` : "";
+const WORKER = buildFlag("browser_user_control") ? String.raw`
 const HOST={%HOST%},PRODUCT={%PRODUCT%};let port,busy=false;const tabs=new Map();
 const sensitive=value=>/password|passwd|passphrase|credit.?card|card.?number|cvc|cvv|one.?time|\botp\b|payment|checkout|purchase|pay.?now|mot.de.passe|paiement|payer|acheter|secret|api.?key|access.?token|cc-/i.test(value);
 const urlOf=value=>{const url=new URL(value);if(!['http:','https:'].includes(url.protocol)||url.username||url.password)throw Error('Only HTTP(S) addresses without credentials are allowed.');return url;};
@@ -64,4 +67,4 @@ async function execute(input){
 }
 function connect(){if(port)return;try{const link=chrome.runtime.connectNative(HOST),respond=value=>{if(port===link)try{link.postMessage(value);}catch{}};port=link;link.onDisconnect.addListener(()=>{void chrome.runtime.lastError;if(port===link)port=undefined;for(const id of tabs.keys())chrome.debugger.detach({tabId:id}).catch(()=>{});tabs.clear();});link.onMessage.addListener(async message=>{if(!message||typeof message.id!=='string'||!/^[a-f0-9-]{36}$/.test(message.id)||port!==link)return;if(busy){respond({id:message.id,error:'Browser busy; wait for its current action.'});return;}busy=true;try{const result=await execute(message.input);respond({id:message.id,result});}catch(error){respond({id:message.id,error:String(error.message).slice(0,1000)});}finally{busy=false;}});link.postMessage({type:'hello',version:1,browser:navigator.userAgent.includes('Edg/')?'Edge':'Chrome'});}catch{port=undefined;}}
 chrome.runtime.onInstalled.addListener(connect);chrome.runtime.onStartup.addListener(connect);chrome.runtime.onMessage.addListener(message=>{if(message?.action==='connect')connect();});chrome.alarms.create('native-reconnect',{periodInMinutes:0.5});chrome.alarms.onAlarm.addListener(alarm=>{if(alarm.name==='native-reconnect')connect();});connect();
-`;
+` : "";

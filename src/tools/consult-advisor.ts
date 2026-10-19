@@ -1,8 +1,10 @@
 // Implements: SPEC-MOT-027 (CA-01/02, EF-01, RG-01), gap E-170.
 import type { Tool } from "./types";
 import { textOutcome } from "./types";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
-export function advisorTool(options: { available: () => boolean; consult: (question: string, signal: AbortSignal) => Promise<string | undefined> }): Tool<{ question: string }> {
+export function advisorTool(options: { available: () => boolean; consult: (question: string, signal: AbortSignal) => Promise<string | undefined> }): Tool<{ question: string }> | undefined {
+  if (!buildFlag("model_advisor")) return undefined;
   return {
     name: "consult_advisor", description: () => "Consult the configured advisor before a structural decision. Send only the question and necessary context. The advisor has no tools and cannot act. Avoid routine consultations.",
     inputSchema: { type: "object", properties: { question: { type: "string", minLength: 1, maxLength: 24000 } }, required: ["question"], additionalProperties: false },

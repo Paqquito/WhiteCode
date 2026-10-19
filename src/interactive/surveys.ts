@@ -1,4 +1,5 @@
 // Implements: SPEC-IHM-037, SPEC-CMD-099 (optional surveys and per-send sharing consent), gap E-188.
+import { buildFlag, buildProfile } from "../extension-points/build-flags" with { type: "macro" };
 interface Options {
   readonly enabled: () => boolean;
   readonly available: () => boolean;
@@ -19,6 +20,8 @@ interface Options {
 }
 export class Surveys {
   #pending = false;
+  #targetedPrefix?: string;
+  #activePrefix?: string;
   #last: number;
   #busy?: Promise<void>;
   readonly #controller = new AbortController();
@@ -26,9 +29,13 @@ export class Surveys {
     this.#last = options.last;
   }
   get prompt() {
-    return this.#pending
-      ? "Cet échange : Alt+1 bien · Alt+2 correct · Alt+3 mal · toute saisie ferme cette enquête"
+    return this.#pending && this.#enabled()
+      ? `${this.#activePrefix ?? "Cet échange"} : Alt+1 bien · Alt+2 correct · Alt+3 mal · toute saisie ferme cette enquête`
       : undefined;
+  }
+  noteTargetedSurvey(prefix?: string): void {
+    if (!prefix || !this.#enabled() || (this.#last && this.#now() - this.#last < 7 * 86400000)) { this.#targetedPrefix = undefined; return; }
+    if (!this.#pending && !this.#busy) this.#targetedPrefix = prefix;
   }
   #enabled() {
     return (
@@ -41,8 +48,8 @@ export class Surveys {
     return this.options.now?.() ?? Date.now();
   }
   offer(): void {
+    if (!this.#enabled()) { const pending = this.#pending; this.#pending = false; this.#targetedPrefix = undefined; this.#activePrefix = undefined; if (pending) this.options.refresh(); return; }
     if (
-      !this.#enabled() ||
       this.#pending ||
       this.#busy ||
       this.options.busy() ||
@@ -50,6 +57,8 @@ export class Surveys {
     )
       return;
     const probability = this.options.probability();
+    const prefix = this.#targetedPrefix;
+    this.#targetedPrefix = undefined;
     if (
       !Number.isFinite(probability) ||
       probability <= 0 ||
@@ -57,6 +66,7 @@ export class Surveys {
     )
       return;
     this.#pending = true;
+    this.#activePrefix = prefix;
     this.options.refresh();
   }
   key(key: {
@@ -127,6 +137,7 @@ export class Surveys {
     }
   }
   async praise(input: string, parent: AbortSignal): Promise<string> {
+    if (!buildFlag("feedback_positive_report") || buildProfile() !== "internal") throw Error("Retour positif indisponible dans ce profil.");
     const signal = AbortSignal.any([parent, this.#controller.signal]);
     if (!this.options.available())
       throw Error("Service de retours non configuré.");
@@ -161,6 +172,8 @@ export class Surveys {
   }
   close() {
     this.#pending = false;
+    this.#targetedPrefix = undefined;
+    this.#activePrefix = undefined;
     this.#controller.abort();
     this.options.refresh();
   }

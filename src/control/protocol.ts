@@ -6,6 +6,7 @@
 
 import type { PermissionMode } from "../config/settings-schema";
 import { parseSdkServers, type SdkServer } from "../connectors/sdk";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 /** Major.minor: a minor version stays compatible with the earlier hosts (ENF-03); another major is refused (EF-06). */
 export const CONTROL_PROTOCOL_VERSION = "1.0";
@@ -30,7 +31,7 @@ export const ENGINE_DEMANDS = ["approval_request", "request_user_choice", "notif
 export type EngineDemand = (typeof ENGINE_DEMANDS)[number];
 
 /** Demands this version sends: the others are part of the protocol, but no function of the product emits them yet. */
-export const EMITTED_DEMANDS: readonly EngineDemand[] = ["approval_request", "request_user_choice", "notify", "confirm_escalation", "sdk_mcp_request", "deliver_file"];
+export const EMITTED_DEMANDS: readonly EngineDemand[] = ["approval_request", "request_user_choice", "notify", "confirm_escalation", "sdk_mcp_request", ...(buildFlag("user_file_delivery") ? ["deliver_file" as const] : [])];
 
 /** Response delay bounds and default (§ 6). */
 export const RESPONSE_TIMEOUT_BOUNDS = { min: 1_000, max: 600_000 } as const;
@@ -61,8 +62,10 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "obj
  * could be read, so that the error is correlated.
  */
 export function parseControlMessage(value: Record<string, unknown>): ControlMessage | { readonly error: string; readonly id?: string } {
+  if (!buildFlag("engine_control_channel")) return { error: "Control channel unavailable in this build." };
   const type = value["type"];
   if (type === "control_init") {
+    if (!buildFlag("engine_tool_summaries") && value["toolProgress"] === true) return { error: "Tool summaries unavailable in this build." };
     if (value["toolProgress"] !== undefined && typeof value["toolProgress"] !== "boolean") return { error: "toolProgress : booléen attendu" };
     let sdkServers: readonly SdkServer[] | undefined;
     try { if (value["sdkServers"] !== undefined) sdkServers = parseSdkServers(value["sdkServers"]); } catch (error) { return { error: (error as Error).message }; }
@@ -70,6 +73,7 @@ export function parseControlMessage(value: Record<string, unknown>): ControlMess
     if (typeof version !== "string") return { error: "protocolVersion attendu" };
     const demands = value["demands"] ?? [];
     if (!Array.isArray(demands) || demands.some((d) => typeof d !== "string")) return { error: "demands : liste de noms attendue" };
+    if (!buildFlag("user_file_delivery") && demands.includes("deliver_file")) return { error: "File delivery unavailable in this build." };
     if (sdkServers?.length && !demands.includes("sdk_mcp_request")) return { error: "sdkServers exige la capacité sdk_mcp_request" };
     const timeout = value["responseTimeoutMs"];
     if (timeout !== undefined && (!Number.isInteger(timeout) || (timeout as number) < RESPONSE_TIMEOUT_BOUNDS.min || (timeout as number) > RESPONSE_TIMEOUT_BOUNDS.max)) {

@@ -1,9 +1,11 @@
 // Implements: SPEC-OUT-046 (model-facing subscription boundary), gap E-187.
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 import { textOutcome, type Tool } from "../tools/types";
 import type { MergeSubscriptions } from "./merge-subscriptions";
 export function subscriptionTool(
   client: MergeSubscriptions,
 ): Tool<{ number?: number; off?: boolean }> {
+  if (!buildFlag("merge_request_subscriptions")) throw Error("Merge request subscription tool unavailable in this build.");
   return {
     name: "subscribe_merge_request",
     description: () =>

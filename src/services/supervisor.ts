@@ -16,6 +16,7 @@ import {
 } from "../session/private-storage";
 import { ResidentWorker, ResidentCapacityError, type WorkerRecord } from "./worker";
 import { parseJobRestrictions, type JobRestrictions } from "./jobs";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 const UUID =
   /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const object = (value: unknown): value is Record<string, unknown> =>
@@ -220,6 +221,7 @@ export class ResidentSupervisor {
         true,
       );
       for (const worker of this.#workers.values()) {
+        if (!buildFlag("mode_assistant_persistent") && worker.record.kind === "assistant") { worker.record.status = "stopped"; worker.record.summary = "Assistant indisponible dans cette distribution ; événements en attente conservés."; continue; }
         // A new service must re-establish account/device authority before launching a remote worker.
         if (worker.record.kind === "remote") { worker.record.status = "stopped"; worker.record.pending.length = 0; continue; }
         if (!["completed", "stopped", "error"].includes(worker.record.status))
@@ -376,6 +378,7 @@ export class ResidentSupervisor {
       if (!["assistant", "background", "job"].includes(String(body["kind"])))
         throw Error("Type de travailleur inconnu.");
       const kind = body["kind"] as WorkerRecord["kind"];
+      if (!buildFlag("mode_assistant_persistent") && kind === "assistant") throw Error("Assistant persistant absent de cette distribution.");
       let cwd = kind === "job" ? "" : directory(body["cwd"]);
       const existing =
         kind === "assistant"
@@ -462,6 +465,7 @@ export class ResidentSupervisor {
       worker = match && this.#workers.get(match[1]!);
     if (!match || !worker) return new Response("Not found", { status: 404 });
     const operation = match[2];
+    if (!buildFlag("mode_assistant_persistent") && worker.record.kind === "assistant" && operation !== "stop") throw Error("Assistant persistant absent de cette distribution.");
     if (operation === "stop") {
       await worker.close();
       return Response.json(this.#view(worker));

@@ -1,3 +1,4 @@
+// Supports: SPEC-INT-011, SPEC-MOD-006/007 (removed capabilities have no CLI parser or help entry).
 // Implements: SPEC-MOD-011 (§ 5.1 naming, § 5.3 catalogue, combinations), SPEC-MOD-012 (§ 5.3 families), decisions D-03, D-05, D-06
 // Declarative catalogue of global options: the single source of the parser, of the help and of the danger banner.
 
@@ -43,9 +44,9 @@ export const OPTIONS: readonly OptionDef[] = [
   { name: "reopen-project", value: "required", type: "path", group: "Session et exécution", description: "Désigne le projet d’origine pour lever une ambiguïté entre identifiants de sessions.", delivered: true, owner: "SPEC-SES-005" },
   { name: "assign-session-id", value: "required", type: "string", group: "Session et exécution", description: "Impose l'identifiant de la session créée.", delivered: true, owner: "SPEC-SES-001" },
   { name: "ephemeral", value: "none", group: "Session et exécution", description: "N'enregistre pas la session.", delivered: true, owner: "SPEC-SES-012" },
-  { name: "remote-session", value: "required", type: "string", group: "Session et exécution", description: "Crée et suit une session distante avec une clé confiée au service.", delivered: buildFlag("remote_sessions"), owner: "SPEC-MOD-014" },
-  { name: "reopen-remote", value: "required", type: "string", group: "Session et exécution", description: "Rapatrie une session distante terminée dans un clone propre du même dépôt.", delivered: buildFlag("remote_sessions"), owner: "SPEC-MOD-015" },
-  { name: "handoff-history-file", value: "required", type: "string", group: "Session et exécution", description: "Charge l’historique privé d’un transfert préparé par le superviseur.", hidden: true, delivered: buildFlag("remote_sessions"), owner: "SPEC-CMD-091" },
+  { name: "remote-session", value: "required", type: "string", group: "Session et exécution", description: "Crée et suit une session distante avec une clé confiée au service.", delivered: true, owner: "SPEC-MOD-014" },
+  { name: "reopen-remote", value: "required", type: "string", group: "Session et exécution", description: "Rapatrie une session distante terminée dans un clone propre du même dépôt.", delivered: true, owner: "SPEC-MOD-015" },
+  { name: "handoff-history-file", value: "required", type: "string", group: "Session et exécution", description: "Charge l’historique privé d’un transfert préparé par le superviseur.", hidden: true, delivered: true, owner: "SPEC-CMD-091" },
   { name: "background", value: "required", type: "string", group: "Session et exécution", description: "Lance une session d'arrière-plan.", delivered: true, owner: "SPEC-MOD-022" },
   { name: "orchestrator", value: "none", group: "Session et exécution", description: "Active le mode coordinateur.", delivered: buildFlag("mode_orchestrator"), owner: "SPEC-MOD-028" },
   { name: "max-iterations", value: "required", type: "integer", group: "Session et exécution", description: "Nombre maximal d'itérations (allers-retours avec le modèle).", defaultText: "50 en exécution automatisée", delivered: true, owner: "SPEC-MOD-005" },
@@ -67,9 +68,9 @@ export const OPTIONS: readonly OptionDef[] = [
   { name: "result-format", value: "required", type: "enum", enumValues: ["text", "json", "jsonl"], group: "Entrées et sorties", description: "Format de sortie.", defaultText: "text", delivered: true, owner: "SPEC-MOD-003" },
   { name: "stream-profile", value: "required", type: "enum", enumValues: ["standard", "compact"], group: "Entrées et sorties", description: "Profil de présentation d'une sortie jsonl.", defaultText: "standard", delivered: true, owner: "SPEC-OBS-022" },
   { name: "output-schema", value: "required", type: "path-or-content", group: "Entrées et sorties", description: "Schéma JSON du résultat attendu (fichier ou contenu).", delivered: true, owner: "SPEC-MOD-004" },
-  { name: "control-channel", value: "none", group: "Entrées et sorties", description: "Ouvre le canal de contrôle d'un programme hôte (avec --request-format jsonl et --result-format jsonl).", delivered: true, owner: "SPEC-MOD-006" },
-  { name: "control-listen", value: "optional", type: "string", group: "Entrées et sorties", description: "Canal de contrôle sur une connexion persistante : attend l'hôte (--control-listen=<hôte:port>).", defaultText: "remote.transport.listenAddress", delivered: true, owner: "SPEC-MOD-007" },
-  { name: "control-connect", value: "required", type: "string", group: "Entrées et sorties", description: "Canal de contrôle sur une connexion persistante : se connecte au point d'entrée de l'hôte (wss://…).", delivered: true, owner: "SPEC-MOD-007" },
+  ...(buildFlag("engine_control_channel") ? [{ name: "control-channel", value: "none", group: "Entrées et sorties", description: "Ouvre le canal de contrôle d'un programme hôte (avec --request-format jsonl et --result-format jsonl).", delivered: true, owner: "SPEC-MOD-006" }] as const : []),
+  ...(buildFlag("engine_control_channel") ? [{ name: "control-listen", value: "optional", type: "string", group: "Entrées et sorties", description: "Canal de contrôle sur une connexion persistante : attend l'hôte (--control-listen=<hôte:port>).", defaultText: "remote.transport.listenAddress", delivered: true, owner: "SPEC-MOD-007" }] as const : []),
+  ...(buildFlag("engine_control_channel") ? [{ name: "control-connect", value: "required", type: "string", group: "Entrées et sorties", description: "Canal de contrôle sur une connexion persistante : se connecte au point d'entrée de l'hôte (wss://…).", delivered: true, owner: "SPEC-MOD-007" }] as const : []),
   { name: "emit-partial", value: "none", group: "Entrées et sorties", description: "Émet les fragments progressifs dans le flux.", delivered: false, owner: "SPEC-MOD-003" },
   { name: "emit-hook-events", value: "none", group: "Entrées et sorties", description: "Émet les événements de crochets dans le flux.", delivered: true, owner: "SPEC-HOK-014" },
   { name: "verbose", value: "none", group: "Entrées et sorties", description: "Diagnostic détaillé sur la sortie d'erreur.", delivered: true, owner: "SPEC-MOD-011" },
@@ -117,11 +118,11 @@ export const OPTIONS: readonly OptionDef[] = [
   ...(buildFlag("system_instructions_export") ? [{ name: "export-system-instructions", value: "none", group: "Divers", description: "Affiche les instructions système et quitte.", hidden: true, delivered: true, owner: "SPEC-OBS-019" }] as const : []),
 
   // Integrations
-  { name: "connect-editor", value: "none", group: "Intégrations", description: "Se connecte à l'IDE compatible.", delivered: buildFlag("ide_bridge"), owner: "SPEC-INT-001" },
+  { name: "connect-editor", value: "none", group: "Intégrations", description: "Se connecte à l'IDE compatible.", delivered: true, owner: "SPEC-INT-001" },
   { name: "isolated-copy", value: "optional", type: "string", group: "Intégrations", description: "Démarre dans une copie de travail isolée.", delivered: true, owner: "SPEC-INT-007" },
   { name: "multiplexer", value: "none", group: "Intégrations", description: "Avec --isolated-copy, ouvre la session dans le multiplexeur de terminal.", delivered: false, owner: "SPEC-INT-007" },
   { name: "from-merge-request", value: "required", type: "string", group: "Intégrations", description: "Reprend la session liée à une demande de fusion.", delivered: true, owner: "SPEC-INT-009" },
-  { name: "browser", value: "none", group: "Intégrations", description: "Active le pilotage du navigateur.", delivered: true, owner: "SPEC-INT-011" },
+  ...(buildFlag("browser_user_control") ? [{ name: "browser", value: "none", group: "Intégrations", description: "Active le pilotage du navigateur.", delivered: true, owner: "SPEC-INT-011" }] as const : []),
 ];
 
 export const OPTION_BY_NAME: ReadonlyMap<string, OptionDef> = new Map(OPTIONS.map((o) => [o.name, o]));

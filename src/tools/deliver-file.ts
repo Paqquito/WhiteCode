@@ -14,6 +14,7 @@ import { ambiguousPathReason } from "../permissions/paths";
 import { imageInfo, inlineImageInfo } from "./image-header";
 import { maskSecrets } from "../shared/secrets";
 import { textOutcome, type Tool } from "./types";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 interface Input {
   files: string[];
   status: "normal" | "proactive";
@@ -28,6 +29,7 @@ export function createDeliverFileTool(o: {
     signal: AbortSignal,
   ) => Promise<Record<string, unknown> | undefined>;
 }): Tool<Input> {
+  if (!buildFlag("user_file_delivery")) throw Error("File delivery unavailable in this build.");
   const snapshots = new WeakMap<
     object,
     Map<

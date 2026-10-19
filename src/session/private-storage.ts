@@ -11,6 +11,7 @@ import type { CredentialVault } from "../platform/credential-vault";
 import { tryFileLock } from "../platform/file-lock";
 import { comparablePath, realPathOrSelf } from "../platform/system";
 import { TemporaryStorage } from "./storage-access";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 import {
   privateContext as context,
   relativeStorePath as within,
@@ -43,6 +44,7 @@ export class PrivateStorage {
     readonly root: string,
     readonly keys: ArchiveKeys,
   ) {
+    if (!buildFlag("storage_encryption")) throw new ArchiveFailure("Storage encryption unavailable in this build.");
     this.directory = join(root, "archives-v1");
     fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     if (
@@ -291,6 +293,7 @@ export async function openPrivateStorage(options: {
       ctx.closed = true;
     };
   }
+  if (!buildFlag("storage_encryption")) throw new ArchiveFailure("Storage encryption unavailable in this build.");
   options.notice?.(
     "Stockage chiffré : la perte du coffre système et de sa clé rend les archives irrécupérables. Migration des copies locales en cours.",
   );

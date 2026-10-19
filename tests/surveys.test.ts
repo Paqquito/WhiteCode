@@ -1,6 +1,8 @@
 // Supports: SPEC-MOD-023/024, SPEC-API-028, SPEC-OUT-046, SPEC-CMD-094/099, SPEC-IHM-037, SPEC-SES-013, SPEC-EXT-016, SPEC-CAD-002, SPEC-MCP-017.
 import { test, expect } from "bun:test";
 import { Surveys } from "../src/interactive/surveys";
+import { profiledTest } from "./helpers/profiled-test";
+const internalTest = profiledTest(import.meta.path, "internal");
 function fixture() {
   let enabled = true,
     accepted = false;
@@ -59,6 +61,8 @@ test("SPEC-IHM-037/CA-02 — an administrative survey veto suppresses the prompt
   expect(f.sent).toHaveLength(0);
   f.s.close();
 });
+{
+const test = internalTest;
 test("SPEC-CMD-099/CA-01 — praise without an attachment transmits only the reviewed positive comment", async () => {
   const f = fixture();
   let answer = 0;
@@ -71,6 +75,7 @@ test("SPEC-CMD-099/CA-01 — praise without an attachment transmits only the rev
   expect(JSON.stringify(f.sent)).not.toContain("private conversation witness");
   s.close();
 });
+}
 test("TECH — ordinary typing cancels a rating and remains available to the editor", () => {
   const f = fixture();
   f.s.offer();

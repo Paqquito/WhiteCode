@@ -6,6 +6,7 @@ import { readPrivateText } from "../shared/private-text";
 import { storeExists } from "../session/private-storage";
 import { writeAtomic } from "../tools/text-file";
 import { currentPlatform } from "../platform/system";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 const object = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
 export async function offerMemorySnapshot(o: {
@@ -18,6 +19,7 @@ export async function offerMemorySnapshot(o: {
   assertPolicy: () => void;
   report: (message: string) => void;
 }): Promise<void> {
+  if (!buildFlag("memory_initial_state")) throw Error("Initial memory snapshots unavailable in this build.");
   if (!o.interactive || o.denied(o.snapshot) || !storeExists(o.snapshot))
     return;
   try {

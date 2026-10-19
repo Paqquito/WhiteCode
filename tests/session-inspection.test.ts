@@ -1,3 +1,4 @@
+import { profiledTest } from "./helpers/profiled-test";
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
@@ -6,6 +7,7 @@ import { Host } from "./helpers/control";
 import { interactive, KEY } from "./helpers/interactive";
 import { ScriptedProvider } from "./helpers/scripted-provider";
 import { projectSessions, readTranscript, sessionTitle } from "../src/session/sessions";
+const internalProfileTest = profiledTest(import.meta.path, "internal");
 
 test("SPEC-SES-008/CA-02 — a user title remains unchanged after six later turns", async () => {
   const ws = workspace(), provider = new ScriptedProvider(Array.from({ length: 6 }, (_, n) => ({ text: `reply-${n}` })));
@@ -33,6 +35,8 @@ test("SPEC-CMD-015/CA-01 — copying position two selects the penultimate textua
   } finally { host.feed.end(); await host.finish(); }
 });
 
+{
+  const test = internalProfileTest;
 test("SPEC-CMD-088/CA-01 — a denied call displays the matching rule and decision step without calling the model again", async () => {
   const ws = workspace(), target = join(ws.project, "denied.txt"), provider = new ScriptedProvider([{ toolCalls: [{ name: "write_file", input: { path: target, content: "no" } }] }, { text: "refused" }]);
   const host = new Host(ws, { provider, userConfig: { permissions: { denyRules: ["write_file(**)"] } } });
@@ -42,7 +46,11 @@ test("SPEC-CMD-088/CA-01 — a denied call displays the matching rule and decisi
     const report = JSON.stringify(result); expect(report).toContain("write_file(**)"); expect(report).toContain("deny"); expect(report).toContain("Étape"); expect(provider.requests).toHaveLength(2);
   } finally { host.feed.end(); await host.finish(); }
 });
+}
 
+
+{
+  const test = internalProfileTest;
 test("SPEC-CMD-106/CA-01 — a side summary is shown while the next main request preserves the original conversation", async () => {
   const ws = workspace(), provider = new ScriptedProvider([{ text: "Original answer witness." }, { text: "Side summary witness." }, { text: "Follow-up answer." }]);
   const host = new Host(ws, { provider });
@@ -54,6 +62,8 @@ test("SPEC-CMD-106/CA-01 — a side summary is shown while the next main request
     const history = JSON.stringify(provider.requests[2]!.history); expect(history).toContain("Original user witness"); expect(history).toContain("Original answer witness"); expect(history).not.toContain("Side summary witness"); expect(history).not.toContain("/session-summary");
   } finally { host.feed.end(); await host.finish(); }
 });
+}
+
 
 test("SPEC-CMD-097/CA-01 — two other active sessions of the user are listed", async () => {
   const ws = workspace(), provider = new ScriptedProvider([]), controllers = [new AbortController(), new AbortController()];
@@ -67,6 +77,8 @@ test("SPEC-CMD-097/CA-01 — two other active sessions of the user are listed", 
   } finally { controllers.forEach(controller => controller.abort()); await Promise.all(runs.map(run => run.done)); }
 });
 
+{
+  const test = internalProfileTest;
 test("TECH — cancelling a side summary leaves the main history usable and produces no late summary", async () => {
   const ws = workspace(), provider = new ScriptedProvider([{ text: "original" }, { hang: true }, { text: "continued" }]);
   const controller = new AbortController(), run = interactive([], ws, { provider, signal: controller.signal });
@@ -79,3 +91,4 @@ test("TECH — cancelling a side summary leaves the main history usable and prod
     expect(JSON.stringify(provider.requests[2]!.history)).not.toContain("/session-summary");
   } finally { controller.abort(); await run.done; }
 });
+}

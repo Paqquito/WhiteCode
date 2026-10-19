@@ -11,6 +11,7 @@ import { renderTasks, TASK_STATUSES, type Task, type TaskStatus } from "../engin
 import { MAIN_AGENT } from "./update-todo-list";
 import { textOutcome, type Tool, type ToolContext } from "./types";
 import { storeReference } from "../session/private-storage";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 const free = () => ({ readOnly: true, concurrencySafe: true, destructive: false, requiresPermission: false, openWorld: false });
 const listChange = () => ({ readOnly: true, concurrencySafe: false, destructive: false, requiresPermission: false, openWorld: false });
@@ -200,8 +201,8 @@ export function startShellTask(ctx: ToolContext, kind: "shell" | "monitor", comm
 
 export const monitorProcessTool: Tool<{ command: string; description: string; timeout_ms?: number; persistent?: boolean }> = {
   name: "monitor_process",
-  validate: (input, ctx) => ctx.shell?.sandboxRefusal(input.command),
-  permissionContribution: (input, ctx) => ctx.shell?.sandboxContribution(input.command),
+  validate: (input, ctx) => buildFlag("process_monitor") ? ctx.shell?.sandboxRefusal(input.command) : "Process monitoring unavailable in this build.",
+  permissionContribution: (input, ctx) => buildFlag("process_monitor") ? ctx.shell?.sandboxContribution(input.command) : undefined,
   // EF-01: decided like `run_shell`, by its rules.
   permissionName: "run_shell",
   inputSchema: {
@@ -215,12 +216,13 @@ export const monitorProcessTool: Tool<{ command: string; description: string; ti
     required: ["command", "description"],
     additionalProperties: false,
   },
-  description: () => monitorDescription.trim(),
+  description: () => buildFlag("process_monitor") ? monitorDescription.trim() : "Process monitoring unavailable in this build.",
   flags: () => ({ readOnly: false, concurrencySafe: false, destructive: true, requiresPermission: true, openWorld: true }),
-  isEnabled: (env) => env.shells?.posix !== undefined || env.shells?.powershell !== undefined,
+  isEnabled: (env) => buildFlag("process_monitor") && (env.shells?.posix !== undefined || env.shells?.powershell !== undefined),
   ruleSubject: (i) => ({ kind: "command", command: i.command }),
   summary: (i) => `Monitor: ${i.description}`,
   async execute(i, ctx) {
+    if (!buildFlag("process_monitor")) return textOutcome("Process monitoring unavailable in this build.", true, "unavailable");
     if (!ctx.background || !ctx.shell) return noBackground();
     const id = startShellTask(ctx, "monitor", i.command, i.description, i.timeout_ms ?? 300_000, ctx.shell.options.posix === undefined);
     return textOutcome(`Monitor ${id} started. Its lines will reach you as notifications; stop it with background_stop (task_id ${id}).`);

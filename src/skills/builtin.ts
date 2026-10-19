@@ -1,3 +1,4 @@
+// Supports: SPEC-EXT-025/030 (internal profile), SPEC-EXT-033 (browser option removal).
 // Implements: SPEC-EXT-021, SPEC-EXT-022, SPEC-EXT-026, SPEC-EXT-028, SPEC-EXT-029, SPEC-EXT-031, SPEC-EXT-032, SPEC-EXT-033 (the skills
 // built into the product: their definitions, their invocation and their tools)
 // Supports: SPEC-EXT-019 (same header and same invocation as the other skills), gap E-117
@@ -18,10 +19,10 @@ import shortcutHelp from "../../prompts/skills/shortcut-help.md" with { type: "t
 import apiGuide from "../../prompts/skills/ai-api-guide.md" with { type: "text" };
 import memoryConsolidation from "../../prompts/skills/memory-consolidation.md" with { type: "text" };
 import browserControl from "../../prompts/skills/browser-control.md" with { type: "text" };
-import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
+import { buildFlag, buildProfile } from "../extension-points/build-flags" with { type: "macro" };
 import { splitHeader, type Invocation, type Skill } from "./registry";
 
-const SOURCES = [...(buildFlag("defect_scan")?[defectScan]:[]),...(buildFlag("scheduled_triggers_remote")?[schedule]:[]),...(buildFlag("skill_filler_text")?[filler]:[]),...(buildFlag("skill_session_rescue")?[rescue]:[]),batch, configGuide, debug, promoteMemory, simplify, skillFromSession, verify, shortcutHelp, apiGuide, browserControl, ...(buildFlag("scheduled_triggers") ? [loop] : []), ...(buildFlag("memory_consolidation") ? [memoryConsolidation] : [])];
+const SOURCES = [...(buildFlag("output_review")?[defectScan]:[]),...(buildFlag("scheduled_triggers_remote")?[schedule]:[]),...(buildProfile() === "internal" && buildFlag("skill_filler_text")?[filler]:[]),...(buildProfile() === "internal" && buildFlag("skill_session_rescue")?[rescue]:[]),batch, configGuide, debug, promoteMemory, simplify, skillFromSession, verify, shortcutHelp, ...(buildFlag("skill_ai_app_building") ? [apiGuide] : []), ...(buildFlag("browser_user_control") ? [browserControl] : []), ...(buildFlag("scheduled_triggers") ? [loop] : []), ...(buildFlag("memory_consolidation") ? [memoryConsolidation] : [])];
 
 /** The skills of the product, scope `product`: a skill of the same name of any other scope replaces it. */
 export function builtinSkills(): Skill[] {

@@ -9,6 +9,7 @@ import { exactlyAllowed } from "./command-analysis";
 import { opaquePowerShell } from "./powershell-normalize";
 import { splitCommand } from "./command-split";
 import { descriptiveRule, type DescriptionVerdict } from "./descriptive";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 export type AskOrigin = "managed" | "explicit" | "tool_check" | "default";
 
@@ -57,7 +58,7 @@ type RuleKind = Decision["kind"];
 // Implements: SPEC-PER-007 (CA-03, isolated conservative shadow observer), gap E-170.
 export function decide(q: PermissionQuery, ctx: PermissionContext): Decision {
   const existing = decideExisting(q, ctx);
-  if (ctx.shellShadow && q.subject.kind === "command" && ["run_shell", "run_powershell"].includes(q.toolName)) {
+  if (buildFlag("shell_syntax_analysis") && buildFlag("shell_syntax_analysis_shadow") && ctx.shellShadow && q.subject.kind === "command" && ["run_shell", "run_powershell"].includes(q.toolName)) {
     try {
       const parsed = splitCommand(q.subject.command, q.toolName === "run_powershell" ? "powershell" : "posix");
       const parts = parsed.complete ? parsed.parts.map(command => decideExisting({ ...q, subject: { kind: "command", command } }, ctx).kind) : ["ask" as const];

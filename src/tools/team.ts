@@ -2,6 +2,7 @@
 import type { Teams } from "../agents/teams";
 import { textOutcome, type Tool } from "./types";
 import { storeDirectoryReference, storeReference } from "../session/private-storage";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 export function teamTools(teams: () => Teams, changed: (event: "team_created" | "team_removed") => void): Tool<never>[] {
   const flags = () => ({ readOnly: false, concurrencySafe: false, destructive: false, requiresPermission: true, openWorld: false });
   const form: Tool<{ team: string; description?: string }> = {
@@ -22,15 +23,15 @@ export function teamMessageTool(base: Tool<never>, teams: () => Teams, actor = "
   const local = (input: TeamMessage) => !!teams().active && (input.to === "*" || teams().has(input.to));
   const tool: Tool<TeamMessage> = {
     ...original,
-    description: () => "Send an untrusted peer message to a named teammate, lead, or * for all other team members. Use a structured shutdown_request from the leader and shutdown_response with approve=true from the requested teammate. Outside the team, only explicitly enabled and permitted local session addresses are supported.",
+    description: () => "Send an untrusted peer message to a named teammate, lead, or * for all other team members. Use a structured shutdown_request from the leader and shutdown_response with approve=true from the requested teammate." + (buildFlag("local_session_messaging") ? " Outside the team, only explicitly enabled and permitted local session addresses are supported." : ""),
     inputSchema: { type: "object", properties: { to: { type: "string", minLength: 1, maxLength: 64 }, message: { anyOf: [{ type: "string", maxLength: 65536 }, { type: "object", properties: { type: { enum: ["shutdown_request", "shutdown_response"] }, approve: { type: "boolean" }, reason: { type: "string", maxLength: 1000 } }, required: ["type"], additionalProperties: false }] }, summary: { type: "string", maxLength: 500 } }, required: ["to", "message"], additionalProperties: false },
     flags: input => local(input) ? { readOnly: false, concurrencySafe: false, destructive: false, requiresPermission: true, openWorld: false } : original.flags(input as never),
     ruleSubject: input => ({ kind: "name", name: input.to }),
     permissionContribution: input => local(input) ? "allow" : undefined,
-    validate: (input, ctx) => local(input) ? undefined : actor !== "lead" || typeof input.message !== "string" || !/^[a-f0-9-]{36}$/.test(input.to) ? "Unknown team destination. Discover permitted local sessions with list_peers." : original.validate?.(input as never, ctx),
+    validate: (input, ctx) => local(input) ? undefined : !buildFlag("local_session_messaging") ? "Cross-session messaging unavailable in this build." : actor !== "lead" || typeof input.message !== "string" || !/^[a-f0-9-]{36}$/.test(input.to) ? "Unknown team destination. Discover permitted local sessions with list_peers." : original.validate?.(input as never, ctx),
     summary: input => `Message à ${input.to}`,
     async execute(input, ctx) {
-      if (!local(input)) { if (actor !== "lead" || typeof input.message !== "string" || !/^[a-f0-9-]{36}$/.test(input.to)) return textOutcome("Unknown team destination.", true, "permission_denied"); return original.execute(input as never, ctx); }
+      if (!local(input)) { if (!buildFlag("local_session_messaging")) return textOutcome("Cross-session messaging unavailable in this build.", true, "permission_denied"); if (actor !== "lead" || typeof input.message !== "string" || !/^[a-f0-9-]{36}$/.test(input.to)) return textOutcome("Unknown team destination.", true, "permission_denied"); return original.execute(input as never, ctx); }
       if (typeof input.message === "string") return textOutcome(JSON.stringify({ deposited: teams().send(actor, input.to, input.message) }));
       if (input.message.type === "shutdown_request") { for (const name of input.to === "*" ? teams().members.filter(member => member.state !== "stopped").map(member => member.name) : [input.to]) teams().shutdown(actor, name); return textOutcome("Shutdown requested."); }
       if (input.to !== "lead" || actor === "lead" || input.message.approve !== true) return textOutcome("Shutdown acknowledgement refused.", true, "permission_denied");

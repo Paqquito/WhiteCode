@@ -3,6 +3,7 @@
 // capabilities. The requests of the host run concurrently (EF-02); a demand of the engine never waits beyond its delay (EF-03).
 
 import { CONTROL_PROTOCOL_VERSION, CONTROL_TYPES, ControlError, EMITTED_DEMANDS, HOST_REQUESTS, compatibleVersion, parseControlMessage, type EngineDemand, type HostRequest } from "./protocol";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 export type RequestHandler = (params: Readonly<Record<string, unknown>>, signal: AbortSignal) => Promise<unknown>;
 
@@ -62,6 +63,7 @@ export class ControlChannel {
   #closing = false;
 
   constructor(options: ChannelOptions) {
+    if (!buildFlag("engine_control_channel")) throw new ControlError("unavailable_build", "Control channel unavailable in this build.");
     this.#o = options;
   }
 

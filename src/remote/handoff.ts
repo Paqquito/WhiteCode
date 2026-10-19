@@ -1,5 +1,6 @@
 // Implements: SPEC-CMD-091 CA-01 (consent, real Git transfer and destination acknowledgement).
 // Supports: SPEC-MOD-015, SPEC-CMD-056 (single active side and selected environment).
+import { buildFlag, buildProfile } from "../extension-points/build-flags" with { type: "macro" };
 import { randomUUID } from "node:crypto";
 import type { CompanyAccount } from "../auth/company-account";
 import { HandoffGit } from "./handoff-git";
@@ -11,6 +12,7 @@ interface Options {
 }
 const row=(v:unknown):v is Record<string,unknown>=>!!v&&typeof v==="object"&&!Array.isArray(v);
 export async function handoff(o:Options,parent:AbortSignal):Promise<{transferred:boolean;note:string}> {
+  if (!buildFlag("session_handoff") || buildProfile() !== "internal") throw Error("Transfert de session indisponible dans ce profil.");
   const signal=AbortSignal.any([parent,AbortSignal.timeout(120000)]);o.assertPolicy();
   const binding=await o.account.sessionBinding(),profile=await o.account.profile();if(!profile||!binding)throw Error("Compte connecté requis pour le transfert.");
   const owner={account:profile.account,organizationId:profile.organization.id};

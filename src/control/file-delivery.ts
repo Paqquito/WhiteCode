@@ -1,6 +1,7 @@
 // Supports: SPEC-OUT-035 (client-side bounded receiving, verified cards and raster preview); E-226.
 import { createHash } from "node:crypto";
 import { inlineImageInfo } from "../tools/image-header";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 export interface DeliveredFile {
   readonly id: string;
   readonly name: string;
@@ -24,7 +25,7 @@ export class FileDeliveryReceiver {
   constructor(
     readonly publish: (file: DeliveredFile) => Promise<void>,
     readonly maxBytes = 50 * 1024 * 1024,
-  ) {}
+  ) { if (!buildFlag("user_file_delivery")) throw Error("File delivery unavailable in this build."); }
   #remove(id: string) {
     const value = this.#pending.get(id);
     if (value) clearTimeout(value.timer);
@@ -37,6 +38,7 @@ export class FileDeliveryReceiver {
   async receive(
     value: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
+    if (!buildFlag("user_file_delivery")) throw Error("File delivery unavailable in this build.");
     if (this.#closed) return { accepted: false };
     const id = value.id;
     if (typeof id !== "string" || !/^[a-f0-9-]{36}$/.test(id))
@@ -138,6 +140,7 @@ const escape = (v: string) =>
     .replaceAll("'", "&#39;");
 /** A static client card: no scripts, remote fetches, SVG or executable inline documents. */
 export function fileCardHtml(file: DeliveredFile): string {
+  if (!buildFlag("user_file_delivery")) throw Error("File delivery unavailable in this build.");
   const raster =
     ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(
       file.mediaType,

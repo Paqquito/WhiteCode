@@ -30,6 +30,7 @@ import { attachResident } from "./client";
 import { loadJobTemplate, createJobWorkspace, readJobState } from "./jobs";
 import { defaultAssistantDirectory, installAssistant } from "./install";
 import { authDialog } from "../interactive/auth-dialog";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 function productEnvironment(
   deps: AdminDependencies,
   root: string,
@@ -120,7 +121,7 @@ async function foregroundResident(
     environment: (record) => ({
       ...environment,
       ...(record.kind === "remote" ? { [deps.env.prefix + "REMOTE_WORKER"]: "1" } : {}),
-      ...(record.kind === "assistant"
+      ...(buildFlag("mode_assistant_persistent") && record.kind === "assistant"
         ? { [deps.identity.get("ENV_PREFIX") + "ASSISTANT_WORKER"]: "1" }
         : {}),
       ...(record.kind === "job"
@@ -216,7 +217,7 @@ async function foregroundResident(
   process.once("SIGINT", stop);
   try {
     await supervisor.start();
-    if (settings.get<string[]>("daemon.workers").includes("assistant")) {
+    if (buildFlag("mode_assistant_persistent") && settings.get<string[]>("daemon.workers").includes("assistant")) {
       const cwd =
         settings.get<string | undefined>("assistant.installDirectory") ??
         defaultAssistantDirectory(
@@ -252,10 +253,12 @@ export async function runResidentAdmin(
       deps.streams.writeErr(sanitize(maskSecrets(text)) + "\n");
   let release: (() => void) | undefined;
   try {
+    if (!buildFlag("mode_assistant_persistent") && parsed.family === "resident-agent") throw Error("Assistant persistant absent de cette distribution.");
     deps.assertPolicy?.();
     const configuration = loadConfiguration({ ...deps }),
       root = configuration.locations.configDir,
       settings = configuration.firstPass;
+    if (!buildFlag("mode_assistant_persistent") && parsed.family === "service" && parsed.operation === "start" && settings.origin("daemon.workers") !== "default" && settings.get<string[]>("daemon.workers").includes("assistant")) throw Error("Assistant persistant explicitement configuré mais absent de cette distribution.");
     if (deps.env.ownBoolean("OFFLINE_MINIMAL") === true)
       throw Error("Le service résident est indisponible en mode minimal.");
     if (
@@ -324,6 +327,7 @@ export async function runResidentAdmin(
       parsed.operation === "attach" &&
       !parsed.args.length
     ) {
+      if (!buildFlag("mode_assistant_persistent")) throw Error("Assistant persistant absent de cette distribution.");
       const terminal = deps.streams.terminal;
       if (!terminal || !deps.streams.stdinIsTTY || !deps.streams.stdoutIsTTY)
         throw Error("Le rattachement exige un terminal interactif.");

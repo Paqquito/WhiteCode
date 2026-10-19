@@ -52,20 +52,22 @@ export class PerformanceRecorder {
   #track = 1;
   readonly #traceEvents: Array<Record<string, unknown>> = [];
   constructor(options: PerformanceOptions) {
+    if (!buildFlag("performance_tracing") && options.trace !== undefined) throw Error("Performance tracing unavailable in this build.");
+    if (!buildFlag("diagnostics_slow_ops") && options.slowMs !== undefined) throw Error("Slow-operation diagnostics unavailable in this build.");
     this.#o = options; this.#now = options.now ?? (() => performance.now()); this.#start = options.originMs ?? this.#now();
     this.#phases = new Set((buildFlag("diagnostics_profiling") ? options.profile ?? "" : "").split(","));
     if (buildFlag("diagnostics_profiling")) {
     if ([...this.#phases].some(phase => phase !== "" && !["startup", "query", "headless", "all"].includes(phase))) { this.#phases.clear(); options.warn("Profil de performance invalide : startup, query, headless ou all attendus."); }
     if (this.#phases.size && !this.#phases.has("")) this.#open("profile", join(options.directory, "performance-profile.json"));
     }
-    if (options.trace) this.#open("trace", options.trace === "1" ? join(options.directory, "performance-trace.json") : options.trace);
+    if (buildFlag("performance_tracing") && options.trace) this.#open("trace", options.trace === "1" ? join(options.directory, "performance-trace.json") : options.trace);
     if (this.#files.size) { this.#timer = setInterval(() => this.flush(), 500); this.#timer.unref?.(); }
   }
   #open(kind: "trace" | "profile", path: string): void {
     try { this.#files.set(kind, new PerformanceFile(path)); }
     catch { this.#o.warn(`Diagnostic de performance inaccessible, désactivé : ${path}.`); }
   }
-  get recent(): readonly { name: string; durationMs: number; sizeBytes: number }[] { const now = this.#now(); return this.#recent.filter(sample => sample.expiresMs > now).map(({ expiresMs, ...sample }) => sample); }
+  get recent(): readonly { name: string; durationMs: number; sizeBytes: number }[] { if (!buildFlag("diagnostics_slow_ops") && !buildFlag("ui_dev_bar")) return []; const now = this.#now(); return this.#recent.filter(sample => sample.expiresMs > now).map(({ expiresMs, ...sample }) => sample); }
   get paths(): readonly string[] { return [...this.#files.values()].map(file => file.path); }
   start(name: string, phase: PerformancePhase, sizeBytes = 0): (measuredSize?: number) => void {
     const started = this.#now(); let ended = false;
@@ -75,19 +77,20 @@ export class PerformanceRecorder {
     // Only fixed instrumentation names and numeric measurements enter these files.
     if (!/^[a-z][a-z0-9_.-]*$/.test(sample.name) || !["startup", "query", "headless"].includes(sample.phase) || ![sample.startMs, sample.durationMs, sample.rssBytes, sample.heapUsedBytes, sample.sizeBytes ?? 0].every(value => Number.isFinite(value) && value >= 0)) return;
     const limit = this.#o.maxEvents ?? 4096;
-    if (this.#files.has("trace")) {
+    if (buildFlag("performance_tracing") && this.#files.has("trace")) {
       if (this.#traceEvents.length >= limit) { this.flush(); const previous = this.#files.get("trace")!; previous.close(); this.#files.delete("trace"); this.#open("trace", `${this.#o.trace === "1" ? join(this.#o.directory, "performance-trace.json") : this.#o.trace}.${++this.#rotation}.json`); this.#traceEvents.length = 0; }
       this.#traceEvents.push({ name: sample.name, cat: sample.phase, ph: "X", ts: Math.round(sample.startMs * 1000), dur: Math.max(1, Math.round(sample.durationMs * 1000)), pid: process.pid, tid: this.#track++, args: { sizeBytes: sample.sizeBytes ?? 0, rssBytes: sample.rssBytes, heapUsedBytes: sample.heapUsedBytes } });
     }
     if (buildFlag("diagnostics_profiling") && this.#files.has("profile") && (this.#phases.has("all") || this.#phases.has(sample.phase))) { this.#samples.push({ name: sample.name, phase: sample.phase, startMs: sample.startMs, durationMs: sample.durationMs, rssBytes: sample.rssBytes, heapUsedBytes: sample.heapUsedBytes, sizeBytes: sample.sizeBytes }); if (this.#samples.length > limit) this.#samples.shift(); }
-    if (this.#o.slowMs !== undefined && sample.durationMs > this.#o.slowMs) {
-      this.#o.log(sample.name, sample.durationMs, sample.sizeBytes ?? 0);
+    const slow = buildFlag("diagnostics_slow_ops") && this.#o.slowMs !== undefined && sample.durationMs > this.#o.slowMs;
+    if (buildFlag("diagnostics_slow_ops") && slow) this.#o.log(sample.name, sample.durationMs, sample.sizeBytes ?? 0);
+    if (buildFlag("diagnostics_slow_ops") && slow || buildFlag("ui_dev_bar") && sample.durationMs > 50) {
       this.#recent.push({ name: sample.name, durationMs: sample.durationMs, sizeBytes: sample.sizeBytes ?? 0, expiresMs: this.#now() + 5000 }); if (this.#recent.length > 5) this.#recent.shift();
     }
   }
   flush(): void {
     for (const [kind, file] of this.#files) {
-      try { file.write(kind === "trace" ? { traceEvents: this.#traceEvents, displayTimeUnit: "ms" } : { version: 1, samples: this.#samples }); }
+      try { file.write(buildFlag("performance_tracing") && kind === "trace" ? { traceEvents: this.#traceEvents, displayTimeUnit: "ms" } : { version: 1, samples: this.#samples }); }
       catch { file.close(); this.#files.delete(kind); this.#o.warn(`Écriture du diagnostic impossible, désactivé : ${file.path}.`); }
     }
   }

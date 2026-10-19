@@ -5,7 +5,7 @@
 // Supports: gap E-144. Usage: bun scripts/build.ts [--target <target> | --all] [--identity <file>] [--models <file>]
 //           [--profile public|internal|development|test] [--build-options <file>] [--forbidden-terms <private external file>]
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Identity } from "../src/identity/identity";
 import { resolveIdentityText, runtimeIdentity } from "../src/identity/resolver";
@@ -15,6 +15,7 @@ import { suggest } from "../src/shared/suggest";
 import { BUILD_OPTIONS, resolveBuildOptions } from "../src/extension-points/build-options";
 import { publishSettingsSchema } from "./settings-schema";
 import { bootstrapScript } from "../src/installation/bootstrap";
+import { BUILD_TARGETS, hostBuildTarget } from "../src/platform/build-target";
 
 const root = resolve(import.meta.dir, "..");
 const outDir = resolve(root, "dist");
@@ -34,7 +35,7 @@ try {
   unlinkSync(receipt);
 } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 if (Bun.version !== "1.4.2") throw new Error("La construction exige Bun 1.4.2.");
-const TARGETS = ["bun-windows-x64", "bun-windows-arm64", "bun-linux-x64", "bun-linux-arm64", "bun-linux-x64-musl", "bun-linux-arm64-musl", "bun-darwin-x64", "bun-darwin-arm64"];
+const TARGETS: readonly string[] = BUILD_TARGETS;
 const options = new Map<string, string>(); let all = false;
 for (let i = 2; i < process.argv.length; i++) {
   const name = process.argv[i]!;
@@ -44,7 +45,12 @@ for (let i = 2; i < process.argv.length; i++) {
 }
 if ((all && options.has("--target")) || (options.has("--target") && !TARGETS.includes(options.get("--target")!))) throw new Error("Cible de build invalide.");
 const profile = options.get("--profile") ?? "public";
-const values = resolveBuildOptions(profile, options.has("--build-options") ? JSON.parse(readFileSync(resolve(root, options.get("--build-options")!), "utf8")) : {});
+const primaryTarget = options.get("--target") ?? hostBuildTarget();
+const overrides: unknown = options.has("--build-options") ? JSON.parse(readFileSync(resolve(root, options.get("--build-options")!), "utf8")) : {};
+const values = resolveBuildOptions(profile, overrides, primaryTarget);
+const targets = all ? TARGETS : [options.get("--target")];
+// Reject incompatible target overrides before generation or any compilation.
+const targetValues = Object.fromEntries(targets.map(target => [target ?? "current", resolveBuildOptions(profile, overrides, target ?? primaryTarget)]));
 let privateTerms: string[] = [];
 if (options.has("--forbidden-terms")) {
   const file = realpathSync(resolve(root, options.get("--forbidden-terms")!)), rel = relative(realpathSync(root), file);
@@ -57,12 +63,27 @@ async function step(name: string, cmd: string[]): Promise<void> {
   if ((await proc.exited) !== 0) { console.error(`Build interrompu à l’étape « ${name} ».`); process.exit(1); }
 }
 const passthrough = [...options].filter(([name]) => ["--identity", "--models", "--profile", "--build-options"].includes(name)).flat();
-await step("identité et constantes", [process.execPath, "scripts/generate.ts", ...passthrough]);
+let generatedIdentity: Buffer | undefined;
+async function generate(target: string): Promise<void> {
+  await step("identité et constantes", [process.execPath, "--no-env-file", "scripts/generate.ts", ...passthrough, "--target", target]);
+  // Read the output, not a cached module import, after every target generation.
+  const flags = readFileSync(join(root, "src/identity/generated/build-flags.ts"), "utf8");
+  const constant = (name: string): unknown => {
+    const value = new RegExp(`^export const ${name} = (.*?)(?: as const)?;$`, "m").exec(flags)?.[1];
+    if (value === undefined) throw new Error("Constantes de build générées invalides.");
+    return JSON.parse(value);
+  };
+  if (constant("BUILD_PROFILE") !== profile || constant("BUILD_TARGET") !== target || JSON.stringify(constant("BUILD_VALUES")) !== JSON.stringify(resolveBuildOptions(profile, overrides, target))) throw new Error("Options de build changées pendant la génération.");
+  const identity = readFileSync(join(root, "src/identity/generated/build-data.ts"));
+  if (generatedIdentity && !generatedIdentity.equals(identity)) throw new Error("Identité ou catalogue de modèles changé pendant la génération.");
+  generatedIdentity ??= identity;
+}
+await generate(primaryTarget);
 await step("vérification des types", [process.execPath, "x", "--no-install", "--bun", "tsc", "--noEmit", "-p", "."]);
 await step("contrôles statiques", [process.execPath, "scripts/check-static.ts"]);
 const { RESOLVED_IDENTITY, SOURCE_IDENTITY_HASH } = await import("../src/identity/generated/build-data");
-const { BUILD_PROFILE, BUILD_VALUES } = await import("../src/identity/generated/build-flags");
-if (BUILD_PROFILE !== profile || Object.entries(values).some(([name, value]) => BUILD_VALUES[name as keyof typeof BUILD_VALUES] !== value)) throw new Error("Options de build changées pendant la génération.");
+const { BUILD_PROFILE, BUILD_TARGET, BUILD_VALUES } = await import("../src/identity/generated/build-flags");
+if (BUILD_PROFILE !== profile || BUILD_TARGET !== primaryTarget || Object.entries(values).some(([name, value]) => BUILD_VALUES[name as keyof typeof BUILD_VALUES] !== value)) throw new Error("Options de build changées pendant la génération.");
 const original = resolveIdentityText(readFileSync(resolve(root, options.get("--identity") ?? "identity/dev.identity.json"), "utf8"), { version: RESOLVED_IDENTITY.version, strict: true }).identity;
 if (!original || original.hash !== SOURCE_IDENTITY_HASH || runtimeIdentity(original).hash !== RESOLVED_IDENTITY.hash) throw new Error("Identité changée pendant la construction.");
 const cli = RESOLVED_IDENTITY.values["PRODUCT_CLI"]!.value as string;
@@ -76,11 +97,11 @@ const scanExceptions = original.compatibility.scanExceptions?.filter((e) => !man
 const scanIdentity = new Identity({ ...original, compatibility: { ...original.compatibility, forbiddenTerms, scanExceptions } });
 const manifest: Array<{ target: string; file: string; sha256: string }> = [];
 const scanCache: ScanCache = new Map();
-function control(): void {
+function control(extraFiles: string[] = []): void {
   const issues = scanDirectory(outDir, scanIdentity, scanCache);
   for (const issue of issues) console.error(`Chaîne interdite « ${issue.term} » : ${issue.file}:${issue.line}:${issue.column}.`);
   if (issues.length) throw new Error("Contrôle anti-fuite refusé.");
-  for (const file of manifest.map((d) => d.file)) {
+  for (const file of [...manifest.map((d) => d.file), ...extraFiles]) {
     const leak = /\{\{\s*([A-Z][A-Z0-9_]*)\s*(\|\s*[a-z]+\s*)*\}\}/.exec(readFileSync(join(outDir, file)).toString("latin1"));
     if (leak) {
       const name = leak[1]!, unknown = !VARIABLE_BY_NAME.has(name), near = unknown ? suggest(name.slice(0, 256), VARIABLE_BY_NAME.keys(), 256)[0] : undefined;
@@ -90,17 +111,27 @@ function control(): void {
 }
 const record = (target: string, file: string) => manifest.push({ target, file, sha256: createHash("sha256").update(readFileSync(join(outDir, file))).digest("hex") });
 const bundleName = `${cli}.js`;
-const bundle = await Bun.build({ entrypoints: [join(root, "src/main.ts")], target: "bun", format: "esm", minify: true, outdir: outDir, naming: bundleName });
-if (!bundle.success) { for (const log of bundle.logs) console.error(log); console.error("Build interrompu au regroupement."); process.exit(1); }
-if (bundle.outputs.length !== 1 || resolve(bundle.outputs[0]!.path) !== join(outDir, bundleName)) throw new Error("Ressource externe non embarquée : construction refusée.");
+async function bundle(file: string): Promise<void> {
+  const before = new Set(readdirSync(outDir));
+  // Each target needs a fresh macro process; cached imports would reuse the first target's constants.
+  // Let the compiler emit assets so the single-file check can report its precise refusal.
+  await step("regroupement", [process.execPath, "--no-env-file", "build", join(root, "src/main.ts"), "--target=bun", "--format=esm", "--minify", "--outdir", outDir, "--entry-naming", file]);
+  if (!existsSync(join(outDir, file)) || readdirSync(outDir).some(name => !before.has(name) && name !== file)) throw new Error("Ressource externe non embarquée : construction refusée.");
+  control([file]);
+}
+await bundle(bundleName);
 record("bundle", bundleName); control();
-const targets = all ? TARGETS : options.has("--target") ? [options.get("--target")!] : [undefined];
 for (const target of targets) {
+  const effectiveTarget = target ?? primaryTarget;
+  const temporaryBundle = effectiveTarget !== primaryTarget ? `${cli}-${effectiveTarget}.js` : undefined;
+  if (temporaryBundle) { await generate(effectiveTarget); await bundle(temporaryBundle); }
   const name = target ? `${cli}-${target.replace(/^bun-/, "")}` : cli;
   const file = target?.includes("windows") || (!target && process.platform === "win32") ? `${name}.exe` : name;
-  await step(`compilation ${target ?? "plateforme courante"}`, [process.execPath, "build", join(outDir, bundleName), "--compile", "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--minify", "--outfile", join(outDir, file), ...(target ? [`--target=${target}`] : [])]);
+  await step(`compilation ${target ?? "plateforme courante"}`, [process.execPath, "--no-env-file", "build", join(outDir, temporaryBundle ?? bundleName), "--compile", "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--minify", "--outfile", join(outDir, file), ...(target ? [`--target=${target}`] : [])]);
+  if (temporaryBundle) unlinkSync(join(outDir, temporaryBundle));
   record(target ?? "current", file); control();
 }
+if (all) await generate(primaryTarget);
 publishSettingsSchema(root, outDir, { cli, version: RESOLVED_IDENTITY.version }); record("settings-schema", "config.schema.json");
 writeFileSync(join(outDir, "package.json"), readFileSync(join(root, "src/identity/generated/package.json"))); record("package-manifest", "package.json");
 writeFileSync(join(outDir, "extension-authors.html"), readFileSync(join(root, "src/identity/generated/extension-authors.html"))); record("extension-documentation", "extension-authors.html");
@@ -114,7 +145,7 @@ writeFileSync(join(outDir, "build-options.json"), JSON.stringify({ profile, opti
 const git = Bun.spawn(["git", "rev-parse", "HEAD"], { cwd: root, stdout: "pipe", stderr: "ignore" });
 const commitText = (await new Response(git.stdout).text()).trim(), commit = await git.exited === 0 && /^[a-f0-9]{40}$/.test(commitText) ? commitText : null;
 const receipt = join(outDir, "manifest.json");
-writeFileSync(receipt, JSON.stringify({ identity: RESOLVED_IDENTITY.hash, version: RESOLVED_IDENTITY.version, source: { commit, identity: SOURCE_IDENTITY_HASH }, build: { profile, options: values, disabledFeatures, privateTermsLoaded: options.has("--forbidden-terms") }, deliverables: manifest }, null, 2) + "\n");
+writeFileSync(receipt, JSON.stringify({ identity: RESOLVED_IDENTITY.hash, version: RESOLVED_IDENTITY.version, source: { commit, identity: SOURCE_IDENTITY_HASH }, build: { profile, target: primaryTarget, options: values, targets: targetValues, disabledFeatures, privateTermsLoaded: options.has("--forbidden-terms") }, deliverables: manifest }, null, 2) + "\n");
 try {
   control();
   for (const d of manifest) if (createHash("sha256").update(readFileSync(join(outDir, d.file))).digest("hex") !== d.sha256) throw new Error(`Livrable modifié pendant la construction : ${d.file}.`);

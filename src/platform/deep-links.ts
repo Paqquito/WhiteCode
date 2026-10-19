@@ -5,6 +5,7 @@ import { findExecutable, type PlatformName } from "./system";
 import { startChild } from "./process";
 import { productProcess } from "./product-process";
 import { ordinaryPrivateFile } from "../shared/private-text";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 async function execute(
   file: string,
   args: readonly string[],
@@ -35,6 +36,7 @@ export async function deepLinkRegistration(o: {
   environment: Readonly<Record<string, string>>;
   powerShell?: string;
 }): Promise<boolean> {
+  if (!buildFlag("deep_links")) throw Error("Deep links unavailable in this build.");
   if (!/^[a-z][a-z0-9+.-]{1,63}$/.test(o.scheme)) return false;
   const command = productProcess(["--open-link"]),
     args = [command.file, ...command.args];
@@ -140,6 +142,7 @@ export async function launchDeepLink(o: {
   powerShell?: string;
   terminal?: string;
 }): Promise<boolean> {
+  if (!buildFlag("deep_links")) throw Error("Deep links unavailable in this build.");
   const command = productProcess(["--link-input", o.url]);
   if (o.platform === "windows") {
     const terminal = o.terminal ?? findExecutable("wt");

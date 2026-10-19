@@ -8,8 +8,10 @@ import {
   type PlatformName,
 } from "../platform/system";
 import { setValueInSettingsFile } from "../config/settings-writer";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 export function defaultAssistantDirectory(home: string, slug: string): string {
+  if (!buildFlag("mode_assistant_persistent")) throw Error("Assistant persistant absent de cette distribution.");
   return join(home, slug + "-assistant");
 }
 export function installAssistant(options: {
@@ -19,6 +21,7 @@ export function installAssistant(options: {
   settingsFile: string;
   platform: PlatformName;
 }): string {
+  if (!buildFlag("mode_assistant_persistent")) throw Error("Assistant persistant absent de cette distribution.");
   if (
     !isAbsolute(options.directory) ||
     options.directory.length > 4096 ||

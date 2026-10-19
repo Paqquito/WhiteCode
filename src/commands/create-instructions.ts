@@ -6,14 +6,18 @@
 import firstVersion from "../../prompts/commands/create-instructions.md" with { type: "text" };
 import guidedVersion from "../../prompts/commands/create-instructions-guided.md" with { type: "text" };
 
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
+
+const guidedTemplate = buildFlag("project_init_v2") ? guidedVersion : "";
+
 export type SetupChoice = "project" | "personal" | "skills" | "hooks";
 
-export const SETUP_CHOICES: ReadonlyArray<{ readonly id: SetupChoice; readonly label: string; readonly words: readonly string[] }> = [
+export const SETUP_CHOICES: ReadonlyArray<{ readonly id: SetupChoice; readonly label: string; readonly words: readonly string[] }> = buildFlag("project_init_v2") ? [
   { id: "project", label: "instructions du projet", words: ["projet", "project"] },
   { id: "personal", label: "instructions personnelles", words: ["personnel", "personal"] },
   { id: "skills", label: "compétences", words: ["compétences", "competences", "skills"] },
   { id: "hooks", label: "crochets", words: ["crochets", "hooks"] },
-];
+] : [];
 
 /** The choices named in the arguments (`compétences crochets`), or undefined when an argument is unknown. */
 export function parseChoices(args: string): SetupChoice[] | undefined {
@@ -41,7 +45,7 @@ export const fill = (template: string, values: Readonly<Record<string, string>>)
 /** § 5.3 (first version) or FA-01 (guided version, EF-03: only the phases of the chosen elements). */
 export function createInstructionsRequest(names: SetupNames, guided: boolean, choices: readonly SetupChoice[]): string {
   const values = { INSTRUCTIONS_FILE: names.instructionsFile, LOCAL_INSTRUCTIONS_FILE: names.localInstructionsFile, PROJECT_DIR: names.projectDir };
-  if (!guided) return fill(firstVersion, values).trimEnd();
+  if (!buildFlag("project_init_v2") || !guided) return fill(firstVersion, values).trimEnd();
   const has = (c: SetupChoice) => choices.includes(c);
   const phases = [
     "Explore the repository: build files, scripts, tests, CI, documentation, existing instructions, skills and settings.",
@@ -57,5 +61,5 @@ export function createInstructionsRequest(names: SetupNames, guided: boolean, ch
     "Summarise.",
   ];
   const chosen = SETUP_CHOICES.filter((c) => has(c.id)).map((c) => c.id.replace("project", "project instructions").replace("personal", "personal instructions"));
-  return fill(guidedVersion, { ...values, CHOSEN: chosen.join(", "), PHASES: phases.map((p, i) => `${i + 1}. ${p}`).join("\n") }).trimEnd();
+  return fill(guidedTemplate, { ...values, CHOSEN: chosen.join(", "), PHASES: phases.map((p, i) => `${i + 1}. ${p}`).join("\n") }).trimEnd();
 }

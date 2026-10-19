@@ -4,9 +4,7 @@ import type { Identity } from "../identity/identity";
 import type { Settings } from "../config/settings";
 import type { CredentialVault } from "../platform/credential-vault";
 import { CompanyAccount, type AccountProfile, type CompanyService } from "./company-account";
-import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 export function configuredCompanyAccount(identity: Identity, configDir: string, settings: () => Settings, vault: CredentialVault, network: typeof fetch): CompanyAccount | undefined {
-  if(!buildFlag("company_account"))return undefined;
   if (!["SERVICE_OAUTH_AUTHORIZE", "SERVICE_OAUTH_TOKEN", "OAUTH_CLIENT_ID", "SERVICE_WEB_APP"].every(name => identity.has(name))) return undefined;
   const at = (base: string, path: string) => new URL(path, base.replace(/\/?$/, "/")).href;
   const web = identity.get("SERVICE_WEB_APP"), consoleUrl = identity.has("SERVICE_CONSOLE") ? identity.get("SERVICE_CONSOLE") : undefined;

@@ -1,4 +1,5 @@
 // Implements: SPEC-CFG-014 (CA-01/02/03, EF-01/02/03/04/05, RG-01), gap E-153.
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 import { lstatSync, readFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -12,7 +13,7 @@ export class FeatureFlags {
   constructor(options: FeatureFlagOptions) {
     this.#o = options; this.#values = Object.freeze({ scheduled_triggers: options.compiled, schedule_jitter_ms: 5000, ...(options.remoteCompiled === undefined ? {} : { remote_auto_connect: options.remoteCompiled }) });
     if (this.#configured()) try { const stat = lstatSync(options.cache); if (stat.isFile() && !stat.isSymbolicLink() && stat.size <= 20_000) { const data = JSON.parse(readFileSync(options.cache, "utf8")); if (/^[a-f0-9-]{36}$/i.test(data.id)) this.#id = data.id; this.#apply(data.values); if (typeof data.refreshedAt === "string") this.#lastRefresh = data.refreshedAt; } } catch { /* embedded defaults */ }
-    if (options.internal && options.overrides) try { this.#apply(JSON.parse(options.overrides)); } catch { /* invalid local override */ }
+    if (buildFlag("config_feature_overrides") && options.internal && options.overrides) try { this.#apply(JSON.parse(options.overrides)); } catch { /* invalid local override */ }
   }
   #configured(): boolean { try { const url = new URL(this.#o.url ?? ""); return !this.#o.disabled && this.#o.canRefresh?.() !== false && url.protocol === "https:" && !url.username && !url.password && !url.hash; } catch { return false; } }
   #apply(input: unknown): void {
@@ -37,7 +38,7 @@ export class FeatureFlags {
       try { for (;;) { const chunk = await reader.read(); if (chunk.done) break; size += chunk.value.length; if (size > 20_000) throw new Error(); text += decoder.decode(chunk.value, { stream: true }); } } finally { await reader.cancel().catch(() => {}); }
       if (this.#closed || controller.signal.aborted || !this.#configured()) return;
       const value = JSON.parse(text + decoder.decode()); this.#apply(value.values);
-      if (this.#o.internal && this.#o.overrides) try { this.#apply(JSON.parse(this.#o.overrides)); } catch { /* invalid override */ }
+      if (buildFlag("config_feature_overrides") && this.#o.internal && this.#o.overrides) try { this.#apply(JSON.parse(this.#o.overrides)); } catch { /* invalid override */ }
       this.#lastRefresh = new Date().toISOString(); mkdirSync(dirname(this.#o.cache), { recursive: true, mode: 0o700 });
       try { const stat = lstatSync(this.#o.cache); if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) return; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return; }
       writeAtomic(this.#o.cache, Buffer.from(JSON.stringify({ id: this.#id, refreshedAt: this.#lastRefresh, values: this.#values }) + "\n"), this.#o.platform, true);

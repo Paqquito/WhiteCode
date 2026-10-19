@@ -1,3 +1,4 @@
+import { profiledTest } from "./helpers/profiled-test";
 // The skills built into the product (lot 8, increment 6): batch (SPEC-EXT-021), debug (SPEC-EXT-022), promote-memory
 // (SPEC-EXT-026), simplify (SPEC-EXT-028), skill-from-session (SPEC-EXT-029), config-guide (SPEC-EXT-031), verify
 // (SPEC-EXT-032). Their behaviour belongs to the model; these tests check what the product gives it and enforces.
@@ -9,6 +10,7 @@ import { loadIdentity, workspace, type Workspace } from "./helpers/env";
 import { Host } from "./helpers/control";
 import { PROJECT_DIR } from "./helpers/hooks";
 import { ScriptedProvider, type ScriptedResponse } from "./helpers/scripted-provider";
+const internalProfileTest = profiledTest(import.meta.path, "internal");
 
 const identity = loadIdentity();
 const history = (p: ScriptedProvider, i: number) => JSON.stringify(p.requests[i]!.history);
@@ -31,12 +33,16 @@ function git(cwd: string, ...args: string[]): void {
   if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr.toString()}`);
 }
 
+{
+  const test = internalProfileTest;
 test("TECH — the built-in skills of the product have a valid header", () => {
   const skills = builtinSkills();
-  expect(skills.map((s) => s.name).sort()).toEqual(["ai-api-guide", "batch", "browser-control", "config-guide", "debug", "defect-scan", "filler-text", "loop", "memory-consolidation", "promote-memory", "schedule", "shortcut-help", "simplify", "skill-from-session", "verify"]);
+  expect(skills.map((s) => s.name).sort()).toEqual(["ai-api-guide", "batch", "browser-control", "config-guide", "debug", "defect-scan", "filler-text", "loop", "memory-consolidation", "promote-memory", "schedule", "session-rescue", "shortcut-help", "simplify", "skill-from-session", "verify"]);
   for (const s of skills) expect(s.description.length).toBeGreaterThan(40);
-  expect(skills.filter((s) => s.invocation === "user").map((s) => s.name).sort()).toEqual(["debug", "filler-text", "skill-from-session"]);
+  expect(skills.filter((s) => s.invocation === "user").map((s) => s.name).sort()).toEqual(["debug", "filler-text", "session-rescue", "skill-from-session"]);
 });
+}
+
 
 describe("SPEC-EXT-021 batch", () => {
   test("SPEC-EXT-021/CA-01 — a renaming in 60 files: a split is proposed before any change", async () => {
@@ -186,3 +192,13 @@ describe("SPEC-EXT-032 verify", () => {
     expect(history(p, 1)).toContain("format=json");
   }, 30_000);
 });
+
+{
+  const test = profiledTest(import.meta.path, "public");
+  test("TECH — the public built-in skill inventory preserves ordinary skills and excludes internal filler and rescue", () => {
+    const skills = builtinSkills();
+    expect(skills.map((s) => s.name).sort()).toEqual(["ai-api-guide", "batch", "browser-control", "config-guide", "debug", "defect-scan", "loop", "memory-consolidation", "promote-memory", "schedule", "shortcut-help", "simplify", "skill-from-session", "verify"]);
+    for (const s of skills) expect(s.description.length).toBeGreaterThan(40);
+    expect(skills.filter((s) => s.invocation === "user").map((s) => s.name).sort()).toEqual(["debug", "skill-from-session"]);
+  });
+}

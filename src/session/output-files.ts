@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import { isAbsolute, relative, resolve, sep, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import picomatch from "picomatch";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 interface Options {
   readonly root: string;
   readonly directory: string;
@@ -38,6 +39,7 @@ const stamp = (s: fs.Stats) =>
   `${s.dev}:${s.ino}:${s.mode}:${s.nlink}:${s.size}:${s.mtimeMs}:${s.ctimeMs}`;
 export class OutputFiles {
   constructor(readonly options: Options) {
+    if (!buildFlag("output_file_persistence")) throw Error("Output file persistence unavailable in this build.");
     if (
       !inside(resolve(options.root), resolve(options.directory)) ||
       !Number.isSafeInteger(options.maxSize) ||
@@ -52,6 +54,7 @@ export class OutputFiles {
       throw Error("Invalid output persistence configuration.");
   }
   async capture(startedAt: number, signal: AbortSignal): Promise<void> {
+    if (!buildFlag("output_file_persistence")) throw Error("Output file persistence unavailable in this build.");
     signal.throwIfAborted();
     const root = resolve(this.options.root),
       directory = resolve(this.options.directory),

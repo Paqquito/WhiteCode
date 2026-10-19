@@ -1,8 +1,10 @@
+import { profiledTest } from "./helpers/profiled-test";
 import { test, expect } from "bun:test";
 import { handoffHistory, handoffState } from "../src/remote/handoff-state";
 import { handoff } from "../src/remote/handoff";
 import type { HandoffGit } from "../src/remote/handoff-git";
 import { handoffDigest } from "../src/remote/handoff-state";
+const internalProfileTest = profiledTest(import.meta.path, "internal");
 test("TECH — CMD091 transfer metadata rejects traversal and incomplete history instead of truncating", () => {
   expect(() => handoffState({ branch: "../bad" })).toThrow();
   expect(() => handoffHistory(Array.from({ length: 257 }, () => ({ role: "system_note", text: "old" })))).toThrow();
@@ -25,18 +27,30 @@ function fixture() {
   }};
   return {events,state,get statusReads(){return statusReads;},failActivation:()=>{failActivation=true;},failStop:()=>{failStop=true;},replace:()=>{binding="new";},options:{account:account as any,git,environment:"second",webUrl:"https://service.example.test/",history:()=>messages,redact:(s:string)=>s,confirm:async()=>true,assertPolicy:()=>{},report:()=>{}}};
 }
+{
+const test = internalProfileTest;
 test("TECH — CMD091 a lost activation and unconfirmed stop freezes local execution and retains the recovery ref", async()=>{
   const f=fixture();f.failActivation();f.failStop();const result=await handoff(f.options,AbortSignal.timeout(1000));
   expect(result.transferred).toBe(true);expect(result.note).toContain("incertaine");expect(f.events).toEqual(["capture","publish","create","activate","stop","close"]);
 });
+}
+{
+const test = internalProfileTest;
 test("TECH — CMD091 a lost activation response recovers locally only after a confirmed worker stop",async()=>{
   const f=fixture();f.failActivation();await expect(handoff(f.options,AbortSignal.timeout(1000))).rejects.toThrow("restaurées");
   expect(f.events).toEqual(["capture","publish","create","activate","stop","recover","close"]);
 });
+}
+{
+const test = internalProfileTest;
 test("TECH — CMD091 replacing login during consent abandons before any Git mutation",async()=>{
   const f=fixture();f.options.confirm=async()=>{f.replace();return true;};await expect(handoff(f.options,AbortSignal.timeout(1000))).rejects.toThrow("Connexion remplacée");expect(f.events).toEqual(["recover","close"]);
 });
+}
+{
+const test = internalProfileTest;
 test("TECH — CMD091 cancellation after capture restores with a fresh cleanup lifetime",async()=>{
   const f=fixture(),cancel=new AbortController();f.options.git.publish=async()=>{cancel.abort();throw Error("cancelled upload");};
   await expect(handoff(f.options,cancel.signal)).rejects.toThrow("restaurées");expect(f.events).toEqual(["capture","recover","close"]);
 });
+}

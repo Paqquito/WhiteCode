@@ -1,4 +1,5 @@
 // Implements: SPEC-MOD-013/016/017, SPEC-CMD-055/103 (outgoing relay, read-only mirror and single resolution); gap E-185.
+import { buildFlag, buildProfile } from "../extension-points/build-flags" with { type: "macro" };
 import { randomUUID } from "node:crypto";
 import type {
   ApprovalRequest,
@@ -366,6 +367,7 @@ export class SessionRelay {
     };
   }
   kick(state: string): void {
+    if (!buildFlag("remote_failure_injection") || buildProfile() !== "internal") throw Error("Injection de défaillance indisponible dans ce profil.");
     if (!["disconnect", "expired-token", "service-error"].includes(state))
       throw Error("État attendu : disconnect, expired-token ou service-error.");
     if (!this.#id || this.#state === "closed")

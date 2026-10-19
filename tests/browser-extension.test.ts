@@ -36,11 +36,28 @@ test.skipIf(!nativeBrowserAvailable)("TECH — an installed real extension publi
     expect((await call({ action: "click", tab, ref: button })).isError).toBe(false);
     expect(text(await call({ action: "read", tab }))).toContain("Changed through native messaging");
     expect(text(await call({ action: "console", tab }))).toContain("NATIVE_CONSOLE_MARKER");
-    const screenshot = await call({ action: "screenshot", tab }); expect(screenshot.isError).toBe(false); const image = screenshot.content.find(part => part.type === "image"); expect(image?.type).toBe("image"); if (image?.type === "image") expect(Buffer.from(image.dataBase64, "base64").subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    const screenshot = await call({ action: "screenshot", tab }); expect(screenshot.isError, text(screenshot)).toBe(false); const image = screenshot.content.find(part => part.type === "image"); expect(image?.type).toBe("image"); if (image?.type === "image") expect(Buffer.from(image.dataBase64, "base64").subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
     expect(await fixture.evaluate(`chrome.tabs.get(${tab}).then(t=>t.groupId>=0)`)).toBe(true);
     allowed = false; expect((await call({ action: "read", tab })).isError).toBe(true); expect(await bridge.tool()).toBeUndefined();
   } finally { await bridge.close(); await fixture.close(); site.stop(true); }
 }, 40000);
+
+test.skipIf(!nativeBrowserAvailable)("TECH — an actual minimized browser capture times out without losing its client when the window returns", async () => {
+  const fixture=await nativeBrowserFixture(),site=Bun.serve({hostname:"127.0.0.1",port:0,fetch:()=>new Response("<h1>NATIVE_LATE_CAPTURE_64</h1>",{headers:{"content-type":"text/html"}})}),origin=`http://127.0.0.1:${site.port}`;
+  const bridge=new BrowserBridge({configDir:fixture.ws.configHome,slug:fixture.slug,product:"Late capture fixture",extensionId:()=>fixture.id,permitted:()=>true,changed:()=>{}});
+  try{
+    await fixture.allow(origin);await bridge.start();await fixture.reconnect();await waitFor(()=>bridge.connected,"Owned native browser did not connect.");
+    const client=bridge.clients[0]!.id,tool=(await bridge.tool())!,context={...testToolFields(),platform:currentPlatform(),home:fixture.ws.home,cwd:fixture.ws.project,allowedDirectories:[fixture.ws.project],signal:new AbortController().signal,modelImages:true};
+    const call=(input:BrowserControlInput)=>tool.execute(input,context),tab=data(await call({action:"navigate",url:origin})).id;
+    await fixture.evaluate(`chrome.tabs.get(${tab}).then(t=>chrome.windows.update(t.windowId,{state:'minimized'}))`);
+    const expired=await call({action:"screenshot",tab});expect(expired.isError).toBe(true);expect(text(expired)).toContain("timed out");
+    await fixture.evaluate(`chrome.tabs.get(${tab}).then(async t=>{await chrome.windows.update(t.windowId,{state:'normal',focused:true});await chrome.tabs.update(t.id,{active:true});})`);
+    const deadline=Date.now()+6000;while(await fixture.evaluate("busy")){if(Date.now()>deadline)throw Error("Owned browser capture did not return after restoration.");await sleep(30);}
+    // The read crosses the same native response stream after the expired capture, without another connection.
+    const restored=await call({action:"read",tab});expect(restored.isError,text(restored)).toBe(false);expect(text(restored)).toContain("NATIVE_LATE_CAPTURE_64");expect(bridge.clients.map(item=>item.id)).toEqual([client]);
+    const screenshot=await call({action:"screenshot",tab});expect(screenshot.isError,text(screenshot)).toBe(false);expect(screenshot.content.some(part=>part.type==="image")).toBe(true);
+  }finally{await bridge.close();await fixture.close();site.stop(true);}
+},40000);
 
 test.skipIf(!nativeBrowserAvailable)("TECH — two actual browser profiles require selection and disconnect never silently selects the other profile", async () => {
   const first = await nativeBrowserFixture(); let second: Awaited<ReturnType<typeof nativeBrowserFixture>> | undefined;

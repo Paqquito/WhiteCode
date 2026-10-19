@@ -12,6 +12,7 @@ import type { ApprovalRequest, ControlAuthority, HostDecision } from "../permiss
 import type { ContentPart } from "../providers/types";
 import { ControlChannel, type DemandOutcome } from "./channel";
 import { ControlError, invalid, morePermissive } from "./protocol";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 /** What the session gives to the driver; every operation keeps the rules of the session (RG-01). */
 export interface ControlOperations {
@@ -88,6 +89,7 @@ export class ControlSession {
   readonly results: TurnResult[] = [];
 
   constructor(options: ControlSessionOptions) {
+    if (!buildFlag("engine_control_channel")) throw new ControlError("unavailable_build", "Control channel unavailable in this build.");
     this.#o = options;
     this.channel = new ControlChannel({
       send: options.send,

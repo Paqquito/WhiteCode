@@ -1,6 +1,7 @@
 // Implements: SPEC-MOT-026, SPEC-CMD-026 (eligibility, surcharge, cooldown and permanent refusal).
 import { ProviderError, type ModelProvider } from "./types";
 import type { ResolvedModel } from "./catalog";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 type Eligibility = { eligible: boolean; reason?: string };
 export class FastOutput {
   #enabled = false;
@@ -35,6 +36,7 @@ export class FastOutput {
       return "Mode rapide désactivé.";
     }
     this.#enabled = false;
+    if (!buildFlag("model_fast_output")) return "Fast output unavailable in this build.";
     const offer = model.providerOptions["fastOutput"] as
       { value?: unknown; multiplier?: unknown } | undefined;
     if (
@@ -63,6 +65,7 @@ export class FastOutput {
     return `Mode rapide activé : tarif multiplié par ${offer.multiplier}.`;
   }
   wrap(provider: ModelProvider): ModelProvider {
+    if (!buildFlag("model_fast_output")) return provider;
     const mode = this;
     return {
       id: provider.id,

@@ -4,3 +4,7 @@
 *.gif binary
 *.webp binary
 tests/fixtures/**/crlf-* -text
+# Les propositions archivées conservent les octets soumis à l’accord.
+docs/propositions-*/** -text whitespace=cr-at-eol
+# Une ligne de contexte vide d’un patch contient un espace obligatoire.
+docs/**/*.patch -text whitespace=cr-at-eol,-blank-at-eol,-blank-at-eof

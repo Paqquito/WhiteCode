@@ -1,4 +1,5 @@
 // Implements: SPEC-CMD-017/018/056/057/064/105, SPEC-AGT-019, SPEC-OUT-032/047, SPEC-EXT-027; gap E-184.
+import { buildFlag, buildProfile } from "../extension-points/build-flags" with { type: "macro" };
 import { randomUUID, createHash } from "node:crypto";
 import { RemoteSessions } from "./sessions";
 interface Account {
@@ -179,9 +180,13 @@ export class CloudWorkflows {
     args: string,
     parent: AbortSignal,
   ): Promise<string> {
+    if (name === "configure-remote" && !buildFlag("remote_environment_setup")) throw Error("Configuration distante absente de cette distribution.");
+    if (name === "deep-plan" && (!buildFlag("remote_deep_plan") || buildProfile() !== "internal")) throw Error("Planification distante indisponible dans ce profil.");
+    const deepPlan = buildFlag("remote_deep_plan") && buildProfile() === "internal" && name === "deep-plan";
     const signal = AbortSignal.any([parent, this.#controller.signal]);
     signal.throwIfAborted();
     if (name === "share") {
+      if (!buildFlag("session_publish") || buildProfile() !== "internal") throw Error("Publication de session indisponible dans cette construction.");
       if (args.trim()) throw Error("Usage : /share.");
       const serialized = this.options.redact(
         JSON.stringify(this.options.history()),
@@ -253,7 +258,7 @@ export class CloudWorkflows {
       this.options.setEnvironment(selected);
       return "Environnement distant sélectionné : " + selected;
     }
-    if (name === "configure-remote") {
+    if (buildFlag("remote_environment_setup") && name === "configure-remote") {
       if (args.trim()) throw Error("Usage : /configure-remote.");
       const repo = validRepository(await this.options.repository()),
         url = new URL(
@@ -301,16 +306,16 @@ export class CloudWorkflows {
           : "")
       );
     }
-    if (name !== "deep-plan" && name !== "deep-review")
+    if (!deepPlan && name !== "deep-review")
       throw Error("Commande distante inconnue.");
     if (
-      (name === "deep-plan" && !bounded(args, 16000)) ||
+      (deepPlan && !bounded(args, 16000)) ||
       (name === "deep-review" &&
         args.trim() &&
         !/^[1-9]\d{0,8}$/.test(args.trim()))
     )
       throw Error(
-        name === "deep-plan"
+        deepPlan
           ? "Usage : /deep-plan <consigne>."
           : "Usage : /deep-review [numéro].",
       );
@@ -321,7 +326,7 @@ export class CloudWorkflows {
         "sessions",
         "estimate",
         {
-          kind: name === "deep-plan" ? "plan" : "review",
+          kind: deepPlan ? "plan" : "review",
           ...repo,
           ...(name === "deep-review" && args.trim()
             ? { mergeRequest: Number(args.trim()) }
@@ -344,15 +349,15 @@ export class CloudWorkflows {
     }
     if (
       !(await this.options.confirm(
-        `${estimate}. Lancer ${name === "deep-plan" ? "la planification approfondie (environ 10 à 30 minutes)" : "la revue approfondie"} sur le service distant ? Des appels facturables seront consommés ; les conditions du service s’appliquent.`,
+        `${estimate}. Lancer ${deepPlan ? "la planification approfondie (environ 10 à 30 minutes)" : "la revue approfondie"} sur le service distant ? Des appels facturables seront consommés ; les conditions du service s’appliquent.`,
         signal,
       ))
     )
       return "Lancement annulé ; aucune session distante créée.";
     await this.#assertOwner(owner);
     return this.#create(
-      name === "deep-plan" ? "plan" : "review",
-      name === "deep-plan"
+      deepPlan ? "plan" : "review",
+      deepPlan
         ? args
         : `Review ${args.trim() ? "merge request " + args.trim() : "the current branch"}. Report only verified findings with locations.`,
       repo,
@@ -453,7 +458,7 @@ export class CloudWorkflows {
           )
         )
           throw Error("État distant invalide.");
-        if (task.kind === "plan" && raw.status === "completed") {
+        if (buildFlag("remote_deep_plan") && buildProfile() === "internal" && task.kind === "plan" && raw.status === "completed") {
           if (raw.approved !== true) continue;
           if (!id(raw.revision) || !bounded(raw.plan, 128000))
             throw Error("Plan approuvé invalide.");
@@ -495,6 +500,7 @@ export class CloudWorkflows {
         !object(raw) ||
         raw.event !== "remote_task" ||
         !id(raw.id) ||
+        (raw.kind === "plan" && (!buildFlag("remote_deep_plan") || buildProfile() !== "internal")) ||
         !["plan", "review", "background"].includes(String(raw.kind)) ||
         raw.account !== profile.account ||
         raw.organizationId !== profile.organization.id ||
@@ -598,6 +604,7 @@ export class CloudWorkflows {
     input: { title: string; reason: string; prompt: string },
     parent: AbortSignal,
   ): Promise<string> {
+    if (!buildFlag("remote_task_suggestions") || buildProfile() !== "internal") throw Error("Background task suggestions are unavailable in this build.");
     if (
       !bounded(input.title, 240) ||
       !bounded(input.reason, 2000) ||

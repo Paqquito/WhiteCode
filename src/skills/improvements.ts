@@ -1,4 +1,5 @@
 // Implements: SPEC-EXT-039 (CA-01/02, explicit review, session deduplication), gap E-170.
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 import { fingerprint } from "../shared/fingerprint";
 export interface SkillImprovement { readonly skill: string; readonly reason: string; readonly content: string }
 export class SkillImprovements {
@@ -8,6 +9,7 @@ export class SkillImprovements {
   pending?: SkillImprovement;
   constructor(readonly options: { every: () => number; analyze: () => Promise<string | undefined>; allowed: (skill: string) => boolean; present: (proposal: SkillImprovement) => void }) {}
   async turn(): Promise<void> {
+    if (!buildFlag("skill_refinement")) return;
     if (this.#busy || this.pending || ++this.#turns < this.options.every()) return;
     this.#turns = 0; this.#busy = true;
     try {

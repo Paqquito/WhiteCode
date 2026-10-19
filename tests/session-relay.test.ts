@@ -1,3 +1,4 @@
+import { profiledTest } from "./helpers/profiled-test";
 // Supports: SPEC-PER-020, SPEC-MOD-013/016/017, SPEC-AGT-019, SPEC-OUT-032/047, SPEC-CMD-017/018/055/056/057/064/103/105, SPEC-EXT-027.
 import { test, expect } from "bun:test";
 import { SessionRelay, autoAttach } from "../src/remote/session-relay";
@@ -53,6 +54,7 @@ function setup(mirror = false) {
     pending,
   };
 }
+const internalProfileTest = profiledTest(import.meta.path, "internal");
 test("SPEC-MOD-013/CA-01 — attaching registers the local history on the configured outgoing service and returns a validated link", async () => {
   const f = setup();
   expect(await f.relay.attach("", new AbortController().signal)).toBe(
@@ -165,6 +167,8 @@ test("SPEC-MOD-016/CA-02 — an explicit false prevents automatic attachment reg
     }),
   ).toBe(false);
 });
+{
+const test = internalProfileTest;
 test("SPEC-CMD-103/CA-01 — injecting a disconnect preserves buffered events and observes a logged successful reconnect", async () => {
   const f = setup();
   await f.relay.attach("", new AbortController().signal);
@@ -177,6 +181,8 @@ test("SPEC-CMD-103/CA-01 — injecting a disconnect preserves buffered events an
   expect(f.calls[1].body.events[0].event.text).toBe("queued");
   await f.relay.close();
 });
+}
+
 test("TECH — duplicate remote user messages are not replayed and no remote command can alter permission modes", async () => {
   const f = setup();
   await f.relay.attach("", new AbortController().signal);

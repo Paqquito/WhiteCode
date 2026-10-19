@@ -25,7 +25,7 @@ test("SPEC-MOT-027/CA-01, SPEC-CMD-003/CA-01 — selecting a validated advisor p
     { text: "Consultation complete." },
   ]);
   const host = new Host(workspace(), { argv: ["--model=main-advisor-fixture", "--toolset=consult_advisor"], provider, userConfig: { models: { extraCatalog }, permissions: { allowRules: ["consult_advisor"] } } });
-  const selected = await host.request("invoke_command", { command: "/advisor advisor-fixture" }); expect(selected["ok"]).toBe(true);
+  const selected = await host.request("invoke_command", { command: "/consult advisor-fixture" }); expect(selected["ok"]).toBe(true);
   host.user("PRIVATE_MAIN_CONTEXT"); await host.waitFor(m => m.type === "turn_completed"); host.feed.end(); const result = await host.finish();
   expect(result.code).toBe(0); expect(provider.requests[0]!.tools.map(t => t.name)).toContain("consult_advisor");
   expect(provider.requests.filter(r => r.purpose === "side")).toHaveLength(1);

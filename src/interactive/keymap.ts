@@ -22,7 +22,7 @@ export interface ActionDef {
 export const ACTIONS: readonly ActionDef[] = [
   ...(buildFlag("ui_embedded_terminal") ? [{ id: "terminal.toggle", context: "app", label: "Basculer vers le panneau terminal (tmux)", defaults: ["ctrl+alt+t"] }] as readonly ActionDef[] : []),
   { id: "browser.takeover", context: "app", label: "Reprendre ou rendre la main au navigateur isolé", defaults: ["ctrl+alt+b"] },
-  ...(buildFlag("voice_input")?[{id:"voice.hold",context:"input",label:"Maintenir pour dicter (terminal avec relâchement)",defaults:["ctrl+space"]}] as readonly ActionDef[]:[]),
+  ...(buildFlag("ui_dictation")?[{id:"voice.hold",context:"input",label:"Maintenir pour dicter (terminal avec relâchement)",defaults:["ctrl+space"]}] as readonly ActionDef[]:[]),
   ...(buildFlag("ui_history_browser") ? [{ id: "history.browser", context: "input", label: "Ouvrir le sélecteur de l’historique", defaults: ["ctrl+shift+r", "ctrl+alt+r"] }] as readonly ActionDef[] : []),
   ...(buildFlag("ui_fast_find") ? [
     { id: "app.quickOpen", context: "app", label: "Ouvrir rapidement un fichier du projet", defaults: ["ctrl+shift+p", "super+shift+p", "ctrl+alt+p"] },

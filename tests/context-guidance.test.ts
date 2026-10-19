@@ -1,3 +1,4 @@
+import { profiledTest } from "./helpers/profiled-test";
 import { expect, test } from "bun:test";
 import { readFileSync, readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -6,6 +7,7 @@ import { projectKey } from "../src/session/transcript";
 import { workspace } from "./helpers/env";
 import { interactive, KEY, sleep } from "./helpers/interactive";
 import { ScriptedProvider } from "./helpers/scripted-provider";
+const internalProfileTest = profiledTest(import.meta.path, "internal");
 
 test("SPEC-CMD-101/CA-01 — prune-history reduces the next request and preserves user text and the raw archive", async () => {
   const ws = workspace(), file = ws.write("project/large.txt", Array.from({ length: 400 }, (_, n) => `ARCHIVE_WITNESS_${n} ${"x".repeat(70)}`).join("\n"));
@@ -23,6 +25,8 @@ test("SPEC-CMD-101/CA-01 — prune-history reduces the next request and preserve
   expect(raw).toContain("ARCHIVE_WITNESS_0"); expect(raw).toContain("USER_MUST_STAY");
 }, 15_000);
 
+{
+  const test = internalProfileTest;
 test("SPEC-CMD-096/CA-01 — getting-started retains the selected theme and every existing setting when skipped", async () => {
   const ws = workspace(), controller = new AbortController(), provider = new ScriptedProvider([]);
   const run = interactive([], ws, { provider, signal: controller.signal, userConfig: { ui: { theme: "dark" } } });
@@ -33,6 +37,8 @@ test("SPEC-CMD-096/CA-01 — getting-started retains the selected theme and ever
     expect(readFileSync(config, "utf8")).toBe(original); expect(provider.requests).toHaveLength(0);
   } finally { controller.abort(); await run.done; }
 }, 15_000);
+}
+
 
 test("SPEC-IHM-002/CA-03 — reading earlier history holds its position while incoming text shows a new-content indicator", async () => {
   const base = new ScriptedProvider([{ text: "```text\n" + Array.from({ length: 40 }, (_, n) => `OLD_LINE_${n}`).join("\n") + "\n```" }, { text: "LIVE_START", delayMs: 50 }]);

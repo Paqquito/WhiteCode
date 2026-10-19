@@ -1,3 +1,4 @@
+import { profiledTest } from "./helpers/profiled-test";
 // Supports: SPEC-CMD-084, SPEC-MOT-034.
 import { expect, test } from "bun:test";
 import { Host } from "./helpers/control";
@@ -6,6 +7,9 @@ import { ScriptedProvider } from "./helpers/scripted-provider";
 import { withCacheDiagnostics } from "../src/providers/cache-diagnostics";
 import type { ModelProvider } from "../src/providers/types";
 
+const internalProfileTest = profiledTest(import.meta.path, "internal");
+{
+const test = internalProfileTest;
 test("SPEC-CMD-084/CA-01 — reset changes the first cache prefix and labels only the next request as deliberate", async () => {
   const p = new ScriptedProvider([
     { text: "first" },
@@ -70,3 +74,5 @@ test("SPEC-CMD-084/CA-01 — reset changes the first cache prefix and labels onl
     expect((await h.finish()).code).toBe(0);
   }
 }, 20000);
+
+}

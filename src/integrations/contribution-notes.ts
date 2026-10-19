@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { relative, resolve, isAbsolute } from "node:path";
 import { runToCompletion } from "../platform/process";
 import { diffLines, type FileChange } from "../shared/diff";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 interface FileState {
   baseline: string[];
   latest: string[];
@@ -56,6 +57,7 @@ export class ContributionNotes {
       restored?: unknown;
     },
   ) {
+    if (!buildFlag("contribution_attribution")) throw Error("Contribution attribution unavailable in this build.");
     const root = this.#git(["rev-parse", "--show-toplevel"]);
     if (root.code === 0 && isAbsolute(root.stdout.trim()))
       options.cwd = root.stdout.trim();
@@ -104,6 +106,7 @@ export class ContributionNotes {
     }
   }
   #git(args: readonly string[], input?: string) {
+    if (!buildFlag("contribution_attribution")) throw Error("Contribution attribution unavailable in this build.");
     return runToCompletion(
       this.options.git,
       [
@@ -165,6 +168,7 @@ export class ContributionNotes {
     if (this.options.enabled()) this.#state.permissions++;
   }
   record(change: FileChange): void {
+    if (!buildFlag("contribution_attribution")) return;
     if (
       !this.options.enabled() ||
       change.binary ||
@@ -210,6 +214,7 @@ export class ContributionNotes {
     this.#save();
   }
   observeCommit(): void {
+    if (!buildFlag("contribution_attribution")) return;
     if (!this.options.enabled()) return;
     const next = this.#git(["rev-parse", "--verify", "HEAD"]);
     if (next.code !== 0 || next.stdout.trim() === this.#state.head) return;

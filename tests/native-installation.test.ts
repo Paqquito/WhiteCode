@@ -1,3 +1,4 @@
+import { profiledTest } from "./helpers/profiled-test";
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, symlinkSync } from "node:fs";
@@ -13,6 +14,7 @@ import { interactive, KEY } from "./helpers/interactive";
 import { multipleInstallations } from "../src/installation/runtime";
 import { delimiter } from "node:path";
 import { nativeExecutable, bootstrapNative, launchNative } from "./helpers/native-distribution";
+const internalProfileTest = profiledTest(import.meta.path, "internal");
 
 function fixture() {
   const ws=workspace(), bytes=Buffer.from("synthetic executable bytes 39"), hash=createHash('sha256').update(bytes).digest('hex'); let downloads=0;
@@ -59,6 +61,8 @@ test("SPEC-INS-002/CA-02 — a managed minimum blocks startup before any provide
 test("SPEC-CMD-035/CA-01 — migrating a package-owned session installs native files and gives PATH and removal instructions",async()=>{
   const ws=workspace(),d=distribution(ws),p=new ScriptedProvider([]);const r=await cli(['--non-interactive','/native-install'],ws,{provider:p,extra:{installationFetch:d.network,installationExecutable:'/opt/homebrew/Cellar/'+d.slug+'/0.1.0/bin/'+d.slug}});expect(r.code).toBe(0);expect(r.stdout).toContain('Version native 0.2.0 installée');expect(r.stdout).toContain('PATH');expect(r.stdout).toContain('gestionnaire');expect(p.requests).toHaveLength(0);expect(d.downloaded()).toBe(1);
 });
+{
+  const test = internalProfileTest;
 test("SPEC-INS-002/CA-01 — SPEC-CMD-108/CA-01 — native startup prepares an update and version shows both without replacing the running session",async()=>{
   const ws=workspace(),d=distribution(ws), fixture=await nativeExecutable(),hash=createHash('sha256').update(fixture.bytes).digest('hex');
   const network=Object.assign(async(input:unknown)=>String(input).endsWith('.json')?Response.json({schemaVersion:1,version:'0.2.0',artifacts:{[nativeTarget(systemInfo())]:{url:'program',sha256:hash,size:fixture.bytes.length}}}):new Response(fixture.bytes),{preconnect:()=>{}}) as typeof fetch;
@@ -68,6 +72,8 @@ test("SPEC-INS-002/CA-01 — SPEC-CMD-108/CA-01 — native startup prepares an u
   finally {shutdown.abort();await r.done;}
   const next=await launchNative(join(d.root,'bin',d.slug+(systemInfo().platform==='windows'?'.cmd':'')),['--version'],ws);expect(next.code).toBe(0);expect(next.stdout).toContain('0.2.0');
 },30000);
+}
+
 
 test("SPEC-INS-006/CA-01 — a reserved test version is refused without contacting a distribution service",async()=>{
   const ws=workspace(),d=distribution(ws);const r=await cli(['installation','update','--version','999999.0.1'],ws,{extra:{installationFetch:d.network}});expect(r.code).not.toBe(0);expect(r.stderr).toContain('réservée');expect(d.downloaded()).toBe(0);expect(existsSync(d.root)).toBe(false);

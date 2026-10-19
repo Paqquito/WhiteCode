@@ -1,9 +1,11 @@
 // Implements: SPEC-CMD-087 (CA-01, EF-01/02, RG-01), SPEC-CMD-089 (CA-01, EF-01, RG-01), gap E-150.
+import { buildFlag, buildProfile } from "../extension-points/build-flags" with { type: "macro" };
 import { OWN_VARIABLES, PUBLIC_SECRET_VARIABLES, type EnvironmentView } from "../config/environment";
 import type { Conversation } from "../engine/conversation";
 import { maskSecrets } from "../shared/secrets";
 
 export function environmentReport(env: EnvironmentView, prefix: string): string {
+  if (!buildFlag("diagnostics_environment_inspection") || buildProfile() !== "internal") throw Error("Inspection de l’environnement indisponible dans ce profil.");
   const lines: string[] = [];
   for (const definition of OWN_VARIABLES) {
     const value = env.own(definition.name);
@@ -16,6 +18,7 @@ export function environmentReport(env: EnvironmentView, prefix: string): string 
 }
 
 export function contextReport(conversation: Conversation): string {
+  if (!buildFlag("diagnostics_context_inspection") || buildProfile() !== "internal") throw Error("Inspection du contexte indisponible dans ce profil.");
   const lines = ["Blocs de la requête (lecture seule, aucune requête envoyée) :"];
   const add = (name: string, content: string) => lines.push(`${maskSecrets(name)} — ${Buffer.byteLength(content, "utf8")} octets ; environ ${Math.ceil(content.length / 3.5)} jetons`);
   conversation.system.forEach((block, n) => add(`Instructions système ${n + 1}`, block.text));
