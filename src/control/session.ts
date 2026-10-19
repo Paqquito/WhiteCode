@@ -44,6 +44,8 @@ export interface ControlOperations {
 }
 
 export interface ControlSessionOptions {
+  /** Optional service admission ceiling; the ordinary local driver keeps its existing behavior. */
+  readonly maxQueuedBytes?: number;
   readonly onEnqueue?: () => void;
   readonly send: (message: Record<string, unknown>) => void;
   readonly defaultTimeoutMs: number;
@@ -76,7 +78,8 @@ export class ControlSession {
   readonly channel: ControlChannel;
   readonly #o: ControlSessionOptions;
   #ops: ControlOperations | undefined;
-  readonly #queue: QueueItem[] = [];
+  readonly #queue: Array<QueueItem & { readonly bytes: number }> = [];
+  #queuedBytes = 0;
   #wake: (() => void) | undefined;
   #current: AbortController | undefined;
   #inputEnded = false;
@@ -106,7 +109,7 @@ export class ControlSession {
           const content = this.#ops!.parseContent({ type: "user", content: params["content"] });
           if (typeof content === "string") throw invalid(content);
           const messageId = randomUUID();
-          this.#enqueue({ content });
+          if (!this.#enqueue({ content })) throw new ControlError("queue_full", "La file de messages du serveur est pleine.");
           return { messageId };
         },
         set_approval_mode: (params) => this.#setMode(params),
@@ -249,20 +252,24 @@ export class ControlSession {
     const widening = this.#ops!.widening(command) === true;
     // SPEC-CMD-001 CA-10, RG-07: refused for a host that is not designated; otherwise only after a confirmation (CA-11, CA-13).
     if (widening) await this.#escalate("command", { command: command.trim() });
-    return new Promise((resolve) => this.#enqueue({ content: [{ type: "text", text: command.trim() }], widening, done: resolve }));
+    return new Promise((resolve) => { if (!this.#enqueue({ content: [{ type: "text", text: command.trim() }], widening, done: resolve })) resolve({ refused: "La file de messages du serveur est pleine." }); });
   }
 
-  #enqueue(item: QueueItem): void {
-    this.#queue.push(item);
+  #enqueue(item: QueueItem, first = false): boolean {
+    const bytes = this.#o.maxQueuedBytes === undefined ? 0 : Buffer.byteLength(JSON.stringify(item.content));
+    if (this.#o.maxQueuedBytes !== undefined && this.#queuedBytes + bytes > this.#o.maxQueuedBytes) { this.#ops?.inputError("queue_full", "La file de messages du serveur est pleine."); return false; }
+    this.#queuedBytes += bytes;
+    if (first) this.#queue.unshift({ ...item, bytes }); else this.#queue.push({ ...item, bytes });
     this.#o.onEnqueue?.();
     this.#signal();
+    return true;
   }
 
   /** Supports: SPEC-PLA-001 FA-04: scheduled local input goes through the ordinary serialized driver. */
   enqueueScheduled(text: string, skipBusy = false): boolean {
     if (!this.#ops || this.#inputEnded || this.#shutdown || this.#fatal || this.#queue.length >= 200) return false;
     if (skipBusy && (this.#current || this.#queue.length)) return false;
-    this.#enqueue({ content: [{ type: "text", text }] }); return true;
+    return this.#enqueue({ content: [{ type: "text", text }] });
   }
 
   #signal(): void {
@@ -332,13 +339,14 @@ export class ControlSession {
       clearTimeout(timer);
       if (this.#fatal !== undefined) return { kind: "refused", message: this.#fatal };
       if (!this.channel.host) return { kind: this.#inputEnded ? "broken" : "ended" };
-      if (initial && initial.length > 0) this.#queue.unshift({ content: [...initial] });
+      if (initial && initial.length > 0) this.#enqueue({ content: [...initial] }, true);
 
       for (;;) {
         if (this.#fatal !== undefined) return { kind: "refused", message: this.#fatal };
         if (this.#shutdown) return { kind: "shutdown" };
         if (signal.aborted) return { kind: "ended" };
         const item = this.#queue.shift();
+        if (item) this.#queuedBytes -= item.bytes;
         if (!item) {
           if (this.#inputEnded) return { kind: "ended" };
           await this.#wait();

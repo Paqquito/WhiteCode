@@ -51,7 +51,7 @@ export class CredentialHelper {
   async close(): Promise<void> { this.#lifetime.abort(); this.#cached = undefined; await this.#operation?.promise.catch(() => undefined); }
 }
 /** Authenticate again only before any model event was exposed: never replay partly executed calls. */
-export function credentialHelperProvider(helper: CredentialHelper, factory: (key: string) => ModelProvider, initialKey: string, redact: (text: string) => string, secrets: () => readonly string[]): ModelProvider {
+export function credentialHelperProvider(helper: Pick<CredentialHelper, "get">, factory: (key: string) => ModelProvider, initialKey: string, redact: (text: string) => string, secrets: () => readonly string[]): ModelProvider {
   let activeKey = initialKey, activeProvider = factory(initialKey);
   const provider = (key: string) => { if (activeKey !== key) { activeKey = key; activeProvider = factory(key); } return activeProvider; };
   const enums: Record<string, readonly string[]> = { type: ["text_delta", "thinking_delta", "tool_call", "message_complete", "text", "image", "tool_result", "tool_use", "thinking", "redacted_thinking", "function"], role: ["assistant", "user", "system", "system_note"], provider: ["openai", "openai_compatible", "anthropic"], stopReason: ["end_turn", "tool_use", "max_tokens", "refusal", "pause_turn", "other"] };

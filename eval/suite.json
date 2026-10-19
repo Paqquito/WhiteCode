@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "suiteVersion": "2026-10-16.2",
+  "suiteVersion": "2026-10-16.3",
   "scenarios": [
     "scenarios/c01-report-failing-test",
     "scenarios/c02-change-only-what-is-asked",

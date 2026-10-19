@@ -21,9 +21,11 @@ const CapabilitiesSchema = Type.Object(
     appendOnlyHistory: Type.Optional(Type.Boolean()),
     images: Type.Optional(Type.Boolean()),
     pdf: Type.Optional(Type.Boolean()),
+    filesApi: Type.Optional(Type.Boolean()),
     toolInputStreaming: Type.Optional(Type.Boolean()),
     forcedToolChoice: Type.Optional(Type.Boolean()),
     contextEditing: Type.Optional(Type.Boolean()),
+    cacheEditing: Type.Optional(Type.Boolean()),
     serverCompaction: Type.Optional(Type.Boolean()),
     systemMessages: Type.Optional(Type.Boolean()),
   },
@@ -99,10 +101,14 @@ export interface ModelCapabilities {
   readonly appendOnlyHistory: boolean;
   readonly images: boolean;
   readonly pdf: boolean;
+  /** Upload-once service references, explicitly declared by a compatible distribution catalogue. */
+  readonly filesApi?: boolean;
   /** Tool inputs are streamed as they are generated. */
   readonly toolInputStreaming: boolean;
   readonly forcedToolChoice: boolean;
   readonly contextEditing: boolean;
+  /** Targeted cache edits through a separately declared compatible-service protocol. */
+  readonly cacheEditing?: boolean;
   readonly serverCompaction: boolean;
   /** Operator messages may be inserted in the middle of the conversation. */
   readonly systemMessages: boolean;
@@ -117,9 +123,11 @@ export const DEFAULT_CAPABILITIES: ModelCapabilities = {
   appendOnlyHistory: false,
   images: false,
   pdf: false,
+  filesApi: false,
   toolInputStreaming: false,
   forcedToolChoice: false,
   contextEditing: false,
+  cacheEditing: false,
   serverCompaction: false,
   systemMessages: false,
 };

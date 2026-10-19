@@ -226,6 +226,15 @@ test("SPEC-EXT-027/CA-01 — a weekly schedule recap displays the cron and local
   expect(f.questions[0]).toContain("0 9 * * 1");
   await f.c.close();
 });
+test("TECH — creating a hosted trigger sends the pinned branch, commit, explicit ceiling and permitted capability selection", async () => {
+  const f = fixture();
+  try {
+    await f.c.triggers("create", { name: "Daily inspection", prompt: "Inspect the project", cron: "0 9 * * *", timeZone: "UTC", maxCost: 1.5, tools: ["read_file"], connectors: [], paused: true }, new AbortController().signal);
+    const creation = f.calls.find(call => call.service === "triggers" && call.path === "create");
+    expect(creation.body).toMatchObject({ branch: "main", commit: "a".repeat(40), maxCost: 1.5, name: "Daily inspection", tools: ["read_file"], connectors: [], paused: true });
+    expect(f.questions.at(-1)).toContain("1.5");
+  } finally { await f.c.close(); }
+});
 test("SPEC-OUT-047/CA-01 — declining a background proposal records the refusal and never creates a remote session", async () => {
   const f = fixture();
   f.accept(false);

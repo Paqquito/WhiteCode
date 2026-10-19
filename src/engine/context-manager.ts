@@ -2,6 +2,7 @@
 //             SPEC-MOT-014 (§ 5.3 points 1 to 3, FA-01, EF-01, EF-02, CA-01)
 // Implements: SPEC-MOT-016 (one reactive compaction), SPEC-MOT-018 (crossing and completion notices).
 // Supports: SPEC-MOT-019 (occupation of the projection), E-158.
+// Implements: SPEC-MOT-015 (CA-01/02, acknowledged cache edits, immutable messages and fallback), gap E-250.
 // Supports: decision D-12 and architecture § 7.2 (choice of the mechanism by the catalogue capabilities), gap E-061
 
 import type { ContextEditingStrategy, ModelRequest } from "../providers/types";
@@ -9,8 +10,10 @@ import { compactConversation, type CompactionDeps, type CompactionOutcome } from
 import type { ContextMeter } from "./context-meter";
 import { microCompact } from "./micro-compaction";
 import type { Reminder } from "./reminders";
+import type { CachedMicroCompaction, CachedMicroSettings } from "./cached-micro-compaction";
 
 export interface ContextSettings {
+  readonly cachedMicroCompact?: CachedMicroSettings;
   readonly reactiveCompact?: { readonly enabled: boolean };
   readonly notices?: boolean;
   readonly autoCompact: { readonly enabled: boolean; readonly warnRatio: number; readonly urgentRatio: number; readonly triggerRatio: number; readonly maxFailures: number };
@@ -39,16 +42,25 @@ export class ContextManager {
     private readonly compaction: Omit<CompactionDeps, "meter">,
     private readonly clock: () => number = Date.now,
     private readonly folding?: { readonly commitRatio: number; commit(): boolean },
+    private readonly cached?: CachedMicroCompaction,
   ) {}
 
   /** Service-side clearing is used when the model declares it and the user did not disable it (EF-01, FA-01, CA-01). */
   get serviceClearing(): boolean {
-    return this.settings.providerContextManagement.enabled && this.compaction.model.capabilities.contextEditing && !this.#serviceClearingRejected;
+    return this.settings.providerContextManagement.enabled && this.compaction.model.capabilities.contextEditing && !this.#serviceClearingRejected && !this.cacheEditing;
   }
+
+  private get cacheDeclared(): boolean {
+    const model = this.compaction.model;
+    return this.cached !== undefined && this.settings.cachedMicroCompact !== undefined && model.provider === "openai_compatible" && model.capabilities.cacheEditing === true && model.providerOptions["cacheEditingProtocol"] === "v1";
+  }
+  get cacheEditing(): boolean { return this.cacheDeclared && this.cached!.available; }
+  cacheEditsRejected(): void { this.cached?.reject(); }
+  cacheEditsApplied(ids: readonly string[]): void { if (!this.cached?.acknowledge(ids)) this.cacheEditsRejected(); }
 
   /** Local micro-compaction: only for a history that is not append-only (D-12), and never with service-side clearing (EF-02). */
   get localMicroCompaction(): boolean {
-    return this.settings.microCompact.enabled && !this.compaction.model.capabilities.appendOnlyHistory && !this.serviceClearing;
+    return this.settings.microCompact.enabled && !this.compaction.model.capabilities.appendOnlyHistory && !this.serviceClearing && !this.cacheEditing;
   }
 
   /** Consecutive failures of the automatic compaction (FA-01). */
@@ -160,6 +172,13 @@ export class ContextManager {
   /** Neutral fields joined to the request. */
   decorate(request: ModelRequest): ModelRequest {
     const strategy = this.strategy();
-    return strategy ? { ...request, contextEditing: strategy } : request;
+    let result = strategy ? { ...request, contextEditing: strategy } : request;
+    if (this.cacheDeclared) result = { ...result, system: [...request.system, { text: this.cached!.instructions }] };
+    if (this.cacheEditing) {
+      const occupation = this.meter.occupation(result.system, result.tools, result.history, result.segment ?? 0);
+      const ids = this.cached!.plan(result.history, this.compaction.conversation.historyGeneration, occupation.ratio, this.settings.cachedMicroCompact!);
+      if (ids.length) result = { ...result, cachedToolEdits: ids };
+    }
+    return result;
   }
 }

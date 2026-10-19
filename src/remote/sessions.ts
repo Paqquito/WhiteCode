@@ -11,7 +11,7 @@ export class RemoteSessions {
   signal.throwIfAborted();const profile=await this.options.account.profile();if(!profile)throw new Error("Connectez un compte de la société pour les sessions distantes.");const identity={organizationId:profile.organization.id,account:profile.account};
   if(input.kind!==undefined&&!["plan","review","background"].includes(input.kind)||input.mergeRequest!==undefined&&(!Number.isSafeInteger(input.mergeRequest)||input.mergeRequest<1||input.mergeRequest>999999999)||input.maxDurationSeconds!==undefined&&(!Number.isSafeInteger(input.maxDurationSeconds)||input.maxDurationSeconds<1||input.maxDurationSeconds>86400))throw new Error("Paramètres de tâche distante invalides.");
   if(!input.prompt.trim()||input.prompt.length>32000||!input.repository||input.repository.length>4096||!input.branch||input.branch.length>240||!/^[a-f0-9]{40,64}$/.test(input.commit)||input.environment!==undefined&&!/^[a-zA-Z0-9_-]{1,128}$/.test(input.environment)||input.maxCost!==undefined&&!positive(input.maxCost))throw new Error("Demande de session distante invalide.");
-  const status=await this.options.account.request("sessions","key-status",{repository:input.repository},signal,identity);
+  const status=await this.options.account.request("sessions","key-status",{repository:input.repository,...(input.environment?{environment:input.environment}:{})},signal,identity);
   if(!object(status)||status.delegatedKey!==true){const link=this.options.consoleUrl?` Console : ${this.options.consoleUrl}`:"";throw new Error("ERR-01 — Aucune clé de fournisseur n’est confiée au service : déposez-en une dans la console."+link);}
   if(status.repositoryAccessible!==true)throw new Error("Dépôt non accessible au service. Configurez son accès depuis la console.");
   for(const name of["managedLimit","keyLimit"])if(status[name]!==undefined&&!positive(status[name]))throw new Error("Limites distantes invalides.");
@@ -21,7 +21,11 @@ export class RemoteSessions {
   const raw=await this.options.account.request("sessions","create",{...body,...(input.kind?{kind:input.kind}:{}),...(input.mergeRequest?{mergeRequest:input.mergeRequest}:{})},signal,identity);if(!object(raw)||typeof raw.id!=="string"||!/^[a-zA-Z0-9_-]{1,128}$/.test(raw.id)||typeof raw.url!=="string")throw new Error("Création distante invalide.");
   const base=new URL(this.options.sessionUrl),url=new URL(raw.url);if(url.protocol!=="https:"||url.origin!==base.origin||url.username||url.password||url.hash)throw new Error("Lien distant hors service autorisé.");
   if(expected!==undefined&&(!positive(raw.effectiveMaxCost)||Math.abs(raw.effectiveMaxCost-expected)>1e-9)){try{await this.options.account.request("sessions",`${raw.id}/stop`,{},AbortSignal.timeout(5000),identity);}catch{}throw new Error("Plafond distant incohérent : arrêt demandé avant poursuite.");}
-  this.options.report(`Session distante ${raw.id} : ${url.href}${expected!==undefined?` · plafond effectif ${expected}`:""}`);
+  const refuseMetadata=async(message:string):Promise<never>=>{try{await this.options.account.request("sessions",`${raw.id}/stop`,{},AbortSignal.timeout(5000),identity);}catch{}throw new Error(message);};
+  let keyLabel="";
+  if(raw.key!==undefined){if(!object(raw.key)||typeof raw.key.label!=="string"||!raw.key.label||raw.key.label.length>240||/[\u0000-\u001f\u007f]/.test(raw.key.label)||typeof raw.key.lastFour!=="string"||!/^[\x21-\x7e]{4}$/.test(raw.key.lastFour))return refuseMetadata("Libellé de clé distante invalide : arrêt demandé.");keyLabel=` · clé ${raw.key.label} (…${raw.key.lastFour})`;}
+  if(raw.notice!==undefined){if(typeof raw.notice!=="string"||raw.notice.length>1000||/[\u0000-\u001f\u007f]/.test(raw.notice))return refuseMetadata("Avis de clé distante invalide : arrêt demandé.");this.options.report(raw.notice);}
+  this.options.report(`Session distante ${raw.id} : ${url.href}${keyLabel}${expected!==undefined?` · plafond effectif ${expected}`:""}`);
   this.#owner=identity;
   return{id:raw.id,url:url.href,...(expected!==undefined?{effectiveMaxCost:expected}:{})};
  }

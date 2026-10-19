@@ -11,6 +11,9 @@ export class Conversation {
   #tools: readonly ToolDefinition[];
   readonly #messages: HistoryMessage[] = [];
   #segment = 0;
+  #historyGeneration = 0;
+  /** Supports: SPEC-MOT-015. Only a complete history replacement resets the cache-edit registry. */
+  get historyGeneration(): number { return this.#historyGeneration; }
   #toolsEnabled?: boolean;
   #cacheReset = false;
   get intentionalCacheReset(): boolean { return this.#cacheReset; }
@@ -103,6 +106,7 @@ export class Conversation {
 
   /** Opens a new segment after a full compaction: nothing of the previous segment is replayed (architecture § 7.2). */
   startSegment(system: readonly SystemBlock[], tools: readonly ToolDefinition[], opening: ReadonlyArray<ContentPart>, retained: readonly HistoryMessage[] = []): void {
+    this.#historyGeneration++;
     this.#system = system;
     this.#tools = tools;
     this.#messages.length = 0;

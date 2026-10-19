@@ -39,8 +39,14 @@ export function ensureBundled(configDir: string): void {
       } catch {}
       if (existing !== content) {
         storeMkdir(join(path, ".."), { recursive: true, mode: 0o700 });
-        writeAtomic(path, Buffer.from(content), currentPlatform(), true);
+        try { writeAtomic(path, Buffer.from(content), currentPlatform(), true); }
+        catch (error) {
+          // A concurrent startup may publish these immutable bytes while Windows keeps the destination open.
+          try { if (readPrivateText(path, 65536) === content) continue; } catch {}
+          throw error;
+        }
       }
     }
   }
 }
+// Supports: gap E-255 (only an identical guarded publication can satisfy a concurrent startup).

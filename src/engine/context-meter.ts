@@ -46,6 +46,7 @@ export function estimatePart(part: ContentPart | ToolResultPart, c: EstimationCo
     const pixels = info ? info.width * info.height : 1_000_000;
     return { tokens: Math.ceil(pixels / c.pixelsPerToken), category: "attachments" };
   }
+  if (part.type === "document") return { tokens: Math.ceil(part.dataBase64.length * 0.75 / c.text), category: "attachments" };
   let tokens = 8; // framing of a tool result
   let images = 0;
   for (const inner of part.content) {

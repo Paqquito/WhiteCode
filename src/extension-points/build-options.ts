@@ -4,6 +4,8 @@ export const BUILD_PROFILES = ["public", "internal", "development", "test"] as c
 export type BuildProfile = (typeof BUILD_PROFILES)[number];
 const option = (value: boolean, description: string, specs: string[], absentMarkers: string[] = []) => ({ description, specs, implemented: value, values: { public: value, internal: value, development: value, test: value }, absentMarkers });
 export const BUILD_OPTIONS = {
+  compaction_cache_edit: option(true, "Édition ciblée sur un service compatible explicitement déclaré.", ["SPEC-MOT-015"], ["Older tool results may be removed from the service cache"]),
+  remote_direct_connect: option(true, "Connexion directe authentifiée avec interface locale et racine de fichiers imposée par le serveur.", ["SPEC-MOD-018", "SPEC-MOD-019"]),
   mode_orchestrator: option(true, "Coordination locale avec exécutants autonomes et rôle conservé à la reprise.", ["SPEC-MOD-028"]),
   ui_embedded_terminal: option(true, "Panneau tmux utilisateur avec capture bornée et masquée.", ["SPEC-IHM-041", "SPEC-OUT-015"], ["Read the human-operated terminal panel of this conversation"]),
   ui_year_review:{...option(true,"Rétrospective locale à activation explicite et extension officielle.",["SPEC-IHM-033","SPEC-CMD-078"],["Local annual statistics (no code or conversation content):"]),values:{public:false,internal:true,development:true,test:true}},

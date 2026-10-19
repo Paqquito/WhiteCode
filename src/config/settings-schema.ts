@@ -278,6 +278,9 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "context.microCompact.idleMinutes", schema: int(1), default: 60, scopes: [U], owner: "SPEC-MOT-013" },
   { key: "context.providerContextManagement.enabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-MOT-014" },
   { key: "context.providerContextManagement.targetTokens", schema: int(0), default: 50_000, scopes: [U], owner: "SPEC-MOT-014" },
+  { key: "context.cachedMicroCompact.triggerRatio", schema: num(0, 1), default: 0.5, scopes: [U], owner: "SPEC-MOT-015" },
+  { key: "context.cachedMicroCompact.keepRecent", schema: int(0), default: 10, scopes: [U], owner: "SPEC-MOT-015" },
+  { key: "context.cachedMicroCompact.minAgeMinutes", schema: num(0), default: 10, scopes: [U], owner: "SPEC-MOT-015" },
   { key: "context.compaction.restoreFiles", schema: int(0), default: 5, scopes: [U], owner: "SPEC-MOT-011" },
   { key: "context.compaction.restoreTokens", schema: int(0), default: 40_000, scopes: [U], owner: "SPEC-MOT-011" },
   // Estimation coefficients by model family (SPEC-MOT-010 EF-02, gap E-062): characters per token, pixels per token.
@@ -328,6 +331,7 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "api.unattendedRetry.maxWait", schema: int(1, 86400000), default: 21600000, scopes: [U, G], owner: "SPEC-API-004" },
   { key: "api.unattendedRetry.interval", schema: int(1, 3600000), default: 300000, scopes: [U, G], owner: "SPEC-API-004" },
   { key: "auth.credentialHelper", schema: str(), scopes: [U, G], owner: "SPEC-API-014" },
+  { key: "auth.cloudCredentialRefresh", schema: Type.Object({ aws: Type.Optional(Type.Object({ refresh: Type.Optional(Type.String({ minLength: 1, maxLength: 16384 })), export: Type.Optional(Type.String({ minLength: 1, maxLength: 16384 })) }, { additionalProperties: false })), gcp: Type.Optional(Type.Object({ refresh: Type.String({ minLength: 1, maxLength: 16384 }) }, { additionalProperties: false })) }, { additionalProperties: false }), scopes: [U, G], owner: "SPEC-API-015" },
   { key: "auth.credentialHelperTtl", schema: durationSchema(), kind: "duration", default: 300000, scopes: [U, G], owner: "SPEC-API-014" },
   { key: "auth.loginMethod", schema: str(), scopes: [G], owner: "SPEC-API-012" },
   { key: "auth.forceOrganization", schema: Type.String({ minLength: 1, maxLength: 240, pattern: "^[^\\u0000-\\u001f\\u007f]+$" }), scopes: [G], owner: "SPEC-API-012" },

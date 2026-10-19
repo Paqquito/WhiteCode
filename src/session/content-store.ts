@@ -31,7 +31,7 @@ export class ContentStore {
   }
   /** The lease covers the blob and its published reference, so collection cannot race an adoption. */
   publish<T>(value: unknown, action: (encoded: unknown) => T): T {
-    const needed = (part: unknown, depth = 0): boolean => depth > 8 || typeof part === "string" && part.length > this.inlineThreshold || !!part && typeof part === "object" && ((part as Record<string, unknown>)["type"] === "image" || Object.values(part).some(item => needed(item, depth + 1)));
+    const needed = (part: unknown, depth = 0): boolean => depth > 8 || typeof part === "string" && part.length > this.inlineThreshold || !!part && typeof part === "object" && (["image", "document"].includes(String((part as Record<string, unknown>)["type"])) || Object.values(part).some(item => needed(item, depth + 1)));
     return needed(value) ? this.withLock(() => action(this.encode(value))) : action(value);
   }
   #path(hash: string): string {
@@ -75,7 +75,7 @@ export class ContentStore {
     if (Array.isArray(value)) { if (value.length > 1024) throw new Error("Too many content parts."); return value.map(part => this.encode(part, depth + 1)); }
     if (!value || typeof value !== "object") return value;
     const row = value as Record<string, unknown>;
-    if (row["type"] === "image" && typeof row["dataBase64"] === "string") {
+    if (["image", "document"].includes(String(row["type"])) && typeof row["dataBase64"] === "string") {
       const bytes = Buffer.from(row["dataBase64"], "base64"); if (bytes.toString("base64") !== row["dataBase64"]) throw new Error("Invalid image encoding.");
       return { ...row, dataBase64: this.#put(bytes, "base64") };
     }
@@ -92,7 +92,7 @@ export class ContentStore {
       if (Array.isArray(part)) { if (part.length > 1024) throw new Error("Too many content parts."); return part.map(item => walk(item, depth + 1)); }
       if (!part || typeof part !== "object") return part;
       const row = Object.fromEntries(Object.entries(part).map(([key, item]) => [key, walk(item, depth + 1)]));
-      return row["type"] === "image" && row["dataBase64"] === "[Stored content unavailable.]" ? { type: "text", text: "[Stored image unavailable.]" } : row;
+      return ["image", "document"].includes(String(row["type"])) && row["dataBase64"] === "[Stored content unavailable.]" ? { type: "text", text: row["type"] === "document" ? "[Stored document unavailable.]" : "[Stored image unavailable.]" } : row;
     };
     return walk(value, 0);
   }

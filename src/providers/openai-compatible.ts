@@ -6,7 +6,7 @@
 
 import OpenAI from "openai";
 import type { ContentPart, HistoryMessage, ModelEvent, ModelProvider, ModelRequest, StopReason, SystemBlock, ToolCall } from "./types";
-import { ProviderError } from "./types";
+import { CacheEditRejectedError, ProviderError } from "./types";
 import { warmProviderConnection } from "../platform/network";
 import type { ModelCapabilities } from "./catalog";
 
@@ -32,9 +32,9 @@ function partsToContent(parts: readonly ContentPart[], images: boolean): string 
   return parts.map((p): OpenAI.Chat.ChatCompletionContentPart =>
     p.type === "text"
       ? { type: "text", text: p.text }
-      : images
+      : p.type === "image" && images
         ? { type: "image_url", image_url: { url: `data:${p.mediaType};base64,${p.dataBase64}` } }
-        : { type: "text", text: "[image omitted: the model does not accept images]" },
+        : { type: "text", text: p.type === "document" ? "[PDF omitted: the adapter does not accept documents]" : "[image omitted: the model does not accept images]" },
   );
 }
 
@@ -96,6 +96,9 @@ export function buildChatRequest(request: ModelRequest): OpenAI.Chat.ChatComplet
   const toggle = caps.thinking === "optional" ? opts[on ? "thinkingOn" : "thinkingOff"] : undefined;
   if (toggle && typeof toggle === "object") Object.assign(body, toggle);
   if (opts["extraBody"] && typeof opts["extraBody"] === "object") Object.assign(body, opts["extraBody"]);
+  // Supports: SPEC-MOT-015. The distribution must declare this separate protocol explicitly.
+  delete body["cache_edits"];
+  if (caps.cacheEditing && opts["cacheEditingProtocol"] === "v1" && request.cachedToolEdits?.length) body["cache_edits"] = { version: 1, remove_tool_results: request.cachedToolEdits };
   if (request.serviceOptions) body["service_tier"] = request.serviceOptions.service_tier;
   return body as unknown as OpenAI.Chat.ChatCompletionCreateParamsStreaming;
 }
@@ -185,6 +188,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
     let usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
     let usageReported = false;
     let requestId: string | undefined;
+    const cacheProtocol = request.cachedToolEdits?.length && request.model.capabilities.cacheEditing && request.model.providerOptions["cacheEditingProtocol"] === "v1";
+    let cacheApplied: string[] | undefined;
     const complete = (index: number | string): ToolCall | undefined => {
       const c = calls.get(index);
       if (!c || emitted.has(index)) return undefined;
@@ -200,6 +205,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
       requestId = request_id ?? undefined;
       for await (const chunk of stream) {
         arm();
+        const cacheEdit = (chunk as unknown as Record<string, unknown>)["cache_edits"];
+        if (cacheProtocol && cacheEdit !== undefined) {
+          const ack = cacheEdit as { version?: unknown; applied_tool_results?: unknown };
+          const ids = ack?.applied_tool_results;
+          if (cacheApplied !== undefined || ack?.version !== 1 || !Array.isArray(ids) || ids.length > 10000 || ids.some(id => typeof id !== "string" || !request.cachedToolEdits?.includes(id)) || new Set(ids).size !== ids.length) throw new CacheEditRejectedError("Accusé d’édition du cache invalide.");
+          cacheApplied = ids;
+        }
         if (chunk.usage) {
           usageReported = true;
           usage = {
@@ -268,9 +280,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
         usageReported,
         assistant: { role: "assistant", text, toolCalls, native: { provider: this.id, content: native } },
         providerRequestId: requestId,
+        ...(cacheApplied === undefined ? {} : { cacheEditing: { applied: cacheApplied } }),
       };
     } catch (error) {
       if (error instanceof ProviderError) throw error;
+      if (cacheProtocol && request.cachedToolEdits?.length && error instanceof OpenAI.BadRequestError && error.code === "cache_edit_unsupported") throw new CacheEditRejectedError("Édition du cache refusée par le service.", 400);
       if (signal.aborted && !idle) throw new ProviderError("aborted", "Requête annulée.");
       throw classifyOpenAIError(error, idle);
     } finally {

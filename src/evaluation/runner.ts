@@ -1,6 +1,7 @@
 // Implements: SPEC-MOT-045 (§ 5.2 point 2 suite run in non-interactive mode with structured output, § 14 report by clause and family, EF-05)
 // Supports: gap E-014 (five runs per scenario; real runs by hand or nightly, simulated provider in CI)
 // Supports: gap E-248 (a requested shell call alone is not proof of execution).
+// Supports: gap E-252 (actual completion order and result association within a reused call identifier).
 // Supports: SPEC-MOT-045 (only a successful normal process can qualify), gap E-237.
 
 import { cpSync, mkdtempSync, rmSync } from "node:fs";
@@ -68,9 +69,12 @@ function observe(stdout: string, workspace: string, original: string): RunObserv
     original,
     result: String(closing["result"] ?? ""),
     haltReason: String(closing["haltReason"] ?? "missing"),
-    toolCalls: events.filter((e) => e["type"] === "tool_call").map((e) => {
-      const result = typeof e["callId"] === "string" ? events.find(candidate => candidate["type"] === "tool_result" && candidate["callId"] === e["callId"]) : undefined;
-      return { toolId: String(e["toolId"]), input: e["input"], ...(typeof result?.["errored"] === "boolean" ? { errored: result["errored"] } : {}) };
+    toolCalls: events.flatMap((e, startedAt) => {
+      if (e["type"] !== "tool_call") return [];
+      const next = events.findIndex((candidate, index) => index > startedAt && candidate["type"] === "tool_call" && candidate["callId"] === e["callId"]);
+      const completedAt = typeof e["callId"] === "string" ? events.findIndex((candidate, index) => index > startedAt && (next < 0 || index < next) && candidate["type"] === "tool_result" && candidate["callId"] === e["callId"]) : -1;
+      const result = completedAt < 0 ? undefined : events[completedAt];
+      return [{ toolId: String(e["toolId"]), input: e["input"], startedAt, ...(completedAt < 0 ? {} : { completedAt }), ...(typeof result?.["errored"] === "boolean" ? { errored: result["errored"] } : {}) }];
     }),
     closing,
   };

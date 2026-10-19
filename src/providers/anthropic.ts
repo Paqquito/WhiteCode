@@ -6,14 +6,17 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { MessageStream } from "@anthropic-ai/sdk/lib/MessageStream";
-import type { ContextEditingStrategy, HistoryMessage, ModelEvent, ModelProvider, ModelRequest, StopReason, ToolCall } from "./types";
+import type { ContextEditingStrategy, DocumentPart, HistoryMessage, ModelEvent, ModelProvider, ModelRequest, StopReason, ToolCall } from "./types";
 import { ProviderError } from "./types";
 import { warmProviderConnection } from "../platform/network";
+import { AnthropicFiles, documentFingerprint, type FileTransfer } from "./anthropic-files";
 
 /** Beta of service-side context management (SPEC-MOT-014), confined to this adapter (D-11). */
 const CONTEXT_MANAGEMENT_BETA = "context-management-2025-06-27";
 
 export interface AnthropicProviderOptions {
+  readonly fileTransfer?: FileTransfer;
+  readonly documentAllowed?: (part: DocumentPart) => boolean;
   readonly apiKey?: string;
   readonly authToken?: string;
   readonly baseURL?: string;
@@ -28,7 +31,7 @@ export interface AnthropicProviderOptions {
 }
 
 /** Converts the neutral history to SDK message parameters. Deterministic: same history, same bytes (D-12). */
-export function toMessageParams(history: readonly HistoryMessage[], systemMessages: boolean): Anthropic.MessageParam[] {
+export function toMessageParams(history: readonly HistoryMessage[], systemMessages: boolean, files: ReadonlyMap<string, string> = new Map(), pdf = true): Anthropic.MessageParam[] {
   const out: Anthropic.MessageParam[] = [];
   for (const m of history) {
     const label = m.contextId ? `[${m.contextId}]\n` : "";
@@ -51,13 +54,18 @@ export function toMessageParams(history: readonly HistoryMessage[], systemMessag
           return { type: "text", text: p.text };
         case "image":
           return { type: "image", source: { type: "base64", media_type: p.mediaType, data: p.dataBase64 } };
+        case "document": {
+          if (!pdf) return { type: "text", text: "[PDF omitted: the model does not accept documents]" };
+          const file = files.get(documentFingerprint(p));
+          return { type: "document", title: p.name, source: file ? { type: "file", file_id: file } : { type: "base64", media_type: p.mediaType, data: p.dataBase64 } };
+        }
         case "tool_result":
           return {
             type: "tool_result",
             tool_use_id: p.callId,
             is_error: p.isError,
-            content: [...(label ? [{ type: "text" as const, text: label }] : []), ...p.content.map((c): Anthropic.TextBlockParam | Anthropic.ImageBlockParam =>
-              c.type === "text" ? { type: "text", text: c.text } : { type: "image", source: { type: "base64", media_type: c.mediaType, data: c.dataBase64 } },
+            content: [...(label ? [{ type: "text" as const, text: label }] : []), ...p.content.map((c): Anthropic.TextBlockParam | Anthropic.ImageBlockParam | Anthropic.DocumentBlockParam =>
+              c.type === "text" ? { type: "text", text: c.text } : c.type === "document" ? { type: "document", title: c.name, source: { type: "base64", media_type: c.mediaType, data: c.dataBase64 } } : { type: "image", source: { type: "base64", media_type: c.mediaType, data: c.dataBase64 } },
             )],
           };
       }
@@ -69,7 +77,7 @@ export function toMessageParams(history: readonly HistoryMessage[], systemMessag
 }
 
 /** Builds the SDK request parameters from the neutral request (exported for tests). */
-export function buildParams(request: ModelRequest): Anthropic.MessageStreamParams {
+export function buildParams(request: ModelRequest, files?: ReadonlyMap<string, string>): Anthropic.MessageStreamParams {
   const caps = request.model.capabilities;
   const system: Anthropic.TextBlockParam[] = request.system.map((b) =>
     b.cacheBoundary ? { type: "text", text: b.text, cache_control: { type: "ephemeral" } } : { type: "text", text: b.text },
@@ -87,7 +95,7 @@ export function buildParams(request: ModelRequest): Anthropic.MessageStreamParam
     model: request.model.id,
     max_tokens: request.maxOutputTokens,
     system,
-    messages: toMessageParams(request.history, caps.systemMessages),
+    messages: toMessageParams(request.history, caps.systemMessages, files, caps.pdf),
     // Top-level automatic caching of the growing, append-only history.
     cache_control: { type: "ephemeral" },
   };
@@ -167,6 +175,7 @@ export function classifyError(error: unknown, idle: boolean): ProviderError {
 export class AnthropicProvider implements ModelProvider {
   readonly id = "anthropic";
   readonly #client: Anthropic;
+  readonly #files: AnthropicFiles;
   readonly #idleTimeoutMs: number;
   readonly #network: typeof fetch | undefined;
   preconnect(): void { warmProviderConnection(this.#network, this.#client.baseURL); }
@@ -183,6 +192,7 @@ export class AnthropicProvider implements ModelProvider {
     });
     this.#idleTimeoutMs = options.idleTimeoutMs;
     this.#network = options.fetch;
+    this.#files = new AnthropicFiles(this.#client, options.fileTransfer, options.documentAllowed);
   }
 
   /** Service-side clearing rejected once: disabled for the rest of the session (ERR-01 of SPEC-MOT-014). */
@@ -220,7 +230,10 @@ export class AnthropicProvider implements ModelProvider {
   }
 
   async *#streamOnce(request: ModelRequest, strategy: ContextEditingStrategy | undefined, signal: AbortSignal, rejected: boolean): AsyncIterable<ModelEvent> {
-    const params = buildParams(request);
+    let files: ReadonlyMap<string, string>;
+    try { files = await this.#files.prepare(request, signal); }
+    catch (error) { throw classifyError(error, false); }
+    const params = buildParams(request, files);
     // The beta stream is used only when a strategy is joined (EF-01 of SPEC-MOT-014); both streams share the event format.
     const stream = strategy
       ? (this.#client.beta.messages.stream(

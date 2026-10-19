@@ -372,7 +372,7 @@ export class CloudWorkflows {
     const preflight = await this.options.account.request(
       "sessions",
       "key-status",
-      { repository: repo.repository },
+      { repository: repo.repository, ...(this.options.environment() ? { environment: this.options.environment() } : {}) },
       signal,
       owner,
     );
@@ -532,9 +532,12 @@ export class CloudWorkflows {
     let body: unknown = input;
     if (operation === "create" || operation === "update") {
       const value = schedule(input);
+      if (input.name !== undefined && !bounded(input.name, 240) || input.paused !== undefined && typeof input.paused !== "boolean" || input.maxCost !== undefined && (typeof input.maxCost !== "number" || !Number.isFinite(input.maxCost) || input.maxCost <= 0)) throw Error("Invalid remote trigger name, state or cost ceiling.");
+      for (const field of ["tools", "connectors"]) if (input[field] !== undefined && (!Array.isArray(input[field]) || input[field].length > 100 || !input[field].every(id) || new Set(input[field]).size !== input[field].length)) throw Error("Invalid remote trigger tools or connectors.");
+      const ceilings = this.options.ceilings?.(), maxCost = typeof input.maxCost === "number" ? input.maxCost : ceilings?.maxCost;
       if (
         !(await this.options.confirm(
-          `${operation === "create" ? "Créer" : "Modifier"} ce déclencheur distant ?\n${this.options.redact(value.prompt)}\nCron : ${value.cron}\nHeure locale : ${value.description}\nIl pourra consommer des appels facturables sur le service.`,
+          `${operation === "create" ? "Créer" : "Modifier"} ce déclencheur distant ?\n${this.options.redact(value.prompt)}\nCron : ${value.cron}\nHeure locale : ${value.description}${maxCost !== undefined ? `\nPlafond par exécution : ${maxCost}` : ""}${input.tools !== undefined ? `\nOutils : ${(input.tools as string[]).join(", ") || "aucun"}` : ""}${input.connectors !== undefined ? `\nConnecteurs : ${(input.connectors as string[]).join(", ") || "aucun"}` : ""}${input.paused === true ? "\nÉtat : en pause" : ""}\nIl pourra consommer des appels facturables sur le service.`,
           signal,
         ))
       )
@@ -552,10 +555,17 @@ export class CloudWorkflows {
       body = {
         idempotencyKey: randomUUID(),
         ...(operation === "update" ? { id: input.id } : {}),
-        repository: repo.repository,
+        ...repo,
         prompt: this.options.redact(value.prompt),
         cron: value.cron,
         timeZone: value.timeZone,
+        ...(input.name !== undefined ? { name: this.options.redact(String(input.name)) } : {}),
+        ...(input.paused !== undefined ? { paused: input.paused } : {}),
+        ...(input.tools !== undefined ? { tools: input.tools } : {}),
+        ...(input.connectors !== undefined ? { connectors: input.connectors } : {}),
+        ...(maxCost !== undefined ? { maxCost } : {}),
+        ...(ceilings?.managedMaxCost !== undefined ? { clientMaxCost: ceilings.managedMaxCost } : {}),
+        ...(ceilings?.maxDurationSeconds !== undefined ? { maxDurationSeconds: ceilings.maxDurationSeconds } : {}),
         ...(this.options.environment()
           ? { environment: this.options.environment() }
           : {}),

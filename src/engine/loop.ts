@@ -10,7 +10,7 @@
 
 import type { HookBus } from "../extension-points/hooks";
 import type { ApiEffort, ModelPricing, ResolvedModel } from "../providers/catalog";
-import { ProviderError, type ContentPart, type ModelEvent, type ModelProvider, type ModelRequest, type StopReason, type ThinkingRequest, type ToolCall, type ToolResultPart, type Usage } from "../providers/types";
+import { CacheEditRejectedError, ProviderError, type ContentPart, type ModelEvent, type ModelProvider, type ModelRequest, type StopReason, type ThinkingRequest, type ToolCall, type ToolResultPart, type Usage } from "../providers/types";
 import type { TranscriptWriter } from "../session/transcript";
 import { fingerprint } from "../shared/fingerprint";
 import { costOf, requestBound, type Reservation } from "./budget";
@@ -79,7 +79,7 @@ export interface LoopDeps {
   /** A user message was recorded, with its record identifier when the session is persisted (SPEC-SES-006 EF-02). */
   readonly onUserMessage?: (recordId: string | undefined) => void;
   /** Called before each request: settings changed on disk are applied (SPEC-CFG-005). */
-  readonly beforeRequest?: () => void;
+  readonly beforeRequest?: (signal: AbortSignal) => void | Promise<void>;
   /** Backup model after consecutive overloads (SPEC-API-005). */
   readonly fallback?: FallbackPolicy;
   /** System reminders asked before each request (SPEC-MOT-007). */
@@ -244,7 +244,8 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
     // FA-01, FA-03 of SPEC-MOD-005: limits checked before each request.
     const stop = requestStop();
     if (stop) return finish(stop.cause, stop.message);
-    deps.beforeRequest?.();
+    await deps.beforeRequest?.(turnSignal);
+    if (turnSignal.aborted) return interrupted();
 
     // SPEC-MOT-012: before the request, between two iterations (RG-01); a compaction refused by the budget stops the run.
     if (deps.context) {
@@ -295,8 +296,8 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
         ...(deps.agentId ? { purpose: "subagent" as const, agent: deps.agentId } : {}),
         ...(deps.conversationId ? { conversationId: deps.conversationId } : {}),
       };
-      const decorated = deps.context ? deps.context.decorate(base) : base;
-      const modelRequest = deps.projectHistory ? deps.projectHistory(decorated) : decorated;
+      const projected = deps.projectHistory ? deps.projectHistory(base) : base;
+      const modelRequest = deps.context ? deps.context.decorate(projected) : projected;
       const fixedMeter = new ContextMeter({ model: requestModel, outputReserveTokens: modelRequest.maxOutputTokens, coefficients: deps.context?.meter.coefficients });
       const fixed = fixedMeter.breakdown(modelRequest.system, modelRequest.tools, []);
       if (fixed.system + fixed.tools > fixedMeter.effectiveWindow) return finish("error", `Les instructions système et outils dépassent à eux seuls la fenêtre d’entrée estimée (${fixed.system + fixed.tools}/${fixedMeter.effectiveWindow} jetons). Réduisez le jeu avec --toolset ou choisissez un modèle avec une fenêtre plus grande.`, "System instructions and tool definitions alone exceed the estimated input window. Select a smaller toolset or a model with a larger context window; do not remove required conduct clauses.");
@@ -350,6 +351,16 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
         // FA-01 of SPEC-MOT-001: an incomplete response is not added to the history; it stays in the transcript.
         persist("system", { event: e.kind === "aborted" ? "response_interrupted" : "provider_error", kind: e.kind, partialText: text, attempt: attempt + 1 });
         if (e.kind === "aborted" || turnSignal.aborted) return interrupted();
+        if (e instanceof CacheEditRejectedError && deps.context) {
+          const retryWithoutEdits = deps.context.cacheEditing;
+          deps.context.cacheEditsRejected();
+          if (retryWithoutEdits && text === "" && !receivedTool) {
+            deps.emit({ type: "warning", message: "Édition du cache désactivée pour cette session ; reprise avec la compaction ordinaire." });
+            const recovery = await deps.context.beforeRequest(turnSignal);
+            if (recovery.stop) return finish(recovery.stop.cause, recovery.stop.message);
+            continue;
+          }
+        }
         if (e.kind === "context_too_long" && !overflowRecovered) {
           overflowRecovered = true;
           const recovery = await deps.context?.recoverOverflow(turnSignal);
@@ -422,6 +433,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
       deps.context.meter.recordResponse(response.usage, response.usageReported !== false, conv.messages.length, conv.segment);
       deps.context.responseReceived();
       if (response.contextEditing?.rejected) deps.context.serviceClearingRejected();
+      if (response.cacheEditing) deps.context.cacheEditsApplied(response.cacheEditing.applied);
     }
     persist("assistant", {
       content: assistant.native.content,

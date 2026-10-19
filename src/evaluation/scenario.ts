@@ -1,5 +1,6 @@
 // Implements: SPEC-MOT-045 (§ 3 evaluation set, EF-04, EF-07), gap E-014 (scenario format: id, clauses, starting repository, instruction, checks)
 // Supports: gap E-248 (verification requires a returned tool result after the final completed change).
+// Supports: gap E-252 (verification starts after all completed writes, including notebook changes).
 
 import { Type, type Static } from "@sinclair/typebox";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -114,7 +115,8 @@ export interface RunObservation {
   readonly original: string;
   readonly result: string;
   readonly haltReason: string;
-  readonly toolCalls: ReadonlyArray<{ readonly toolId: string; readonly input: unknown; readonly errored?: boolean }>;
+  /** Event positions preserve completion order even when tools overlap. */
+  readonly toolCalls: ReadonlyArray<{ readonly toolId: string; readonly input: unknown; readonly errored?: boolean; readonly startedAt?: number; readonly completedAt?: number }>;
 }
 
 /** Evaluates one check; returns the failure message, or undefined when it holds. */
@@ -147,9 +149,11 @@ export function evaluateCheck(check: ScenarioCheck, run: RunObservation): string
       return run.toolCalls.some((c) => check.names.includes(c.toolId)) ? undefined : `one of ${check.names.join(", ")} should be called`;
     case "command_run": {
       const re = new RegExp(check.pattern, "i");
-      const lastChange = check.afterChange ? run.toolCalls.findLastIndex(call => ["write_file", "edit_file", "edit_notebook"].includes(call.toolId) && call.errored === false) : -1;
-      if (check.afterChange && lastChange < 0) return "no completed file change was observed before verification";
-      const commands = run.toolCalls.slice(lastChange + 1).filter((c) => (c.toolId === "run_shell" || c.toolId === "run_powershell") && c.errored === false).map((c) => String((c.input as { command?: unknown })?.command ?? ""));
+      const changes = check.afterChange ? run.toolCalls.filter(call => ["write_file", "edit_file", "update_notebook_cell"].includes(call.toolId) && call.errored === false) : [];
+      if (check.afterChange && changes.length === 0) return "no completed file change was observed before verification";
+      if (changes.some(call => call.completedAt === undefined)) return "file change completion order was not observed";
+      const lastChange = Math.max(-1, ...changes.map(call => call.completedAt!));
+      const commands = run.toolCalls.filter((c) => (c.toolId === "run_shell" || c.toolId === "run_powershell") && c.errored === false && (!check.afterChange || (c.startedAt !== undefined && c.startedAt > lastChange))).map((c) => String((c.input as { command?: unknown })?.command ?? ""));
       return commands.some((c) => re.test(c)) ? undefined : `a command matching /${check.pattern}/i should be run`;
     }
     case "no_repeated_call": {

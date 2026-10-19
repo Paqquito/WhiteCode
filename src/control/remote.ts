@@ -12,6 +12,9 @@ export interface LinkOptions {
   readonly maxFrameBytes: number;
   /** ENF-03: messages kept while the host has not confirmed them. */
   readonly maxBuffered: number;
+  readonly maxBufferedBytes?: number;
+  readonly maxInboundBytes?: number;
+  readonly maxPending?: number;
   /** § 10: connection and disconnection, on the machine of the engine. */
   readonly notice: (text: string) => void;
   readonly trace: (event: string, data: Record<string, unknown>) => void;
@@ -23,13 +26,20 @@ type State = "waiting" | "attached" | "suspended" | "ended";
 /** Lines received from the host, for the control driver. */
 class LineQueue implements AsyncIterable<string> {
   readonly #lines: string[] = [];
+  #bytes = 0;
+  constructor(readonly maxBytes = Infinity) {}
   #wake: (() => void) | undefined;
   #ended = false;
-  push(line: string): void {
+  push(line: string): boolean {
+    const bytes = Buffer.byteLength(line);
+    if (this.#ended || this.#bytes + bytes > this.maxBytes) return false;
+    this.#bytes += bytes;
     this.#lines.push(line);
     this.#wake?.();
+    return true;
   }
-  end(): void {
+  end(clear = false): void {
+    if (clear) { this.#lines.length = 0; this.#bytes = 0; }
     this.#ended = true;
     this.#wake?.();
   }
@@ -37,6 +47,7 @@ class LineQueue implements AsyncIterable<string> {
     for (;;) {
       const line = this.#lines.shift();
       if (line !== undefined) {
+        this.#bytes -= Buffer.byteLength(line);
         yield line;
         continue;
       }
@@ -55,15 +66,18 @@ export class FramedLink {
   #peer: WsPeer | undefined;
   /** Connections that must present the resumption token in their first message (FA-02, FA-06). */
   readonly #pending = new Set<WsPeer>();
+  readonly #pendingTimers = new Map<WsPeer, ReturnType<typeof setTimeout>>();
   #seq = 0;
   /** Messages not confirmed by the host, in order (EF-03, EF-05). */
-  readonly #buffer: Array<{ readonly seq: number; readonly text: string }> = [];
+  readonly #buffer: Array<{ readonly seq: number; readonly text: string; readonly bytes: number }> = [];
+  #bufferBytes = 0;
+  readonly #waiters = new Set<{ resolve(): void; reject(reason: Error): void }>();
   /** First number that can still be replayed: older messages left the bounded buffer (ENF-03). */
   #replayableFrom = 1;
   #token = randomUUID();
   #lastReceived = Date.now();
   #connectedAt: Date | undefined;
-  readonly #inbound = new LineQueue();
+  readonly #inbound: LineQueue;
   #keepAlive: ReturnType<typeof setInterval> | undefined;
   #resumeTimer: ReturnType<typeof setTimeout> | undefined;
   /** FA-03: the resumption window expired; the run stops and the session stays reopenable. */
@@ -72,10 +86,27 @@ export class FramedLink {
 
   constructor(options: LinkOptions) {
     this.#o = options;
+    this.#inbound = new LineQueue(options.maxInboundBytes);
   }
 
   get attached(): boolean {
     return this.#state === "attached";
+  }
+
+  /** Event-driven admission for work that must wait for the authenticated host to reconnect. */
+  async waitAttached(signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    while (!this.attached) {
+      if (this.ended) throw new Error("Remote link closed.");
+      await new Promise<void>((resolve, reject) => {
+        const cleanup = () => { this.#waiters.delete(waiter); signal.removeEventListener("abort", abort); };
+        const abort = () => { cleanup(); reject(signal.reason ?? new Error("Remote wait aborted.")); };
+        const waiter = { resolve: () => { cleanup(); resolve(); }, reject: (reason: Error) => { cleanup(); reject(reason); } };
+        this.#waiters.add(waiter); signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) abort();
+      });
+      signal.throwIfAborted();
+    }
   }
 
   /** The messages of the host, without the frames of the transport. */
@@ -95,8 +126,11 @@ export class FramedLink {
       const init = JSON.parse(body) as Record<string, unknown>;
       text = JSON.stringify({ seq, ...init, resumeToken: this.#token });
     }
-    this.#buffer.push({ seq, text });
-    if (this.#buffer.length > this.#o.maxBuffered) this.#replayableFrom = this.#buffer.shift()!.seq + 1;
+    const bytes = Buffer.byteLength(text); this.#buffer.push({ seq, text, bytes }); this.#bufferBytes += bytes;
+    while (this.#buffer.length > this.#o.maxBuffered || this.#o.maxBufferedBytes !== undefined && this.#bufferBytes > this.#o.maxBufferedBytes) {
+      const removed = this.#buffer.shift(); if (!removed) break;
+      this.#bufferBytes -= removed.bytes; this.#replayableFrom = removed.seq + 1;
+    }
     if (this.#state === "attached") this.#peer!.send(text);
   }
 
@@ -104,11 +138,14 @@ export class FramedLink {
   open(peer: WsPeer): void {
     if (this.#state === "ended") return peer.close(1001);
     if (this.#state === "waiting") return this.#attach(peer, 0, false);
+    if (this.#o.maxPending !== undefined && this.#pending.size >= this.#o.maxPending) return peer.close(4429);
     // RG-02: the first message must resume the session; until then the connection pilots nothing.
     this.#pending.add(peer);
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      this.#pendingTimers.delete(peer);
       if (this.#pending.delete(peer)) peer.close(4408);
     }, Math.max(1_000, this.#o.keepAliveMs));
+    this.#pendingTimers.set(peer, timer);
   }
 
   /**
@@ -146,11 +183,12 @@ export class FramedLink {
     if (value?.["type"] === "ack") return this.#acknowledge(value["seq"]);
     if (value?.["type"] === "keepalive") return;
     if (value?.["type"] === "resume") return; // already attached: nothing to resume
-    this.#inbound.push(text);
+    if (!this.#inbound.push(text)) { peer.close(4429); this.#inbound.end(true); this.close(); }
   }
 
   closed(peer: WsPeer): void {
     if (this.#closing?.peer === peer) this.#closing.done();
+    clearTimeout(this.#pendingTimers.get(peer)); this.#pendingTimers.delete(peer);
     if (this.#pending.delete(peer) || peer !== this.#peer) return;
     this.#peer = undefined;
     if (this.#state !== "attached") return;
@@ -160,11 +198,12 @@ export class FramedLink {
   /** EF-04: the host confirms the last number received; the confirmed messages leave the buffer (ENF-03). */
   #acknowledge(seq: unknown): void {
     if (typeof seq !== "number" || !Number.isInteger(seq)) return;
-    while (this.#buffer.length > 0 && this.#buffer[0]!.seq <= seq) this.#buffer.shift();
+    while (this.#buffer.length > 0 && this.#buffer[0]!.seq <= seq) this.#bufferBytes -= this.#buffer.shift()!.bytes;
     this.#replayableFrom = Math.max(this.#replayableFrom, Math.min(seq + 1, this.#seq + 1));
   }
 
   #first(peer: WsPeer, text: string): void {
+    clearTimeout(this.#pendingTimers.get(peer)); this.#pendingTimers.delete(peer);
     this.#pending.delete(peer);
     let value: Record<string, unknown> | undefined;
     try {
@@ -192,6 +231,7 @@ export class FramedLink {
     const previous = this.#peer;
     this.#peer = peer;
     this.#state = "attached";
+    for (const waiter of [...this.#waiters]) waiter.resolve();
     this.#lastReceived = Date.now();
     clearTimeout(this.#resumeTimer);
     this.#resumeTimer = undefined;
@@ -225,6 +265,7 @@ export class FramedLink {
     if (this.#state === "ended") return;
     this.expired = true;
     this.#state = "ended";
+    for (const waiter of [...this.#waiters]) waiter.reject(new Error("Remote link closed."));
     this.#stopKeepAlive();
     this.#o.trace("resume_window_expired", {});
     this.#inbound.end(); // FA-03: the driver stops the run
@@ -271,11 +312,14 @@ export class FramedLink {
   }
 
   close(): void {
-    if (this.#state === "ended" && !this.#peer) return;
     this.#state = "ended";
+    for (const waiter of [...this.#waiters]) waiter.reject(new Error("Remote link closed."));
+    this.#buffer.length = 0; this.#bufferBytes = 0;
     this.#stopKeepAlive();
     clearTimeout(this.#resumeTimer);
     for (const p of this.#pending) p.close(1001);
+    for (const timer of this.#pendingTimers.values()) clearTimeout(timer);
+    this.#pendingTimers.clear();
     this.#pending.clear();
     this.#peer?.close(1000);
     this.#peer = undefined;

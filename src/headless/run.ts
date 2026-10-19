@@ -89,6 +89,8 @@ import { decide as permissionDecision } from "../permissions/engine";
 import { configurationWritable } from "../config/persistence";
 import { teamMessageTool, teamTools } from "../tools/team";
 import { CredentialHelper, credentialHelperProvider } from "../auth/credential-helper";
+import { CloudCredentials, type AwsCredentials, type CloudRefresh } from "../auth/cloud-credentials";
+import { BedrockProvider } from "../providers/bedrock";
 import { ProactiveWake, WakeEvents, waitTool } from "../autonomy/wake";
 import { builtinWorkflows } from "../workflows/builtin";
 import { loadWorkflows, type Workflow, type WorkflowStep } from "../workflows/definitions";
@@ -149,6 +151,7 @@ import { LoopGuard } from "../engine/loop-guard";
 import { captureGitState, sanitizeRemoteUrl } from "../engine/repository-state";
 import type { CompactionOutcome } from "../engine/compaction";
 import { ContextManager } from "../engine/context-manager";
+import { CachedMicroCompaction, restoredCacheState } from "../engine/cached-micro-compaction";
 import { ContextMeter } from "../engine/context-meter";
 import { HistoryPruning } from "../engine/history-pruning";
 import { ContextFolding } from "../engine/context-folding";
@@ -264,6 +267,8 @@ import { createReviewArtifactTool } from "../tools/review-artifact";
 import { createSpawnAgentTool, type SpawnAgentInput } from "../tools/spawn-agent";
 import { loadAgents, parseAgent, READING_TOOLS, BUILT_IN_AGENTS, type AgentDefinition, type AgentLocation } from "../agents/definitions";
 import { restrictedView, type ToolLookup } from "../tools/registry";
+import { runDirectAdmin, DIRECT_SESSION_ARGS, DIRECT_TOOLS } from "../direct/admin";
+import { DIRECT_COMMANDS, directPrivateFile, directToolView } from "../direct/boundary";
 import { BackgroundTasks } from "../engine/background";
 import { KeepAwake } from "../integrations/keep-awake";
 import { acquireAwake, type AwakeRelease } from "../platform/keep-awake";
@@ -406,6 +411,10 @@ import type { UnicodeLevel } from "../ui/style";
 const DIALOG_GUARD_MS = 300;
 
 export interface ProviderFactoryOptions {
+  readonly awsCredentials?: AwsCredentials;
+  readonly awsRegion?: string;
+  readonly fileTransfer?: import("../providers/anthropic-files").FileTransfer;
+  readonly documentAllowed?: (part: import("../providers/types").DocumentPart) => boolean;
   readonly providerId: string;
   readonly apiKey?: string;
   readonly authToken?: string;
@@ -419,6 +428,8 @@ export interface ProviderFactoryOptions {
 }
 
 export interface RunDependencies {
+  /** Trusted server composition only; clients cannot supply a folder or weaken this capability boundary. */
+  readonly directSession?: { readonly root: string; readonly privateFiles: readonly string[]; readonly waitConnected: (signal: AbortSignal) => Promise<void> };
   /** Native power boundary for isolated tests; never a model setting. */
   readonly keepAwakeAcquire?:()=>Promise<AwakeRelease>;
   /** Isolated native browser test boundary; never model configuration. */
@@ -509,6 +520,10 @@ class RunError extends Error {
 const DEFAULT_REQUEST_TIMEOUT_MS = 10 * 60_000;
 
 function createProvider(o: ProviderFactoryOptions): ModelProvider {
+  if (o.providerId === "bedrock") {
+    if (!o.awsCredentials || !o.awsRegion || !o.baseURL) throw new Error("Identifiants, région ou point d'accès cloud manquants.");
+    return new BedrockProvider({ ...o, credentials: o.awsCredentials, region: o.awsRegion, baseURL: o.baseURL });
+  }
   if (o.providerId === "anthropic") return new AnthropicProvider(o);
   // `openai` and `openai_compatible` speak the same protocol through the official SDK (SPEC-API-001 § 5.1).
   return new OpenAICompatibleProvider({
@@ -619,7 +634,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const policyGuard = new ManagedPolicyGuard(policyLocations.managedSettingsFile, identity.resolved.policyAnchor, systemPolicy, deps.policyFileProtection, cachePolicy);
   let organizationLimits: OrganizationLimits | undefined;
   let policyCapability: PolicyCapability = deps.policyCapability ?? "local";
-  if (serve?.transport === "network" || ["remote-access", "ssh-session", "session-runner", "job-runner"].includes(argv[0] ?? "") || policyEnv.ownBoolean("REMOTE_WORKER") === true) policyCapability = "remote";
+  if (deps.directSession || serve?.transport === "network" || ["direct-server", "remote-access", "ssh-session", "session-runner", "job-runner"].includes(argv[0] ?? "") || policyEnv.ownBoolean("REMOTE_WORKER") === true) policyCapability = "remote";
   const applyIdentityOverrides = (view: EnvironmentView, preferences?: Settings) => {
     const managed = preferences ?? Settings.load({ sources: [
       { scope: "managed", name: policyLocations.managedSettingsFile, text: readManagedPolicy(policyLocations.managedSettingsFile, identity.resolved.policyAnchor, policyCapability, deps.policyFileProtection).settingsText },
@@ -691,6 +706,13 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     // SPEC-MOD-012 CA-11: visible before service composition; protocol stdout remains machine-readable.
     streams.writeErr("Rôle : service de connecteur ; lieu d’exécution : poste local.\n");
     return run(inner, deps, err, holder, request);
+  }
+  if (!serve && !deps.directSession && argv[0] === "direct-server") {
+    const directEnv = new EnvironmentView(identity.get("ENV_PREFIX"), deps.environment); applyIdentityOverrides(directEnv);
+    return runDirectAdmin(argv, { streams, identity, catalog: deps.catalog, env: directEnv, cwd: deps.cwd, system, managedDir: deps.managedDir, registryPolicyReader: deps.registryPolicyReader, profilePolicyReader: deps.profilePolicyReader, policyFileProtection: deps.policyFileProtection, cachePolicy, credentialVault: deps.credentialVault, signal: deps.signal, assertPolicy }, session => {
+      const environment = { ...deps.environment }; delete environment[directEnv.prefix + "SERVER_TOKEN"];
+      return runCli(DIRECT_SESSION_ARGS, { ...deps, environment, cwd: session.root, streams: session.streams, signal: deps.signal ? AbortSignal.any([deps.signal, session.signal]) : session.signal, policyCapability: "remote", directSession: { root: session.root, privateFiles: session.privateFiles, waitConnected: session.waitConnected } });
+    });
   }
   // SPEC-MOD-012: `<famille> [<opération>] …` is an administration operation, never a session (EF-04).
   if (!serve && looksLikeSubcommand(argv)) {
@@ -1288,7 +1310,15 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   let authToken: string | undefined;
   let baseURL: string | undefined;
   let organization: string | undefined;
-  if (providerId === "anthropic") {
+  let awsCredentials: AwsCredentials | undefined, awsRegion: string | undefined;
+  if (providerId === "bedrock") {
+    awsRegion = env.public("AWS_REGION") ?? env.public("AWS_DEFAULT_REGION");
+    if (!awsRegion || !/^[a-z]{2}(?:-[a-z0-9]+)+-\d+$/.test(awsRegion)) throw new RunError("Fournisseur cloud : AWS_REGION manquante ou invalide.", ExitCode.UsageOrConfiguration);
+    baseURL = settings.get<string | undefined>("api.baseUrl") ?? env.public("AWS_ENDPOINT_URL_BEDROCK_RUNTIME") ?? `https://bedrock-runtime.${awsRegion}.amazonaws.com`;
+    checkUrl(baseURL);
+    const accessKeyId = env.public("AWS_ACCESS_KEY_ID"), secretAccessKey = env.public("AWS_SECRET_ACCESS_KEY"), sessionToken = env.public("AWS_SESSION_TOKEN");
+    if (accessKeyId && secretAccessKey) awsCredentials = { accessKeyId, secretAccessKey, ...(sessionToken ? { sessionToken } : {}) };
+  } else if (providerId === "anthropic") {
     apiKey = env.public("ANTHROPIC_API_KEY");
     authToken = env.public("ANTHROPIC_AUTH_TOKEN");
     baseURL = env.public("ANTHROPIC_BASE_URL");
@@ -1306,12 +1336,21 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   let rememberHelper: (value: string) => void = () => {};
   let helperDiagnostic = (data: { code: number | null; stderrBytes: number }) => { earlyDebug.push(["auth", "credential helper execution", data]); };
   const helperCommand = settings.get<string | undefined>("auth.credentialHelper");
+  if (providerId === "bedrock" && helperCommand) throw new RunError("Fournisseur cloud : utilisez auth.cloudCredentialRefresh pour les identifiants AWS.", ExitCode.UsageOrConfiguration);
   const helper = helperCommand ? new CredentialHelper({ command: helperCommand, cwd, env: env.childEnvironment(), ttlMs: () => settings.get<number>("auth.credentialHelperTtl"), remember: value => rememberHelper(value), diagnostic: data => helperDiagnostic(data) }) : undefined;
   if (helper) {
     (holder.finalizers ??= []).push(() => helper.close());
     try { apiKey = await helper.get(deps.signal ?? new AbortController().signal); authToken = undefined; credentialSource = "programme"; }
     catch (error) { throw new RunError("Programme fournisseur de clé : " + (error as Error).message, ExitCode.UsageOrConfiguration); }
   }
+  const cloudCommands = settings.get<CloudRefresh | undefined>("auth.cloudCredentialRefresh")?.aws;
+  const cloud = providerId === "bedrock" && cloudCommands ? new CloudCredentials({ commands: cloudCommands, ...(awsCredentials ? { initial: awsCredentials } : {}), service: identity.get("KEYCHAIN_SERVICE"), home: system.home, cwd, env: env.childEnvironment(), remember: value => rememberHelper(value), report: message => err(maskSecrets(message)), assertCurrent: assertPolicy }) : undefined;
+  if (cloud) {
+    (holder.finalizers ??= []).push(() => cloud.close());
+    try { awsCredentials = JSON.parse(await cloud.get(deps.signal ?? new AbortController().signal)) as AwsCredentials; credentialSource = "identifiants cloud en mémoire"; }
+    catch { throw new RunError("Renouvellement des identifiants cloud impossible.", ExitCode.UsageOrConfiguration); }
+  }
+  if (providerId === "bedrock" && !awsCredentials) throw new RunError("Fournisseur cloud : identifiants AWS absents ; définissez les variables AWS ou auth.cloudCredentialRefresh.", ExitCode.UsageOrConfiguration);
   if (apiKey && !helper) {
     credentialSource = "environnement";
   if (willBeInteractive) {
@@ -1368,6 +1407,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   holder.cleanups.push(() => featureFlags.close());
   let turnFeatures = featureFlags.snapshot();
   const providerOptions: ProviderFactoryOptions = {
+    documentAllowed: part => !!part.sourcePath && insideAllowed(part.sourcePath, allowedDirectories, system.platform) && !assistedReadDenied(part.sourcePath),
+    ...(awsCredentials ? { awsCredentials, awsRegion } : {}),
+    fileTransfer: event => { const message = event.state === "uploading" ? `Téléversement du document (${event.bytes} octets)…` : `Document téléversé (${event.bytes} octets).`; emit({ type: "notification", message }); if (!app && !stream) err(message); debug.log("api", "file transfer", event); },
     fetch: network,
     providerId,
     apiKey,
@@ -1383,8 +1425,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   if (recordingMode && (!["record", "replay", "auto"].includes(recordingMode) || !(deps.allowApiRecording || ["internal", "development"].includes(buildProfile())))) throw new RunError("Enregistrement API réservé au développement : mode record, replay ou auto attendu dans un profil interne.", ExitCode.UsageOrConfiguration);
   if (ephemeral && recordingMode && recordingMode !== "replay") throw new RunError("Enregistrement API incompatible avec une session éphémère : utilisez replay ou retirez l’enregistrement.", ExitCode.UsageOrConfiguration);
   if (recordingMode) err(`Enregistrement API : ${recordingMode}. Les références contiennent des réponses non chiffrées ; utilisez uniquement des données de test.`);
-  const activeSecrets = [apiKey, authToken, ...Object.values(providerOptions.headers)].filter((s): s is string => !!s);
+  const activeSecrets = [apiKey, authToken, awsCredentials?.accessKeyId, awsCredentials?.secretAccessKey, awsCredentials?.sessionToken, ...Object.values(providerOptions.headers)].filter((s): s is string => !!s);
   rememberHelper = value => { if (!activeSecrets.includes(value)) activeSecrets.push(value); for (const form of [value, JSON.stringify(value).slice(1, -1), encodeURIComponent(value)]) if (!credentialForms.includes(form)) credentialForms.push(form); credentialForms.sort((a, b) => b.length - a.length); };
+  if (awsCredentials) for (const value of [awsCredentials.accessKeyId, awsCredentials.secretAccessKey, awsCredentials.sessionToken, JSON.stringify(awsCredentials)]) if (value) rememberHelper(value);
   let fastOwner: string | undefined;
   const accountFingerprint = async () => companyAccount?.sessionBinding();
   const fastOutput = new FastOutput(async (model, signal) => {
@@ -1400,7 +1443,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     if (opt("max-cost") !== undefined || settings.get<number | undefined>("engine.limits.maxCost") !== undefined) err("Mode rapide indisponible avec un plafond de coût ; mode normal conservé.");
     else err(await fastOutput.set(true, resolvedModel, deps.signal ?? new AbortController().signal));
   }
-  const rawProvider = helper ? credentialHelperProvider(helper, key => (deps.providerFactory ?? createProvider)({ ...providerOptions, apiKey: key, authToken: undefined }), apiKey!, redactOutput, () => credentialForms) : (deps.providerFactory ?? createProvider)(providerOptions);
+  const rawProvider = cloud ? credentialHelperProvider(cloud, value => (deps.providerFactory ?? createProvider)({ ...providerOptions, awsCredentials: JSON.parse(value) as AwsCredentials }), JSON.stringify(awsCredentials), redactOutput, () => credentialForms) : helper ? credentialHelperProvider(helper, key => (deps.providerFactory ?? createProvider)({ ...providerOptions, apiKey: key, authToken: undefined }), apiKey!, redactOutput, () => credentialForms) : (deps.providerFactory ?? createProvider)(providerOptions);
   if (!offlineMinimal) { try { rawProvider.preconnect?.(); } catch { /* SPEC-API-022: warmup is optional. */ } }
   const recordedProvider = fastOutput.wrap(withApiRecording(rawProvider, { mode: recordingMode as RecordingMode | undefined, directory: env.own("API_RECORDING_DIR") ?? join(locations.configDir, "api-references"), secrets: activeSecrets }));
   const thirdPartyCloud = (() => {
@@ -1438,6 +1481,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const diagnosedProvider = buildFlag("cache_miss_diagnostics") && settings.get<boolean>("engine.cacheBreakDetection.enabled") ? withCacheDiagnostics(loggedProvider, { maxThreads: settings.get<number>("engine.cacheBreakDetection.maxTrackedThreads"), log: diagnostic => debug.log("cache", "cache break", diagnostic) }) : loggedProvider;
   const contextExplanations = new ContextExplanations(value => redactOutput(maskSecrets(value)));
   const provider: ModelProvider = { id: diagnosedProvider.id, async *stream(request, signal) {
+    if (deps.directSession) await deps.directSession.waitConnected(signal);
+    signal.throwIfAborted();
     assertPolicy(); const price = effectivePricing(request.model, overrides, referenceCurrency, message => err(`avertissement : ${message}`)), currency = ledger.snapshot.currency;
     if (!liveSettings.get<boolean>("context.explanation.enabled")) contextExplanations.clear();
     const remember = liveSettings.get<boolean>("context.explanation.enabled") && (request.purpose === "main" || request.purpose === undefined) ? contextExplanations.capture(request) : undefined;
@@ -1537,7 +1582,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   let registry: ToolRegistry;
   let ide:IdeClient|undefined;
   let mergeStatus: MergeRequestStatus | undefined;
-  const minimal = opt("minimal") === true || offlineMinimal;
+  const minimal = opt("minimal") === true || offlineMinimal || !!deps.directSession;
   let mainMemoryWritten = false;
   const memory = !minimal && !ephemeral && settings.get<boolean>("memory.automatic.enabled") ? new MemoryStore(settings.get<string | undefined>("memory.directory") ? absolute(settings.get<string>("memory.directory"), cwd) : join(locations.configDir, "memory", projectKey(projectReal)), { indexFile: identity.get("MEMORY_INDEX_FILE"), maxLines: settings.get<number>("memory.indexMaxLines"), maxBytes: settings.get<number>("memory.indexMaxBytes"), redact: redactOutput }) : undefined;
   try {
@@ -2106,7 +2151,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       noHooks: opt("no-hooks") === true,
       maxTimeoutMs: 600_000,
     });
-    if (offlineMinimal) {
+    if (offlineMinimal || deps.directSession) {
       if (snapshot.declarations.some((d) => d.mandatory)) throw new RunError("Le mode minimal hors ligne est incompatible avec un crochet obligatoire : arrêt avant tout trafic annexe.", ExitCode.UsageOrConfiguration);
       return { ...snapshot, declarations: [], habilitated: new Set() };
     }
@@ -2308,7 +2353,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     return manager?.active ? [...input, ...input.filter(rule => isWithin(rule.anchor, manager.root, system.platform)).map(rule => ({ ...rule, anchor: resolve(manager.active!.path, relative(manager.root, rule.anchor)) }))] : input;
   };
   const effectiveRules = () => copyRules((settings.get<boolean>("permissions.managedRulesOnly") ? rules.filter((r) => r.scope === "managed") : rules));
-  const readDenied = (path: string) => isWithin(realTargetPath(path),join(locations.configDir,"desktop"),system.platform) || isCredentialFile(path, locations.configDir) || isWithin(realTargetPath(path),join(locations.configDir,"archives-v1"),system.platform) || isWithin(realTargetPath(path),join(locations.configDir,"ide"),system.platform) || effectiveRules().some((r) => r.decision === "deny" && READ_TOOLS.has(r.tool) && [matchContext, { ...matchContext, cwd: (holder.isolated?.active ? holder.isolated : modelCopies)?.original ?? cwd }].some(context => ruleMatches(r, r.tool, { kind: "paths", access: "read", paths: [path] }, context)));
+  const readDenied = (path: string) => !!deps.directSession && (!insideAllowed(realTargetPath(path), [deps.directSession.root], system.platform) || directPrivateFile(path,deps.directSession.privateFiles,system.platform)) || isWithin(realTargetPath(path),join(locations.configDir,"desktop"),system.platform) || isCredentialFile(path, locations.configDir) || isWithin(realTargetPath(path),join(locations.configDir,"archives-v1"),system.platform) || isWithin(realTargetPath(path),join(locations.configDir,"ide"),system.platform) || effectiveRules().some((r) => r.decision === "deny" && READ_TOOLS.has(r.tool) && [matchContext, { ...matchContext, cwd: (holder.isolated?.active ? holder.isolated : modelCopies)?.original ?? cwd }].some(context => ruleMatches(r, r.tool, { kind: "paths", access: "read", paths: [path] }, context)));
   let teamMemory:TeamMemory|undefined;
   if(buildFlag("team_memory")&&companyAccount&&identity.has("SERVICE_CONSOLE")&&!minimal&&!settings.get<boolean>("storage.encryption.enabled")&&settings.get<boolean>("memory.team.enabled")) {
     try {const profile=await companyAccount.profile(),git=findExecutable("git"),remote=profile&&git?runToCompletion(git,["--no-optional-locks","remote","get-url","origin"],{cwd,env:env.childEnvironment({GIT_TERMINAL_PROMPT:"0"}),timeoutMs:1000}):undefined,url=remote?.code===0?sanitizeRemoteUrl(remote.stdout.trim()):undefined;
@@ -2884,6 +2929,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const sessionAllows: Rule[] = [];
   // "Yes, don't ask again" (SPEC-PER-001 CA-05): kept for the session, or written to the chosen scope.
   const persistRule = (scope: string, raw: string) => {
+    if (deps.directSession) scope = "session";
     const file = scope === "local" ? locations.localSettingsFile : scope === "project" ? locations.projectSettingsFile : scope === "user" ? locations.userSettingsFile : undefined;
     const ruleScope: RuleScope = file ? (scope as RuleScope) : "session";
     const rule = parseRule(raw, "allow", ruleScope, ruleScope === "project" || ruleScope === "local" ? locations.projectRoot : cwd);
@@ -3063,6 +3109,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         enabled: settings.get<boolean>("context.providerContextManagement.enabled"),
         targetTokens: settings.get<number>("context.providerContextManagement.targetTokens"),
       },
+      cachedMicroCompact: buildFlag("compaction_cache_edit") ? {
+        triggerRatio: settings.get<number>("context.cachedMicroCompact.triggerRatio"),
+        keepRecent: settings.get<number>("context.cachedMicroCompact.keepRecent"),
+        minAgeMinutes: settings.get<number>("context.cachedMicroCompact.minAgeMinutes"),
+      } : undefined,
     },
     {
       provider,
@@ -3104,6 +3155,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     },
     Date.now,
     folding ? { commitRatio: settings.get<number>("context.folding.commitRatio"), commit: () => folding.commit() } : undefined,
+    buildFlag("compaction_cache_edit") ? new CachedMicroCompaction(Date.now, {
+      restored: reopened ? restoredCacheState(reopened.chain) : undefined,
+      save: state => { transcript?.append("system", { event: "cache_edit_state", state }); },
+    }) : undefined,
   );
   deps.onSession?.({ modes: modeState, setEffort, compact: (instructions?: string) => context.compactNow(instructions, controller.signal) });
 
@@ -3128,6 +3183,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const control =
     controlled && stream
       ? new ControlSession({
+          maxQueuedBytes: deps.directSession ? 4 * 1024 * 1024 : undefined,
           onEnqueue: () => wakes?.emit("message"),
           send: (m) => {
             const { type, ...fields } = m;
@@ -3154,7 +3210,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     stream.emit("session", {
       streamProfile: stream.profile,
       model: resolvedModel.id,
-      tools: registry.list().map((t) => t.name),
+      tools: registry.list().filter(t => !deps.directSession || DIRECT_TOOLS.has(t.name)).map((t) => t.name),
       cwd: projectReal,
       version: identity.version,
       permissionMode: modeState.mode,
@@ -3249,6 +3305,8 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
 
   // SPEC-IHM-010 § 5.4: the files referenced by `@`, read at sending within the allowed folders.
   const attachmentOptions = () => ({
+    pdf: currentModel.capabilities.pdf,
+    documentReadDenied: assistedReadDenied,
     agents: [...agentCatalog().keys()],
     cwd,
     allowedDirectories,
@@ -3269,7 +3327,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     const attached = attach(typed, attachmentOptions(), []);
     recordAttached(attached.read);
     for (const n of attached.notices) app?.notice("warning", n);
-    return [{ type: "text", text: literalTriggers(typed).text }, ...attached.parts.map((p) => ({ type: "text" as const, text: p }))];
+    return [{ type: "text", text: literalTriggers(typed).text }, ...attached.parts.map((p) => ({ type: "text" as const, text: p })), ...attached.documents];
   };
   let unrestrictedAccepted: () => Promise<boolean> = async () => true;
   // SPEC-IHM-014 § 5.4: the key bindings of the session, the invalid ones reported without stopping the others (EF-04).
@@ -3637,10 +3695,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   const loopDeps: LoopDeps = {
     maxKeyword: buildFlag("thinking_max_keyword") ? settings.get<string>("thinking.maxKeyword") : undefined,
     tokenTarget: { enabled: buildFlag("context_token_target") && settings.get<boolean>("context.tokenBudget.enabled"), completionRatio: settings.get<number>("context.tokenBudget.completionRatio") },
-    projectHistory: pruning || folding || coordinator ? request => { if (request.agent) return request; const pruned = pruning ? pruning.decorate(request) : request; const projected = folding ? folding.decorate(pruned) : pruned; return coordinator ? { ...projected, tools: projected.tools.filter(tool => coordinatorToolAllowed(tool.name)) } : projected; } : undefined,
+    projectHistory: pruning || folding || coordinator || deps.directSession ? request => { if (request.agent && !deps.directSession) return request; const pruned = pruning ? pruning.decorate(request) : request; const projected = folding ? folding.decorate(pruned) : pruned; return deps.directSession ? { ...projected, tools: projected.tools.filter(tool => DIRECT_TOOLS.has(tool.name)) } : coordinator ? { ...projected, tools: projected.tools.filter(tool => coordinatorToolAllowed(tool.name)) } : projected; } : undefined,
     takeSubmittedResult: () => submittedResult.take(),
     postSampling: (assistant, agent) => postSampling.dispatch({ assistant, agent, minimal, ephemeral: transcript === undefined }),
-    beforeRequest: () => {
+    beforeRequest: async signal => {
+      await deps.directSession?.waitConnected(signal);
       wakes?.acknowledge();
       assertPolicy();updateAwake();
       if (pruneRequested && pruning) { pruneRequested = false; const result = pruning.pruneOldLargeResults(); emit({ type: "warning", message: `Élagage : environ ${result.freedTokens} jetons libérés ; messages utilisateur conservés.` }); }
@@ -3694,9 +3753,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
     publishedMessage: () => publishedMessage,
     context,
     executor: {
+      waitConnected: deps.directSession?.waitConnected,
       redactOutput,
       policyRefusal,
-      get registry(){return coordinator?restrictedView(registry,coordinatorToolAllowed):scriptModeActive?restrictedView(registry,name=>name==="run_code"):registry;},
+      get registry(){return deps.directSession?directToolView(registry,deps.directSession.root,system.platform,deps.directSession.privateFiles):coordinator?restrictedView(registry,coordinatorToolAllowed):scriptModeActive?restrictedView(registry,name=>name==="run_code"):registry;},
       hooks,
       // SPEC-PER-001 § 5.3 point c: the habilitated `approval_needed` hooks answer before any other authority.
       prepareDescriptiveRules:(query,context,signal)=>descriptiveRules?.prepare(query,context,signal)??Promise.resolve(),
@@ -3743,6 +3803,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         protectedLocations: protectedPaths,
         readDenied,
         writeDenied: (path) => {
+          if (deps.directSession && (!insideAllowed(realTargetPath(path), [deps.directSession.root], system.platform) || directPrivateFile(path,deps.directSession.privateFiles,system.platform))) return true;
           if(isWithin(realTargetPath(path),join(locations.configDir,"audio-helpers"),system.platform)||isWithin(realTargetPath(path),join(locations.configDir,"desktop"),system.platform))return true;
           if(basename(path)===".installation-id"&&isWithin(realTargetPath(path),join(locations.configDir,"extensions"),system.platform))return true;
           if(isWithin(realTargetPath(path),join(locations.configDir,"assistant-memory"),system.platform))return true;
@@ -4423,6 +4484,11 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   };
   type RequestOutcome = { result?: TurnResult; refused?: string; shown?: Node; note?: string; exit?: true; silent?: true; send?: string };
   const processRequestBody = async (original: string | readonly ContentPart[], signal: AbortSignal, literal = false, pasted: readonly string[] = []): Promise<RequestOutcome> => {
+    if (deps.directSession) {
+      const texts = typeof original === "string" ? [original] : original.filter(part => part.type === "text").map(part => part.text);
+      const first = texts[0]?.trim() ?? "";
+      if (/^!/.test(first) || /^\//.test(first) && !DIRECT_COMMANDS.has(first.slice(1).split(/\s/)[0]!)) return { refused: "Cette commande est indisponible dans une session directe limitée à la racine de fichiers du serveur." };
+    }
     try { const issue = ensureSdkTools(); if (issue) return { refused: issue }; } catch { return { refused: "Noms d’outils du kit en conflit ; aucune déclaration appliquée." }; }
     if (original === peerWake) peerWakeQueued = false;
     if (original === teamWake) teamWakeQueued = false;
@@ -4454,7 +4520,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
           return { refused: resolved.message };
         case "internal": {
           // FA-04: the commands of the interface are refused in an automated run, with an explanation.
-          if (!app && resolved.command.interactiveOnly) return { refused: `Commande indisponible en exécution automatisée : /${entry.name}.` };
+          if (!app && resolved.command.interactiveOnly && !(deps.directSession && DIRECT_COMMANDS.has(resolved.command.name))) return { refused: `Commande indisponible en exécution automatisée : /${entry.name}.` };
           const outcome = await runInternalCommand(resolved.command, entry.args, signal);
           // A command that sends a message (/planning <description>): the turn follows.
           if (outcome.send === undefined) return outcome;
@@ -4514,9 +4580,9 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       const attached = attach(first, attachmentOptions(), []);
       recordAttached(attached.read);
       for (const n of attached.notices) emit({ type: "warning", message: n });
-      if (attached.parts.length > 0) {
+      if (attached.parts.length > 0 || attached.documents.length > 0) {
         const base: ContentPart[] = typeof content === "string" ? [{ type: "text", text: content }] : [...content];
-        content = [...base, ...attached.parts.map((p) => ({ type: "text" as const, text: p }))];
+        content = [...base, ...attached.parts.map((p) => ({ type: "text" as const, text: p })), ...attached.documents];
       }
     }
     // Step 5, EF-06, CA-04: the files read, then changed outside the agent since, announced once per change.
@@ -5061,7 +5127,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         }catch(cause){return {refused:(cause as Error).message};}
       }
       case "help":
-        return { shown: helpView(commandCatalog().entries(), keymap) };
+        return deps.directSession ? { note: commandCatalog().entries().filter(entry => DIRECT_COMMANDS.has(entry.name)).map(entry => `/${entry.name} — ${entry.description}`).join("\n") } : { shown: helpView(commandCatalog().entries(), keymap) };
       case "editor-link": {
         if(!ide||!app)return {refused:"Connexion IDE indisponible dans ce mode."};const candidates=ide.list();if(!candidates.length)return {shown:text("Aucun IDE compatible détecté. Installez et démarrez l’extension IDE de votre distribution.")};const chosen=await app.choose("Choisir l’IDE de cette session",candidates.map(row=>({label:row.name+" ("+row.id+")"})),{other:false});if(chosen.kind!=="options")return {silent:true};const target=candidates.find(row=>row.name+" ("+row.id+")"===chosen.labels[0]);if(!target)return {silent:true};try{await ide.connect(target.id,controller.signal);if(!ephemeral)await welcomeEditor(editorKind??target.name,locations.userStateFile,message=>app!.notice("info",message));return {shown:text(ide.status)};}catch(cause){return {refused:(cause as Error).message};}
       }
@@ -5074,6 +5140,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         await app?.openFiles(command.name === "global-search"); return { silent: true };
       case "switch-model": {
         let [value, flag] = args.trim().split(/\s+/);
+        if (deps.directSession && flag) return { refused: "Une session directe ne modifie pas le modèle par défaut du serveur." };
         if (!value) {
           if (!app) return { refused: "Usage : /switch-model <modèle> [défaut]." };
           applySettingsChanges();
@@ -6161,7 +6228,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         recordAttached(attached.read);
         for (const n of attached.notices) interactiveApp.notice("warning", n);
         const images = meta.images ?? [];
-        const content: string | ContentPart[] = attached.parts.length > 0 || images.length > 0 ? [{ type: "text", text: sent }, ...attached.parts.map((p) => ({ type: "text" as const, text: p })), ...images] : sent;
+        const content: string | ContentPart[] = attached.parts.length > 0 || attached.documents.length > 0 || images.length > 0 ? [{ type: "text", text: sent }, ...attached.parts.map((p) => ({ type: "text" as const, text: p })), ...attached.documents, ...images] : sent;
         const outcome = await processRequest(content, signal, meta.literal === true, meta.pasted ?? []);
         if (outcome.exit) return { kind: "exit" };
         if (outcome.silent) return { kind: "shown" };
@@ -6391,10 +6458,10 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
         const budget = ledger.snapshot;
         return {
           permissionMode: modeState.mode,
-          model: resolvedModel.id,
+          model: currentModel.id,
           turns: results.length,
           cost: { currency: budget.currency, confirmed: budget.unknownCost ? null : budget.confirmed, conservative: budget.conservative },
-          tools: registry.list().map((t) => t.name),
+          tools: registry.list().filter(t => !deps.directSession || DIRECT_TOOLS.has(t.name)).map((t) => t.name),
           backgroundTasks: background.tasks.map(task => ({ id: task.id, kind: task.kind, description: redactOutput(task.description), status: task.status, ...(task.activity ? { activity: redactOutput(task.activity) } : {}) })),
         };
       },
@@ -6411,6 +6478,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
       commands: () =>
         commandCatalog()
           .entries()
+          .filter(entry => !deps.directSession || DIRECT_COMMANDS.has(entry.name))
           .map((e) => ({ ...e, widening: e.source === "internal" ? (INTERNAL_COMMANDS.find((c) => c.name === e.name)?.widening ?? false) : false })),
       widening: (line) => {
         const r = recognize(line);

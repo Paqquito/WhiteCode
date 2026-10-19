@@ -19,6 +19,8 @@ import type { ResultStore } from "../session/result-store";
 import { boundText } from "../tools/output-bounds";
 
 export interface ExecutorDeps {
+  /** Authenticated remote reconnection gate, before previews and immediately before an effect. */
+  readonly waitConnected?: (signal: AbortSignal) => Promise<void>;
   readonly prepareDescriptiveRules?: (query: PermissionQuery, context: PermissionContext, signal: AbortSignal) => Promise<void>;
   /** SPEC-OUT-025: actual executions, with their reviewed difference, after the current plan approval. */
   readonly recordExecution?: (call: ToolCall, outcome: ToolOutcome, difference?: string, change?: FileChange) => void;
@@ -219,6 +221,7 @@ export class ResponseExecution {
       else await Promise.allSettled(previous);
       if (signal.aborted) return finish(textOutcome("Not executed: the turn was interrupted.", true, "interrupted"));
       const ctx = this.#deps.toolContext(signal);
+      await this.#deps.waitConnected?.(signal);
       const businessError = tool.validate?.(call.input as never, ctx);
       if (businessError) return finish(textOutcome(businessError, true, "invalid_input"));
 
@@ -321,6 +324,7 @@ export class ResponseExecution {
       // Scheduling (RG-01 to RG-03): a safe call waits for the last barrier; a barrier waits for every previous call.
       const release = await this.#semaphore.acquire();
       try {
+        await this.#deps.waitConnected?.(signal);
         if (signal.aborted) return finish(textOutcome("Not executed: the turn was interrupted.", true, "interrupted"));
         const blocked = policyBlocked();
         if (blocked) return blocked;

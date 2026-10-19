@@ -85,6 +85,7 @@ export const PUBLIC_SECRET_VARIABLES: readonly string[] = [
   "OPENAI_API_KEY",
   "GEMINI_API_KEY",
   "AWS_SECRET_ACCESS_KEY",
+  "AWS_ACCESS_KEY_ID",
   "AWS_SESSION_TOKEN",
   "AZURE_API_KEY",
 ];

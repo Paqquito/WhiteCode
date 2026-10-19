@@ -4,7 +4,7 @@ import type { TranscriptRecord } from "./transcript";
 import { ContentStore } from "./content-store";
 const row = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 function content(value: unknown): boolean {
-  return row(value) && (value["type"] === "text" && typeof value["text"] === "string" || value["type"] === "image" && ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(String(value["mediaType"])) && typeof value["dataBase64"] === "string");
+  return row(value) && (value["type"] === "text" && typeof value["text"] === "string" || value["type"] === "document" && value["mediaType"] === "application/pdf" && typeof value["name"] === "string" && typeof value["dataBase64"] === "string" || value["type"] === "image" && ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(String(value["mediaType"])) && typeof value["dataBase64"] === "string");
 }
 export function retainedHistory(value: unknown): HistoryMessage[] {
   if (!Array.isArray(value) || value.length > 256) throw new Error("Invalid retained history.");

@@ -23,7 +23,7 @@ export function remoteWorkflowTools(
   }> = {
     name: "start_remote_run",
     description: () =>
-      "Manage hosted scheduled agents. Actions: create, list, get, update, run, delete. Mutating actions require the user's explicit confirmation. Provide body with prompt, five-field cron and IANA timeZone for create/update; routine_id for get/update/run/delete. Never include local credentials. Daily and weekly schedules are supported; the product shows the exact cron and local time before creating anything.",
+      "Manage hosted scheduled agents. Actions: create, list, get, update, run, delete. Mutating actions require the user's explicit confirmation. Provide body with an autonomous prompt, five-field cron and IANA timeZone for create/update; optional name, maxCost per execution, tools, connectors and paused state. Use routine_id for get/update/run/delete. Never include local credentials. Daily and weekly schedules are supported; the product shows the exact cron, local time, selected capabilities and cost ceiling before creating anything.",
     inputSchema: {
       type: "object",
       properties: {
@@ -35,6 +35,11 @@ export function remoteWorkflowTools(
             prompt: { type: "string", minLength: 1, maxLength: 16000 },
             cron: { type: "string", minLength: 1, maxLength: 128 },
             timeZone: { type: "string", minLength: 1, maxLength: 128 },
+            name: { type: "string", minLength: 1, maxLength: 240 },
+            maxCost: { type: "number", exclusiveMinimum: 0 },
+            tools: { type: "array", maxItems: 100, uniqueItems: true, items: { type: "string", pattern: "^[a-zA-Z0-9_-]{1,128}$" } },
+            connectors: { type: "array", maxItems: 100, uniqueItems: true, items: { type: "string", pattern: "^[a-zA-Z0-9_-]{1,128}$" } },
+            paused: { type: "boolean" },
           },
           required: ["prompt", "cron", "timeZone"],
           additionalProperties: false,

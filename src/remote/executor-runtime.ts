@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync, lstatSync } from "node:fs";
 import { createHash } from "node:crypto";
 import type { CredentialVault } from "../platform/credential-vault";
 import { startChild } from "../platform/process";
+import type { Child } from "../platform/process";
 import { productProcess } from "../platform/product-process";
 import { findExecutable } from "../platform/system";
 import { readPrivateText } from "../shared/private-text";
@@ -130,6 +131,7 @@ async function processResult(
     signal: AbortSignal;
     input?: string;
     write?: (text: string) => void;
+    child?: (child: Child) => void;
   },
 ): Promise<{ code: number; output: string }> {
   o.signal.throwIfAborted();
@@ -145,6 +147,7 @@ async function processResult(
         output += text.slice(0, 128000 - output.length);
     },
   });
+  o.child?.(child);
   const stop = () => {
     void child.killTree(500);
   };
@@ -164,6 +167,7 @@ export function nativeExecutorPorts(o: {
   configDir: string;
   prefix: string;
   redact: (text: string) => string;
+  onPrepareChild?: (child: Child) => void;
 }) {
   const git = findExecutable("git");
   if (!git) throw Error("Git est requis pour préparer les travaux.");
@@ -186,6 +190,7 @@ export function nativeExecutorPorts(o: {
               GIT_OPTIONAL_LOCKS: "0",
             },
             signal,
+            child: o.onPrepareChild,
           },
         );
         if (result.code !== 0) throw Error("Préparation du dépôt impossible.");

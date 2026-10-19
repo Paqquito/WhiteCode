@@ -14,7 +14,17 @@ export interface ImagePart {
   readonly dataBase64: string;
 }
 
-export type ContentPart = TextPart | ImagePart;
+/** PDF bytes already read through the local attachment permission boundary; remote IDs stay inside adapters. */
+export interface DocumentPart {
+  readonly type: "document";
+  readonly mediaType: "application/pdf";
+  readonly dataBase64: string;
+  readonly name: string;
+  /** Local permission provenance, never transmitted to the service. */
+  readonly sourcePath?: string;
+}
+
+export type ContentPart = TextPart | ImagePart | DocumentPart;
 
 export interface ToolResultPart {
   readonly type: "tool_result";
@@ -82,6 +92,8 @@ export interface ModelRequest {
   readonly conversationId?: string;
   /** Service-side clearing of old tool results, for a model with the `contextEditing` capability (SPEC-MOT-014). */
   readonly contextEditing?: ContextEditingStrategy;
+  /** Supports: SPEC-MOT-015. Opaque tool-result IDs; never a rewritten message prefix. */
+  readonly cachedToolEdits?: readonly string[];
 }
 
 /** Neutral strategy of service-side clearing (SPEC-MOT-014); each adapter translates it into its protocol. */
@@ -120,6 +132,7 @@ export type ModelEvent =
       readonly serviceCostMultiplier?: number;
       /** Service-side clearing: applied edits, or the strategy was rejected and the request sent again without it (ERR-01 of SPEC-MOT-014). */
       readonly contextEditing?: { readonly rejected?: boolean; readonly clearedToolUses?: number; readonly clearedInputTokens?: number };
+      readonly cacheEditing?: { readonly rejected?: boolean; readonly applied: readonly string[] };
       readonly assistant: Extract<HistoryMessage, { role: "assistant" }>;
       readonly providerRequestId?: string;
     };
@@ -157,4 +170,9 @@ export interface ModelProvider {
   preconnect?(): void;
   /** Streams the response; throws ProviderError. Implementations must honour the abort signal. */
   stream(request: ModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent>;
+}
+
+/** Supports: SPEC-MOT-015. The caller disables the optional strategy before any subsequent request. */
+export class CacheEditRejectedError extends ProviderError {
+  constructor(message: string, status?: number) { super("invalid_request", message, status); }
 }

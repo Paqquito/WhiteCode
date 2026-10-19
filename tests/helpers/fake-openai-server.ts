@@ -12,6 +12,8 @@ export interface FakeChatTurn {
   /** Omits the usage chunk. */
   readonly noUsage?: boolean;
   readonly omitToolIndexes?: boolean;
+  readonly cacheEdits?: unknown;
+  readonly errorCode?: string;
 }
 
 export interface CapturedChatRequest {
@@ -40,7 +42,7 @@ export function startFakeOpenAI(turns: FakeChatTurn[]): FakeChatServer {
       requests.push({ path: new URL(req.url).pathname, headers, body });
       const turn = queue.shift() ?? { text: "done" };
       if (turn.delayMs) await Bun.sleep(turn.delayMs);
-      if (turn.status) return new Response(JSON.stringify({ error: { message: "failure", type: "server_error" } }), { status: turn.status, headers: { "content-type": "application/json" } });
+      if (turn.status) return new Response(JSON.stringify({ error: { message: "failure", type: "server_error", ...(turn.errorCode ? { code: turn.errorCode } : {}) } }), { status: turn.status, headers: { "content-type": "application/json" } });
       const stream = new ReadableStream({
         start(controller) {
           const enc = new TextEncoder();
@@ -57,7 +59,7 @@ export function startFakeOpenAI(turns: FakeChatTurn[]): FakeChatServer {
             chunk({ tool_calls: [{ ...position, function: { arguments: c.arguments.slice(0, half) } }] });
             chunk({ tool_calls: [{ ...position, function: { arguments: c.arguments.slice(half) }, ...(c.extraContent === undefined ? {} : { extra_content: c.extraContent }) }] });
           });
-          chunk({}, turn.finishReason ?? ((turn.toolCalls?.length ?? 0) > 0 ? "tool_calls" : "stop"));
+          chunk({}, turn.finishReason ?? ((turn.toolCalls?.length ?? 0) > 0 ? "tool_calls" : "stop"), turn.cacheEdits === undefined ? {} : { cache_edits: turn.cacheEdits });
           if (!turn.noUsage) controller.enqueue(enc.encode(`data: ${JSON.stringify({ id: "chatcmpl-1", object: "chat.completion.chunk", created: 0, model: body["model"], choices: [], usage: { prompt_tokens: 50, completion_tokens: 9, total_tokens: 59 } })}\n\n`));
           controller.enqueue(enc.encode("data: [DONE]\n\n"));
           controller.close();

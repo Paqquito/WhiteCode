@@ -51,11 +51,12 @@ function streamContent(content: ReadonlyArray<ContentPart | ToolResultPart>): un
   return content.map((p) => {
     if (p.type === "text") return { type: "text", text: p.text };
     if (p.type === "image") return { type: "image", mediaType: p.mediaType };
+    if (p.type === "document") return { type: "document", mediaType: p.mediaType, name: p.name };
     return {
       type: "tool_result",
       callId: p.callId,
       errored: p.isError,
-      content: p.content.map((c) => (c.type === "text" ? { type: "text", text: c.text } : { type: "image", mediaType: c.mediaType })),
+      content: p.content.map((c) => (c.type === "text" ? { type: "text", text: c.text } : { type: c.type, mediaType: c.mediaType })),
     };
   });
 }

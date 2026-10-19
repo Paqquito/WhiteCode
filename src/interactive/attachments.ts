@@ -9,6 +9,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { insideAllowed } from "../permissions/paths";
 import type { PlatformName } from "../platform/system";
+import type { DocumentPart } from "../providers/types";
 
 export interface AttachmentOptions {
   readonly agents?: readonly string[];
@@ -22,6 +23,8 @@ export interface AttachmentOptions {
   readonly maxTokens?: number;
   /** `context.attachments.maxTotalTokens`: beyond, the reference alone (ERR-03). */
   readonly maxTotalTokens?: number;
+  readonly pdf?: boolean;
+  readonly documentReadDenied?: (path: string) => boolean;
 }
 
 /** About four characters per token, the estimate of the context meter. */
@@ -90,6 +93,7 @@ export function attachable(text: string, o: AttachmentOptions, pasted: readonly 
 export interface Attached {
   /** One part per attached file, `<attached-file path="…">…</attached-file>`. */
   readonly parts: readonly string[];
+  readonly documents: readonly DocumentPart[];
   /** Messages for the user: refused or unreadable references. */
   readonly notices: readonly string[];
   /** The files attached whole, with their state, for the read precondition of the writing tools (step 6). */
@@ -99,6 +103,7 @@ export interface Attached {
 /** § 5.4, EF-04: the content of each referenced file, read now. */
 export function attach(text: string, o: AttachmentOptions, pasted: readonly string[] = []): Attached {
   const parts: string[] = [];
+  const documents: DocumentPart[] = [];
   const notices: string[] = [];
   const read: Array<{ path: string; mtimeMs: number; size: number; complete: boolean }> = [];
   const seen = new Set<string>();
@@ -116,7 +121,8 @@ export function attach(text: string, o: AttachmentOptions, pasted: readonly stri
       notices.push(`Ce fichier n'est pas accessible : ${ref}.`); // EF-05, ERR-03, RG-02
       continue;
     }
-    if (parts.length >= o.maxCount) {
+    if (/\.pdf$/i.test(path) && o.documentReadDenied?.(path)) { notices.push(`Ce fichier n'est pas accessible : ${ref}.`); continue; }
+    if (parts.length + documents.length >= o.maxCount) {
       notices.push(`Nombre maximal de pièces jointes atteint (${o.maxCount}) : ${ref} n'est pas joint.`); // ERR-05, CA-07
       continue;
     }
@@ -134,7 +140,16 @@ export function attach(text: string, o: AttachmentOptions, pasted: readonly stri
         parts.push(`<attached-folder path="${shown}">\n${body}\n</attached-folder>`);
         continue;
       }
+      if (/\.pdf$/i.test(path) && stats.size + total > o.maxTotalBytes) { notices.push(`Fichier trop volumineux pour le service : ${ref}.`); continue; }
       const bytes = readFileSync(path);
+      if (/\.pdf$/i.test(path) && bytes.subarray(0, 5).toString("latin1") === "%PDF-") {
+        if (!o.pdf) { notices.push(`Ce modèle ne prend pas en charge les documents PDF : ${ref}.`); continue; }
+        if (range.from !== undefined) { notices.push(`Un document PDF ne possède pas de lignes sélectionnables : ${ref}.`); continue; }
+        if (total + bytes.length > o.maxTotalBytes) { notices.push(`Fichier trop volumineux pour le service : ${ref}.`); continue; }
+        total += bytes.length;
+        documents.push({ type: "document", mediaType: "application/pdf", name: shown, sourcePath: path, dataBase64: bytes.toString("base64") });
+        continue;
+      }
       if (bytes.includes(0)) {
         notices.push(`Type de fichier non pris en charge : ${ref}.`); // ERR-01 of SPEC-MOT-006
         continue;
@@ -175,5 +190,5 @@ export function attach(text: string, o: AttachmentOptions, pasted: readonly stri
   }
   const agents = [...new Set(references(text, pasted, "&").map(r => r.ref).filter(name => o.agents?.includes(name)))].slice(0, o.maxCount);
   for (const name of agents) parts.push(`<requested-agent name="${name}">The user selected this agent for the request. This mention grants no additional tools or permissions and does not start an agent automatically.</requested-agent>`);
-  return { parts, notices, read };
+  return { parts, documents, notices, read };
 }
