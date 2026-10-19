@@ -1,3 +1,5 @@
+// Supports: SPEC-MOT-035 (discreet label and full-transcript content).
+// Supports: SPEC-MOT-029 (discarding an unaccepted suggestion on input).
 // Supports: SPEC-CMD-005/010 (temporary aside and per-session input border), gap E-171.
 // Supports: SPEC-MOD-029, SPEC-OUT-034/045, SPEC-IHM-002/023/038, gap E-161.
 // Supports: SPEC-OBS-010, SPEC-IHM-039 (frame measurements and internal development bar), gap E-160.
@@ -194,6 +196,8 @@ export interface AppOptions {
   /** Supports: SPEC-AGT-017 CA-02, SPEC-AGT-018 CA-01, gap E-147. */
   readonly canBackground?: () => boolean;
   readonly backgroundCurrent?: () => string | undefined;
+  readonly canBackgroundSession?: () => boolean;
+  readonly backgroundSession?: () => string | undefined;
   readonly openBackgroundTasks?: () => Promise<void>;
   readonly backgroundActivity?: () => readonly { readonly id: string; readonly agentType?: string; readonly color?: number; readonly activity?: string; readonly toolCalls?: number; readonly tokens?: number }[];
   /** The task list of the main agent, shown above the input area (SPEC-OUT-021 § 10). */
@@ -202,6 +206,8 @@ export interface AppOptions {
   readonly describeCall: (name: string, input: unknown) => string;
   readonly restored?: InputState;
   readonly onInputState?: (state: InputState) => void;
+  /** Supports: SPEC-MOT-029. Editing away from a ghost suggestion discards its private draft. */
+  readonly onSuggestionDismiss?: () => void;
   /** Effective key bindings (SPEC-IHM-014 § 5.4); the defaults otherwise. */
   readonly keymap?: Keymap;
   /** `ui.keybindings.showFooterHints`. */
@@ -631,6 +637,16 @@ export class InteractiveApp {
     this.#redraw();
   }
 
+  /** Restore a retained conversation after another one held the same terminal. */
+  reclaimTerminal(): void {
+    this.#transcriptView?.close();
+    this.#session?.screen.reclaim();
+    for (const item of this.#items.slice(-50)) this.commit(text(`${item.title}\n${item.body}`));
+    this.#session?.screen.flush();
+  }
+
+  #backgroundArmedUntil: number | undefined;
+
   /** Next message of the queue, removed from it (SPEC-IHM-011 § 5.2: one per turn, in order). */
   takeQueued(): string | undefined {
     if (this.#queueHeld) return undefined;
@@ -661,6 +677,7 @@ export class InteractiveApp {
 
   /** A turn starts: the input area stays usable (EF-07 of SPEC-IHM-007); an interruption aborts `controller`. */
   beginTurn(controller: AbortController): void {
+    this.#backgroundArmedUntil = undefined;
     this.#tip = undefined; if (this.#tipTimer) clearTimeout(this.#tipTimer);
     if (this.#o.tips !== false) this.#tipTimer = setTimeout(() => {
       this.#tipTimer = undefined; if (!this.running || this.#o.screenReader) return;
@@ -685,6 +702,7 @@ export class InteractiveApp {
 
   /** The turn is over: what remains of the response is committed; the interruption leaves its marker (FA-01). */
   endTurn(outcome: { readonly stopCause: string; readonly message?: string }): void {
+    this.#backgroundArmedUntil = undefined;
     this.#o.onDecorativeTurnEnd?.(outcome.stopCause==="completed");
     if (this.#tipTimer) clearTimeout(this.#tipTimer); this.#tipTimer = undefined;
     this.#stopAnimation();
@@ -736,6 +754,14 @@ export class InteractiveApp {
         this.#thinking += e.text;
         this.#activity = "Réflexion…";
         this.#redraw();
+        break;
+      case "connector_content":
+        for (const block of e.blocks) {
+          const label = `Contenu transmis à ${maskSecrets(block.connector ?? "un connecteur")}`;
+          this.commit(noticeView("info", label, this.#view));
+          this.record("notice", label, block.text + (block.summary === undefined ? "" : `\n\nRésumé : ${block.summary}`));
+        }
+        if (e.incidents) this.notice("warning", `${e.incidents} bloc(s) de connecteur incohérent(s) ignoré(s).`);
         break;
       case "response_restarted":
         this.#stream = "";
@@ -1275,7 +1301,7 @@ export class InteractiveApp {
     if (e.name === "escape" && !approval && !this.humanDialogActive && this.#aside) { this.#aside.close(); this.#aside = undefined; this.#redraw(); return; }
     if (e.name === "escape" && !approval && !this.humanDialogActive && this.#o.teammateView?.()) { this.#o.leaveTeammate?.(); this.#redraw(); return; }
     if (e.name === "tab" && !e.shift && !e.ctrl && !e.alt && !e.super && this.#suggestion && this.#editor.isEmpty && !this.running && !this.humanDialogActive && !this.#capture) { this.#editor.set(this.#suggestion); this.#suggestion = ""; this.#saveState(); this.#redraw(); return; }
-    if (e.name !== "tab" || e.shift || e.ctrl || e.alt || e.super) this.#suggestion = "";
+    if (e.name !== "tab" || e.shift || e.ctrl || e.alt || e.super) { if (this.#suggestion || e.name === "escape") this.#o.onSuggestionDismiss?.(); this.#suggestion = ""; }
     const searching = this.#assist.searching;
     const contexts: KeyContext[] = approval || this.#confirm || this.#choice ? ["dialog", "app"] : searching ? ["search", "app"] : [...this.#assist.contexts(), "input", "app"];
     const action = this.#keymap.action(e, contexts);
@@ -1319,6 +1345,18 @@ export class InteractiveApp {
       this.#dialogKey(approval, e, action);
       return;
     }
+    if (action === "session.background") {
+      if (!this.#o.canBackgroundSession?.()) return;
+      if (this.#backgroundArmedUntil === undefined || this.#now > this.#backgroundArmedUntil) {
+        this.#backgroundArmedUntil = this.#now + 1500;
+        this.notice("info", "Appuyer à nouveau pour mettre la session principale en arrière-plan.");
+        return;
+      }
+      this.#backgroundArmedUntil = undefined;
+      try { this.#o.backgroundSession?.(); }
+      catch (error) { this.notice("warning", `Mise en arrière-plan impossible : ${(error as Error).message}`); }
+      this.#redraw(); return;
+    }
     if (action === "task.background") {
       try {
         const id = this.#o.backgroundCurrent?.();
@@ -1326,6 +1364,7 @@ export class InteractiveApp {
       } catch { this.notice("warning", "Transfert impossible : la commande reste au premier plan."); }
       this.#redraw(); return;
     }
+    this.#backgroundArmedUntil = undefined;
     if (action === "task.panel") {
       if (!this.running && !this.#capture) void this.#o.openBackgroundTasks?.().catch(() => this.notice("warning", "Le panneau des tâches est indisponible."));
       return;
@@ -1811,7 +1850,7 @@ export class InteractiveApp {
         const c = this.#keymap.effective(id)[0];
         return c ? `${comboLabel(c)} : ${what}` : undefined;
       };
-      const hints = [hint("mode.cycle", "mode"), ...(this.#o.canBackground?.() ? [hint("task.background", "arrière-plan")] : []), hint("app.interrupt", "interrompre, deux fois : quitter"), "/help : aide"].filter((h) => h !== undefined);
+      const hints = [hint("mode.cycle", "mode"), ...(this.#o.canBackground?.() ? [hint("task.background", "commande en arrière-plan")] : []), ...(this.#o.canBackgroundSession?.() ? [hint("session.background", "tour en arrière-plan ×2")] : []), hint("app.interrupt", "interrompre, deux fois : quitter"), "/help : aide"].filter((h) => h !== undefined);
       parts.push({ text: ` · ${hints.join(" · ")}` });
     }
     return text(parts.map((p) => ({ ...p, style: { dim: true, ...(p.style ?? {}) } })), { overflow: "clip" });

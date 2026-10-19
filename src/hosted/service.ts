@@ -11,6 +11,8 @@ import { writeAtomic } from "../tools/text-file";
 import { currentPlatform } from "../platform/system";
 import { securePrivateDirectory } from "../platform/private-file";
 import { tryFileLock } from "../platform/file-lock";
+import { handoffState, handoffHistory, handoffDigest, type HandoffState } from "../remote/handoff-state";
+import type { HistoryMessage } from "../providers/types";
 
 export interface HostedPrincipal { readonly account: string; readonly organizationId: string; readonly administrator: boolean }
 export interface HostedProvider { readonly id: string; readonly baseUrl: string; readonly model: ModelEntry }
@@ -27,9 +29,9 @@ interface Ciphertext { nonce: string; ciphertext: string; tag: string }
 interface Key { id: string; provider: string; label: string; lastFour: string; account?: string; organizationId: string; owner: "personal" | "organization"; maxCost?: number; encrypted?: Ciphertext }
 interface Session {
   id: string; owner: HostedPrincipal; input: SessionInput; keyId: string; provider: string; status: "queued" | "running" | "completed" | "failed" | "stopped";
-  createdAt: number; finishedAt?: number; reason?: string; result?: string; leaseHash?: string; leaseExpiresAt?: number; budget: BudgetState; effectiveMaxCost?: number;
+  createdAt: number; finishedAt?: number; reason?: string; result?: string; leaseHash?: string; leaseExpiresAt?: number; budget: BudgetState; effectiveMaxCost?: number; handoffPhase?: "preparing" | "ready" | "active"; workerStopped?: boolean;
 }
-interface SessionInput { repository: string; branch: string; commit: string; prompt: string; environment: string; tools: string[]; connectors: string[]; maxCost?: number; clientMaxCost?: number; maxDurationSeconds?: number }
+interface SessionInput { repository: string; branch: string; commit: string; prompt: string; environment: string; tools: string[]; connectors: string[]; maxCost?: number; clientMaxCost?: number; maxDurationSeconds?: number; handoff?: {state:HandoffState;messages:HistoryMessage[];digest:string} }
 interface History { date: number; duration: number; status: string; sessionId?: string; url?: string; reason?: string }
 interface Trigger { id: string; owner: HostedPrincipal; input: SessionInput; name: string; cron: string; timeZone: string; paused: boolean; nextAt: number; lastWall?: string; history: History[] }
 interface State { version: 1; keys: Key[]; policies: Record<string, { enforcedKey: boolean; managedMaxCost?: number }>; sessions: Session[]; triggers: Trigger[]; idempotency: Record<string, { digest: string; id: string }> }
@@ -135,10 +137,17 @@ export class HostedService {
       if (!Array.isArray(value) || value.length > 100 || !value.every(entry => identifier(entry) && environment[name].includes(entry)) || new Set(value).size !== value.length) return fail(403, "Outils ou connecteurs hors de l’environnement autorisé.");
       return [...value] as string[];
     };
-    return { repository: raw.repository, branch: raw.branch, commit: raw.commit, prompt: raw.prompt, environment: environment.id, tools: selected("tools"), connectors: selected("connectors"), ...(positive(raw.maxCost) ? { maxCost: raw.maxCost } : {}), ...(positive(raw.clientMaxCost) ? { clientMaxCost: raw.clientMaxCost } : {}), ...(raw.maxDurationSeconds ? { maxDurationSeconds: Number(raw.maxDurationSeconds) } : {}) };
+    let handoff: SessionInput["handoff"];
+    if(raw.handoff!==undefined){
+      if(!object(raw.handoff))return fail(400,"Transfert invalide.");
+      const state=handoffState(raw.handoff.state),messages=handoffHistory(raw.handoff.messages),digest=handoffDigest(state,messages);
+      if(raw.handoff.digest!==digest||state.repository!==raw.repository||state.transferBranch!==raw.branch||state.snapshot!==raw.commit)return fail(400,"État de transfert incohérent.");
+      handoff={state,messages,digest};
+    }
+    return { repository: raw.repository, branch: raw.branch, commit: raw.commit, prompt: raw.prompt, environment: environment.id, tools: selected("tools"), connectors: selected("connectors"), ...(positive(raw.maxCost) ? { maxCost: raw.maxCost } : {}), ...(positive(raw.clientMaxCost) ? { clientMaxCost: raw.clientMaxCost } : {}), ...(raw.maxDurationSeconds ? { maxDurationSeconds: Number(raw.maxDurationSeconds) } : {}),...(handoff?{handoff}:{}) };
   }
   #session(id: string, owner: HostedPrincipal) { const session = this.#state.sessions.find(row => row.id === id && sameOwner(row.owner, owner)); if (!session) return fail(404, "Session inconnue."); return session; }
-  #safeSession(session: Session) { return { id: session.id, url: new URL("sessions/" + session.id, endpoint(this.options.publicBaseUrl)).href, status: session.status, ...(session.effectiveMaxCost !== undefined ? { effectiveMaxCost: session.effectiveMaxCost } : {}), ...(session.reason ? { reason: session.reason } : {}), ...(session.result ? { result: session.result } : {}), cost: this.#ledgers.get(session.id)?.snapshot.confirmed ?? 0 }; }
+  #safeSession(session: Session) { return { id: session.id, url: new URL("sessions/" + session.id, endpoint(this.options.publicBaseUrl)).href, status: session.status, ...(session.effectiveMaxCost !== undefined ? { effectiveMaxCost: session.effectiveMaxCost } : {}), ...(session.reason ? { reason: session.reason } : {}), ...(session.result ? { result: session.result } : {}),...(session.input.handoff?{handoffPhase:session.handoffPhase,handoffDigest:session.input.handoff.digest,workerStopped:session.workerStopped===true}:{}), cost: this.#ledgers.get(session.id)?.snapshot.confirmed ?? 0 }; }
   #finish(session: Session, status: Session["status"], reason?: string) {
     if (["completed", "failed", "stopped"].includes(session.status)) return;
     session.status = status; session.finishedAt = this.#now(); if (reason) session.reason = reason;
@@ -156,6 +165,7 @@ export class HostedService {
     if (this.#state.sessions.length >= 10000) return fail(409, "Capacité de sessions atteinte.");
     const ledger = new BudgetLedger(cap, this.options.currency), session: Session = { id: randomUUID(), owner: { ...owner }, input, keyId: selected.key.id, provider: provider.id, status: "queued", createdAt: this.#now(), budget: ledger.state, ...(cap !== undefined ? { effectiveMaxCost: cap } : {}) };
     this.#state.sessions.push(session); this.#ledgers.set(session.id, ledger);
+    if(input.handoff)session.handoffPhase="preparing";
     if (transaction?.path && transaction.body) this.#remember(transaction.path, owner, transaction.body, session.id, false);
     transaction?.created?.(session);
     ledger.journal(state => { session.budget = state; this.#save(); return true; }); this.#save();
@@ -215,12 +225,15 @@ export class HostedService {
       if (url.hash || url.search && (!eventsPath || [...url.searchParams.keys()].some(key => key !== "after") || url.searchParams.getAll("after").length !== 1 || !/^\d{1,10}$/.test(url.searchParams.get("after") ?? ""))) return fail(400, "Paramètres d’adresse non pris en charge.");
       const path = url.pathname.replace(/^\//, ""), body = await this.#body(request), authorization = request.headers.get("authorization");
       if (request.method === "GET" && !/^(?:sessions\/[a-zA-Z0-9_-]+\/(?:status|events)|sessions\/environments|triggers\/list|console\/keys\/list)$/.test(path)) return fail(405, "Cette action exige POST.");
-      const work = /^work\/([a-zA-Z0-9_-]{1,128})\/(v1\/chat\/completions|status|result)$/.exec(path);
+      const closed=/^work\/([a-zA-Z0-9_-]{1,128})\/closed$/.exec(path);
+      if(closed){const session=this.#state.sessions.find(s=>s.id===closed[1]),digest=hash(authorization?.replace(/^Bearer /,"")??"");if(!session?.leaseHash||!timingSafeEqual(Buffer.from(session.leaseHash,"hex"),Buffer.from(digest,"hex")))return fail(403,"Bail de travail invalide.");session.workerStopped=true;this.#save();return Response.json({workerStopped:true});}
+      const work = /^work\/([a-zA-Z0-9_-]{1,128})\/(v1\/chat\/completions|status|result|handoff-ready)$/.exec(path);
       if (work) {
         const session = this.#work(work[1]!, authorization);
         if (this.options.resolvePrincipal && !await this.options.resolvePrincipal(session.owner.account, session.owner.organizationId)) { this.#finish(session, "stopped", "Membre absent de l’organisation."); return fail(403, "Membre absent de l’organisation."); }
         this.#work(work[1]!, authorization);
-        if (work[2] === "v1/chat/completions") return await this.#proxy(session, body);
+        if(work[2]==="handoff-ready") {if(!session.input.handoff||session.handoffPhase!=="preparing"&&session.handoffPhase!=="ready"||body.digest!==session.input.handoff.digest)return fail(409,"Reprise incohérente.");session.handoffPhase="ready";this.#save();}
+        if (work[2] === "v1/chat/completions") {if(session.input.handoff&&session.handoffPhase!=="active")return fail(409,"Transfert non activé.");return await this.#proxy(session, body);}
         if (work[2] === "result") { if (!Number.isSafeInteger(body.code) || !text(body.result, 128000)) return fail(400, "Résultat de travail invalide."); session.result = body.result; this.#finish(session, body.code === 0 ? "completed" : "failed"); }
         return Response.json(this.#safeSession(session));
       }
@@ -268,7 +281,8 @@ export class HostedService {
         let key: Key | undefined; try { if (environment) key = this.#resolve(owner, environment.provider).key; } catch {}
         return Response.json({ delegatedKey: !!key, repositoryAccessible: text(body.repository, 4096) && await this.options.repositoryAccessible(body.repository, owner), ...(key?.maxCost ? { keyLimit: key.maxCost } : {}), ...(this.#state.policies[owner.organizationId]?.managedMaxCost ? { managedLimit: this.#state.policies[owner.organizationId]!.managedMaxCost } : {}) });
       }
-      if (path === "sessions/create") {
+      if (path === "sessions/create" || path === "sessions/handoff") {
+        if(path==="sessions/handoff"&&!body.handoff||path==="sessions/create"&&body.handoff)return fail(400,"Route de transfert explicite requise.");
         const input = this.#sessionInput(body), found = this.#idempotent(path, owner, body); if (found) return Response.json(this.#safeSession(this.#session(found, owner)), { status: 200 });
         const creation = hash(JSON.stringify([path, owner.account, owner.organizationId, body.idempotencyKey]));
         if (this.#creating.has(creation)) return fail(409, "Création déjà en cours pour cette clé d’idempotence.");
@@ -278,6 +292,8 @@ export class HostedService {
       }
       const sessionPath = /^sessions\/([a-zA-Z0-9_-]{1,128})\/(status|stop)$/.exec(path);
       if (sessionPath) { const session = this.#session(sessionPath[1]!, owner); if (sessionPath[2] === "stop") this.#finish(session, "stopped", "Arrêt demandé par le propriétaire."); return Response.json(this.#safeSession(session)); }
+      const activation=/^sessions\/([a-zA-Z0-9_-]{1,128})\/handoff-activate$/.exec(path);
+      if(activation){const session=this.#session(activation[1]!,owner);if(session.status!=="running"||!session.input.handoff||!["ready","active"].includes(session.handoffPhase??"")||body.digest!==session.input.handoff.digest||!session.leaseExpiresAt||session.leaseExpiresAt<=this.#now()||!this.#state.keys.find(key=>key.id===session.keyId)?.encrypted)return fail(409,"Transfert non prêt.");session.handoffPhase="active";this.#save();return Response.json(this.#safeSession(session));}
       const eventPath = /^sessions\/([a-zA-Z0-9_-]{1,128})\/events$/.exec(path);
       if (eventPath) return this.#events(this.#session(eventPath[1]!, owner), Number(url.searchParams.get("after") ?? 0));
       if (path.startsWith("triggers/")) return await this.#trigger(path.slice(9), owner, body);

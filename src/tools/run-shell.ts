@@ -1,5 +1,5 @@
 // Implements: SPEC-OUT-008 (§ 5.3 points 1, 2 and 8, § 6, EF-01, EF-05, EF-07, EF-10, ERR-01 to ERR-03, RG-01, RG-02, CA-01 to CA-04, CA-06, CA-07), SPEC-OUT-009 (§ 5.3, EF-01, EF-04 to EF-07, FA-01, CA-01, CA-03 to CA-05)
-// Supports: gap E-052 (sandbox not delivered), SPEC-OUT-008 (FA-01, CA-05 `detached`), SPEC-AGT-017 (§ 5.3, EF-01), SPEC-PER-007 to SPEC-PER-009 (tool check, gap E-109)
+// Supports: SPEC-PER-015 (confined execution and ordinary approval for exits), SPEC-OUT-008 (FA-01, CA-05 `detached`), SPEC-AGT-017 (§ 5.3, EF-01), SPEC-PER-007 to SPEC-PER-009 (tool check, gap E-109)
 // Supports: SPEC-AGT-017 (CA-02: transfer the authorized process without restarting it), gap E-147.
 
 import descriptionPosix from "../../prompts/tools/run_shell.md" with { type: "text" };
@@ -18,6 +18,7 @@ export interface ShellInput {
   readonly description?: string;
   readonly timeout?: number;
   readonly detached?: boolean;
+  readonly unsandboxed?: boolean;
 }
 
 /** Time limit of a command run in the background: it runs until it ends or is stopped (SPEC-AGT-017). */
@@ -30,6 +31,7 @@ const schema = (what: string) => ({
     description: { type: "string", maxLength: 120, description: "Short description of what the command does, shown to the user." },
     timeout: { type: "integer", minimum: 1, description: "Time limit in milliseconds." },
     detached: { type: "boolean", description: "Run in the background as a task; its id comes back at once." },
+    unsandboxed: { type: "boolean", description: "Explicitly request execution outside the system sandbox. Ordinary approval and managed restrictions apply." },
   },
   required: ["command"],
   additionalProperties: false,
@@ -38,6 +40,7 @@ const schema = (what: string) => ({
 const timeoutOf = (input: ShellInput, ctx: ToolContext) => input.timeout ?? ctx.shell?.options.settings.defaultTimeoutMs ?? 180_000;
 
 function validate(input: ShellInput, ctx: ToolContext): string | undefined {
+  const refusal = ctx.shell?.sandboxRefusal(input.command, input.unsandboxed === true); if (refusal) return refusal;
   if (input.command.trim() === "") return "The command is empty.";
   const max = ctx.shell?.options.settings.maxTimeoutMs;
   if (input.timeout !== undefined && max !== undefined && input.timeout > max) return `The time limit cannot exceed ${max} ms.`;
@@ -72,6 +75,7 @@ function shellTool(name: "run_shell" | "run_powershell", run: (ctx: ToolContext,
         : { readOnly: false, concurrencySafe: false, destructive: true, requiresPermission: true, openWorld: true },
     // SPEC-PER-008: read-only commands are allowed; SPEC-PER-009, SPEC-PER-007 FA-02: dangerous or dynamic ones always ask.
     permissionContribution: (input, ctx) => {
+      const sandbox = ctx.shell?.sandboxContribution(input.command, input.unsandboxed === true); if (sandbox) return sandbox;
       const v = verdictOf(name, input.command, ctx);
       return v.kind === "read_only" ? "allow" : v.kind === "other" ? undefined : "ask";
     },
@@ -89,7 +93,7 @@ function shellTool(name: "run_shell" | "run_powershell", run: (ctx: ToolContext,
       // FA-01, CA-05: a background task, under the same permissions as in the foreground (EF-01 of SPEC-AGT-017).
       if (input.detached === true) {
         if (!ctx.background) return textOutcome("Background tasks are not available in this session.", true, "unavailable");
-        const id = startShellTask(ctx, "shell", input.command, input.description ?? input.command.slice(0, 80), BACKGROUND_LIMIT_MS, name === "run_powershell");
+        const id = startShellTask(ctx, "shell", input.command, input.description ?? input.command.slice(0, 80), BACKGROUND_LIMIT_MS, name === "run_powershell", input.unsandboxed === true);
         return textOutcome(`Started in the background as task ${id}. You will be notified when it ends; read its output with background_output (task_id ${id}) and stop it with background_stop.`);
       }
       return run(ctx, input, timeoutOf(input, ctx));
@@ -99,9 +103,9 @@ function shellTool(name: "run_shell" | "run_powershell", run: (ctx: ToolContext,
 
 async function foregroundShell(ctx: ToolContext, input: ShellInput, timeout: number, powershell: boolean): Promise<ToolOutcome> {
   const run = (signal: AbortSignal, output?: (chunk: string) => void) => powershell
-    ? ctx.shell!.runPowerShell(input.command, timeout, signal, output)
-    : ctx.shell!.runPosix(input.command, timeout, signal, output);
-  const outcome = (r: ShellResult) => textOutcome(formatShellResult(r, timeout), r.timedOut || r.interrupted, r.timedOut ? "timeout" : r.interrupted ? "interrupted" : undefined);
+    ? ctx.shell!.runPowerShell(input.command, timeout, signal, output, input.unsandboxed === true)
+    : ctx.shell!.runPosix(input.command, timeout, signal, output, input.unsandboxed === true);
+  const outcome = (r: ShellResult) => textOutcome(formatShellResult(r, timeout), r.timedOut || r.interrupted || !!r.violations?.length, r.timedOut ? "timeout" : r.interrupted ? "interrupted" : r.violations?.length ? "permission_denied" : undefined);
   const background = ctx.background;
   if (!background || ctx.agentName) return outcome(await run(ctx.signal));
   const controller = new AbortController();
@@ -130,7 +134,8 @@ async function foregroundShell(ctx: ToolContext, input: ShellInput, timeout: num
         output = capped ? () => {} : (chunk) => { try { write(chunk); } catch { outputFailed = true; stop(); } };
         const result = await pending;
         if (outputFailed) throw new Error("The background task output could not be written.");
-        return { status: result.timedOut ? "timed_out" as const : result.interrupted ? "stopped" as const : result.exitCode === 0 ? "completed" as const : "failed" as const, exitCode: result.exitCode, summary: result.cwdNotice };
+        for (const violation of result.violations ?? []) write(`\n[${violation}]\n`);
+        return { status: result.timedOut ? "timed_out" as const : result.interrupted ? "stopped" as const : result.exitCode === 0 && !result.violations?.length ? "completed" as const : "failed" as const, exitCode: result.exitCode, summary: result.cwdNotice };
       } catch (error) {
         stop(); await pending.catch(() => {}); throw error;
       } finally { signal.removeEventListener("abort", stop); }

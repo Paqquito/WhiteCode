@@ -32,6 +32,8 @@ export interface InteractiveLoopOptions {
   /** Handles one entry: a built-in command, a skill or command, or a message to the model. */
   readonly process: (text: string, signal: AbortSignal, meta: EntryMeta) => Promise<EntryOutcome>;
   readonly queueAutoSend: boolean;
+  /** Observe the original promise, never a replay or a replacement controller. */
+  readonly trackTurn?: (controller: AbortController, work: Promise<EntryOutcome>) => () => void;
 }
 
 export async function runInteractiveLoop(o: InteractiveLoopOptions): Promise<{ turns: number }> {
@@ -63,15 +65,18 @@ export async function runInteractiveLoop(o: InteractiveLoopOptions): Promise<{ t
     const controller = new AbortController();
     app.setQueueHeld(holdQueue);
     app.beginTurn(controller);
+    const work = Promise.resolve().then(() => o.process(text!, controller.signal, meta));
+    const untrack = o.trackTurn?.(controller, work);
     let outcome: EntryOutcome;
     try {
-      outcome = await o.process(text, controller.signal, meta);
+      outcome = await work;
     } catch (error) {
       // ERR-03: the turn fails, the session survives.
       app.endTurn({ stopCause: "error", message: (error as Error)?.message ?? String(error) });
       release = false;
       continue;
     } finally {
+      untrack?.();
       app.setQueueHeld(false);
     }
     if (outcome.kind === "exit") {

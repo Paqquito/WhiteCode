@@ -28,7 +28,9 @@ test("TECH — incomplete assisted agent definitions and invalid skill headers a
   for (const content of ["---\nname: check\n---\nUpdated instructions.", "---\nname: check\ndescription: Check fixtures.\ntools: wrong\n---\nInstructions."]) expect(parseSkill(content, "fixture", "check", "project", false, [])).toBeUndefined();
 });
 test("SPEC-CMD-062/CA-01 — missing sandbox dependencies display specific installation instructions", async () => {
-  expect(sandboxDiagnostic("linux", () => undefined)).toContain("bubblewrap et socat");
+  expect(sandboxDiagnostic("linux", () => undefined)).toContain("installer bubblewrap");
+  expect(sandboxDiagnostic("macos", () => "/tool")).toContain("indisponible");
+  expect(sandboxDiagnostic("linux", () => "/tool")).toContain("ne vérifie pas les capacités du noyau");
   const result = await cli(["--non-interactive", "/sandbox"], workspace(), { provider: new ScriptedProvider([]) }); expect(result.code).toBe(0); expect(result.stdout + result.stderr).toContain("isolation");
 });
 test("SPEC-CMD-042/CA-01 — selecting missing local instructions creates a protected file and opens its editor", async () => {

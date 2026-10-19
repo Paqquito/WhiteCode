@@ -1,4 +1,5 @@
 // Implements: SPEC-MCP-019 (standalone add/list/show/remove/validate/reset-choices, policy and scopes, CA-01 to CA-03).
+// Supports: SPEC-MCP-007 (delegated credentials and organization access in standalone validation).
 // Supports: SPEC-MOD-012 (no model/session), gap E-155.
 import { lstatSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -18,6 +19,7 @@ import { resolveConnectors, expand, type ConnectorDeclaration, type ConnectorSou
 import { connectorSources, projectChoice, projectStateKey, type ProjectState } from "./session";
 import { ConnectorManager } from "./manager";
 import { ConnectorOAuth } from "./oauth";
+import { ManagedIdentityProvider, identityProviderSecretVariables, type IdentityProviderConfiguration } from "../auth/identity-provider";
 import { nativeCredentialVault } from "../platform/credential-vault";
 import { maskSecrets } from "../shared/secrets";
 import { registryReport, searchConnectorRegistry } from "./registry";
@@ -51,6 +53,8 @@ function safeDeclaration(d: ConnectorDeclaration): Record<string, unknown> {
 export async function runConnectorAdmin(deps: AdminDependencies, parsed: ParsedSubcommand, write: (value: unknown, text: () => string) => void, out: (text: string) => void, err: (text: string) => void): Promise<number> {
   try {
     deps.assertPolicy?.(); const configuration = loadConfiguration({ ...deps }), { locations, settings } = configuration;
+    const identityConfiguration = settings.isManaged("mcp.identityProvider") ? settings.get<IdentityProviderConfiguration | undefined>("mcp.identityProvider") : undefined;
+    const secretNames = identityProviderSecretVariables(identityConfiguration); deps.env.protectVariables(secretNames);
     if (parsed.operation === "search") {
       if (parsed.args.length !== 1) { err("Usage : connector search <terme> [--json]."); return 2; }
       const rows = await searchConnectorRegistry(deps.identity.has("SERVICE_MCP_REGISTRY") ? deps.identity.get("SERVICE_MCP_REGISTRY") : undefined, parsed.args[0]!, configuredNetwork(deps.env), deps.signal ?? new AbortController().signal);
@@ -137,14 +141,20 @@ export async function runConnectorAdmin(deps: AdminDependencies, parsed: ParsedS
     const network = configuredNetwork(deps.env), environment = deps.env.childEnvironment(settings.get("environment.variables"));
     const posix = detectPosixShell(settings.get("tools.shell.default"), environment, deps.system.platform), ps = detectPowerShell(settings.get("tools.powershell.path"), deps.system.platform);
     const variables: Record<string, string | undefined> = { ...environment, PROJECT_ROOT: locations.projectRoot };
+    for (const name of secretNames) variables[name] = deps.env.public(name);
     for (const match of JSON.stringify(selected).matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}/g)) variables[match[1]!] ??= deps.env.public(match[1]!);
-    const manager = new ConnectorManager({ connectors: [selected], projectRoot: locations.projectRoot, platform: deps.system.platform, environment: declared => ({ ...environment, ...declared }), variables, connectTimeoutMs: settings.get("mcp.connectTimeout"), toolTimeoutMs: settings.get("mcp.toolTimeout"), maxParallel: 1, maxReconnects: 0, descriptionMax: settings.get("mcp.toolDescriptionMax"), outputInlineLimit: settings.get("mcp.outputInlineLimit"), clientInfo: { name: deps.identity.get("PRODUCT_SLUG"), version: deps.identity.version }, estimateTokens: text => Math.ceil(text.length / 4), store: () => { throw new Error("Résultats non disponibles pendant la validation."); }, report: err, changed: () => {}, fetch: network,
+    const vault = deps.credentialVault ?? nativeCredentialVault({ environment }), secrets = new Set<string>(secretNames.map(name => variables[name]).filter((value): value is string => !!value));
+    const remember = (value: string) => { secrets.add(value); secrets.add(encodeURIComponent(value)); secrets.add(JSON.stringify(value).slice(1, -1)); };
+    const redact = (value: string) => [...secrets].sort((a, b) => b.length - a.length).reduce((safe, secret) => safe.split(secret).join("[masqué]"), value);
+    const binding = JSON.stringify(identityConfiguration);
+    const provider = identityConfiguration?.connectors.some(c => c.name === selected.name) ? new ManagedIdentityProvider({ configuration: identityConfiguration, configDir: locations.configDir, service: deps.identity.get("KEYCHAIN_SERVICE"), vault, fetch: network, variables, remember, timeoutMs: settings.get("mcp.authTimeout"), permitted: () => { deps.assertPolicy?.(); const current = loadConfiguration({ ...deps }).settings; return current.isManaged("mcp.identityProvider") && JSON.stringify(current.get("mcp.identityProvider")) === binding; } }) : undefined;
+    const manager = new ConnectorManager({ connectors: [selected], projectRoot: locations.projectRoot, platform: deps.system.platform, environment: declared => deps.env.childEnvironment({ ...settings.get<Record<string, string>>("environment.variables"), ...declared }), variables, connectTimeoutMs: settings.get("mcp.connectTimeout"), toolTimeoutMs: settings.get("mcp.toolTimeout"), maxParallel: 1, maxReconnects: 0, descriptionMax: settings.get("mcp.toolDescriptionMax"), outputInlineLimit: settings.get("mcp.outputInlineLimit"), clientInfo: { name: deps.identity.get("PRODUCT_SLUG"), version: deps.identity.version }, estimateTokens: text => Math.ceil(text.length / 4), store: () => { throw new Error("Résultats non disponibles pendant la validation."); }, report: value => err(redact(value)), redact, changed: () => {}, fetch: network,
       wsConnect:(url,headers,handlers)=>connectNetworkWebSocket(url,headers,handlers,configuredNetworkSettings(deps.env)),wsPingIntervalMs:settings.get("mcp.wsPingInterval"),headerShell: deps.system.platform === "windows" && ps ? { path: ps.path, kind: "powershell" } : posix ? { path: posix.path, kind: "posix" } : undefined, headersTtlMs: settings.get("mcp.headersCommandTtl"), headersTimeoutMs: settings.get("mcp.headersCommandTimeout"), disabledConnectors: projectState?.disabledConnectors,
-      oauth: (d, url) => { const missing = new Set<string>(), secret = d.oauth?.clientSecret ? expand(d.oauth.clientSecret, variables, missing) : undefined; if (missing.size) throw new Error("Variable OAuth non définie."); return new ConnectorOAuth({ name: d.name, url, configuration: { ...d.oauth, ...(secret ? { clientSecret: secret } : {}) }, configDir: locations.configDir, service: deps.identity.get("KEYCHAIN_SERVICE"), vault: deps.credentialVault ?? nativeCredentialVault({ environment }), fetch: network, timeoutMs: settings.get("mcp.authTimeout") }); },
+      oauth: (d, url) => { const missing = new Set<string>(), secret = d.oauth?.clientSecret ? expand(d.oauth.clientSecret, variables, missing) : undefined; if (missing.size) throw new Error("Variable OAuth non définie."); return new ConnectorOAuth({ name: d.name, url, configuration: { ...d.oauth, ...(secret ? { clientSecret: secret } : {}) }, configDir: locations.configDir, service: deps.identity.get("KEYCHAIN_SERVICE"), vault, fetch: network, remember, timeoutMs: settings.get("mcp.authTimeout"), ...provider?.connector(d.name, url) }); },
     });
     try { manager.start(); await manager.waitAll(Math.min(selected.timeoutMs ?? settings.get<number>("mcp.connectTimeout"), 60000) + 500, deps.signal); const status = manager.status()[0]!;
-      const result = { name, state: status.state, source: status.source, tools: manager.tools().map(t => t.name), resources: status.state === "connected" ? await manager.resources(name, deps.signal ?? new AbortController().signal) : [], prompts: manager.prompts().map(p => p.command), error: status.error };
-      write(result, () => `${name} : ${status.state}\nOutils : ${result.tools.join(", ") || "aucun"}\nRessources : ${result.resources.length}\nPrompts : ${result.prompts.join(", ") || "aucun"}`); return status.state === "connected" ? 0 : 1;
+      const result = { name, state: status.state, source: status.source, tools: manager.tools().map(t => t.name), resources: status.state === "connected" ? await manager.resources(name, deps.signal ?? new AbortController().signal) : [], prompts: manager.prompts().map(p => p.command), error: status.error, ...(status.organizationAccess ? { organizationAccess: true } : {}) };
+      write(result, () => `${name} : ${status.state}${status.organizationAccess ? " — accès via votre organisation" : ""}\nOutils : ${result.tools.join(", ") || "aucun"}\nRessources : ${result.resources.length}\nPrompts : ${result.prompts.join(", ") || "aucun"}`); return status.state === "connected" ? 0 : 1;
     } finally { await manager.close(); }
   } catch (cause) { err(maskSecrets((cause as Error).message)); return 2; }
 }

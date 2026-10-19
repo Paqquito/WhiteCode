@@ -1,5 +1,7 @@
 // Supports: SPEC-OUT-010/CA-01, CA-02 (real tmux, live HTTP process, two turns and /clear).
-import { expect, test } from "bun:test";
+import { expect } from "bun:test";
+import { profiledTest } from "./helpers/profiled-test";
+const test = profiledTest(import.meta.path);
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { findExecutable } from "../src/platform/system";

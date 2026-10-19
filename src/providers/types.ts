@@ -1,5 +1,7 @@
+// Supports: SPEC-MOT-035 (explicit connector capability and signed-block metadata).
 // Implements: SPEC-API-001 (EF-01 common interface, EF-02 capability matrix), gap E-032 (neutral history, native assistant content)
 // Provider-neutral request and event model. The engine depends only on these types, never on a provider protocol.
+// Supports: SPEC-INT-015 (session-only application screenshot marker).
 
 import type { ApiEffort, ResolvedModel } from "./catalog";
 
@@ -10,6 +12,8 @@ export interface TextPart {
 
 export interface ImagePart {
   readonly type: "image";
+  /** Application screenshots are available to the active model request but never to session persistence. */
+  readonly sessionOnly?: true;
   readonly mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
   readonly dataBase64: string;
 }
@@ -94,6 +98,8 @@ export interface ModelRequest {
   readonly contextEditing?: ContextEditingStrategy;
   /** Supports: SPEC-MOT-015. Opaque tool-result IDs; never a rewritten message prefix. */
   readonly cachedToolEdits?: readonly string[];
+  /** Supports: SPEC-MOT-035. A capability declaration for a separately configured service protocol. */
+  readonly connectorText?: boolean;
 }
 
 /** Neutral strategy of service-side clearing (SPEC-MOT-014); each adapter translates it into its protocol. */
@@ -133,6 +139,8 @@ export type ModelEvent =
       /** Service-side clearing: applied edits, or the strategy was rejected and the request sent again without it (ERR-01 of SPEC-MOT-014). */
       readonly contextEditing?: { readonly rejected?: boolean; readonly clearedToolUses?: number; readonly clearedInputTokens?: number };
       readonly cacheEditing?: { readonly rejected?: boolean; readonly applied: readonly string[] };
+      readonly connectorTextBlocks?: readonly import("./connector-text").ConnectorTextBlock[];
+      readonly connectorTextIncidents?: number;
       readonly assistant: Extract<HistoryMessage, { role: "assistant" }>;
       readonly providerRequestId?: string;
     };

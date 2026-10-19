@@ -19,11 +19,13 @@ import { ConnectorHeaders } from "./headers";
 import type { ShellChoice } from "../hooks/command";
 import type { ConnectorOAuth, OAuthUi } from "./oauth";
 import { VaultUnavailable } from "../platform/credential-vault";
+// Supports: SPEC-MCP-007 (shared identity login, eligible connections and organization provenance).
 // Supports: SPEC-MCP-006, SPEC-MCP-008, SPEC-MCP-022 (CA-03), SPEC-OUT-029; gap E-155.
 
 export type ConnectorState = "pending" | "connecting" | "connected" | "error" | "unavailable" | "auth_required" | "disabled";
 
 export interface ConnectorStatus {
+  readonly organizationAccess?: boolean;
   readonly name: string;
   readonly scope: string;
   readonly source: string;
@@ -154,7 +156,7 @@ export class ConnectorManager {
   }
 
   status(): ConnectorStatus[] {
-    return [...this.#entries.values()].map((e) => ({ name: e.d.name, scope: e.d.scope, source: e.d.source, state: e.state, error: e.error, stderr: e.conn?.stderrTail() ?? e.stderr, tools: e.live.size }));
+    return [...this.#entries.values()].map((e) => ({ name: e.d.name, scope: e.d.scope, source: e.d.source, state: e.state, error: e.error, stderr: e.conn?.stderrTail() ?? e.stderr, tools: e.live.size, ...(e.oauth?.organizationAccess ? { organizationAccess: true } : {}) }));
   }
 
   /** SPEC-CMD-041 § 5.3 step 3: a new connection, the attempts counted afresh; the state once it is settled. */
@@ -202,7 +204,9 @@ export class ConnectorManager {
     const e = this.#entries.get(name);
     if (!e?.oauth || !this.#o.authUi || e.state !== "auth_required") throw new Error("Authentification indisponible pour ce connecteur.");
     await e.oauth.signIn(this.#o.authUi, AbortSignal.any([signal, this.#shutdown.signal]));
-    const status = await this.reconnect(name); if (!status || status.state !== "connected") throw new Error("Autorisation reçue, mais connexion au connecteur impossible."); return status;
+    const connected = this.reconnect(name);
+    if (e.oauth.organizationAccess) await Promise.allSettled([...this.#entries.values()].filter(other => other !== e && other.state === "auth_required" && other.oauth?.usesIdentityProvider).map(other => this.reconnect(other.d.name)));
+    const status = await connected; if (!status || status.state !== "connected") throw new Error("Autorisation reçue, mais connexion au connecteur impossible."); return status;
   }
   async signOut(name: string, signal: AbortSignal): Promise<void> {
     const e = this.#entries.get(name); if (!e?.oauth) throw new Error("Connecteur sans parcours OAuth.");

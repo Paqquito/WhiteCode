@@ -127,8 +127,8 @@ export const FAMILY_CATALOG: readonly FamilyDef[] = [
   },
   { name: "integration", role: "Intégrations", operations: [op("add", "Installe une intégration d'environnement de développement.", { args: "<cible>" })] },
   { name: "direct-server", role: "Connexion directe", operations: [op("start", "Lance un serveur de sessions en connexion directe.", { delivered: true, options: ["listen", "root", "credential-file"] }), op("connect", "Ouvre une session sur un serveur en connexion directe.", { args: "<adresse>", delivered: true, options: ["non-interactive", "approval-mode"] })] },
-  { name: "remote-access", role: "Accès à distance", operations: [op("start", "Inscrit le poste comme environnement pilotable.")] },
-  { name: "ssh-session", role: "Session SSH", operations: [op("connect", "Exécute le produit sur une machine distante par SSH.", { args: "<hôte> [dossier]" })] },
+  { name: "remote-access", role: "Accès à distance", operations: [op("start", "Inscrit le poste comme environnement pilotable.", { delivered: buildFlag("remote_control") && buildFlag("mode_resident_service"), options: ["concurrent-sessions", "name", "json"] })] },
+  { name: "ssh-session", role: "Session SSH", operations: [op("connect", "Exécute le produit sur une machine distante par SSH.", { args: "<hôte> [dossier]", delivered: buildFlag("session_via_ssh"), options: ["approval-mode", "non-interactive", "executable"] })] },
   {
     name: "service",
     role: "Superviseur local",
@@ -158,7 +158,7 @@ export const FAMILY_BY_NAME: ReadonlyMap<string, FamilyDef> = new Map(FAMILY_CAT
 
 /** Common options of the sub-commands (§ 5.4): `true` when the option takes a value. */
 /** § 5.4 of SPEC-MOD-012, plus the options proper to an operation: `--lean-context` (SPEC-EXT-004), `--installable` (SPEC-EXT-002). */
-export const COMMON_OPTIONS: Readonly<Record<string, boolean>> = { "non-interactive": false, foreground: false, organization: true, environment: true, "credential-file": true, "concurrent-sessions": true, auto: false, "notify-only": false, "approval-pipe": false, json: false, scope: true, force: false, "preserve-data": false, name: true, verbose: false, help: false, "lean-context": true, installable: false, capabilities: true, root: true, transport: true, "approval-mode": true, listen: true, orchestrator: false, env: true, header: true, declaration: true, check: false, channel: true, version: true, company: false, refresh: false, resolve: true, restore: true };
+export const COMMON_OPTIONS: Readonly<Record<string, boolean>> = { executable: true, "non-interactive": false, foreground: false, organization: true, environment: true, "credential-file": true, "concurrent-sessions": true, auto: false, "notify-only": false, "approval-pipe": false, json: false, scope: true, force: false, "preserve-data": false, name: true, verbose: false, help: false, "lean-context": true, installable: false, capabilities: true, root: true, transport: true, "approval-mode": true, listen: true, orchestrator: false, env: true, header: true, declaration: true, check: false, channel: true, version: true, company: false, refresh: false, resolve: true, restore: true };
 
 export interface ParsedSubcommand {
   readonly family: string;

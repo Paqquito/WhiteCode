@@ -3,13 +3,17 @@ import { randomUUID } from "node:crypto";
 import { startChild, type Child } from "../platform/process";
 import { StringDecoder } from "node:string_decoder";
 import type { JobRestrictions } from "./jobs";
+export class ResidentCapacityError extends Error {
+  constructor() { super("Capacité du superviseur atteinte."); }
+}
 export interface WorkMessage {
   readonly id: string;
   readonly text: string;
 }
 export interface WorkerRecord {
   readonly id: string;
-  readonly kind: "assistant" | "background" | "job";
+  readonly kind: "assistant" | "background" | "job" | "remote";
+  readonly remoteBinding?: string;
   readonly cwd: string;
   readonly createdAt: number;
   readonly mode: "ask" | "no_prompt";
@@ -53,6 +57,7 @@ export class ResidentWorker {
     readonly options: {
       command: (record: WorkerRecord) => { file: string; args: string[] };
       environment: (record: WorkerRecord) => Record<string, string>;
+      launchCwd?: (record: WorkerRecord) => string;
       persist: () => void;
       assertPolicy: () => void;
       waitMs: number;
@@ -123,7 +128,7 @@ export class ResidentWorker {
     const command = this.options.command(this.record),
       epoch = this.#epoch;
     const child = startChild(command.file, command.args, {
-      cwd: this.record.cwd,
+      cwd: this.options.launchCwd?.(this.record) ?? this.record.cwd,
       env: this.options.environment(this.record),
       keepInputOpen: true,
       onData: (chunk) => {

@@ -22,13 +22,13 @@ import { startDirectServer, type DirectSession } from "./server";
 export const DIRECT_TOOLS = new Set(["read_file", "write_file", "edit_file", "find_files", "search_content", "update_todo_list"]);
 export const DIRECT_SESSION_ARGS = ["--non-interactive", "--control-channel", "--request-format", "jsonl", "--result-format", "jsonl", "--minimal", "--ephemeral", "--no-hooks", "--toolset", [...DIRECT_TOOLS].join(",")];
 
-export async function runDirectAdmin(argv: readonly string[], deps: AdminDependencies, runSession: (session: DirectSession) => Promise<number>): Promise<number> {
+export async function runDirectAdmin(argv: readonly string[], deps: AdminDependencies, runSession: (session: DirectSession) => Promise<number>, connectionLabel?: string): Promise<number> {
   let client: DirectClient | undefined, app: InteractiveApp | undefined;
   try {
     const parsed = parseSubcommand(argv), operation = parsed.operation;
     if (parsed.options.has("help") || !operation) { deps.streams.writeOut(familyHelp(deps.identity.get("PRODUCT_CLI"), FAMILY_BY_NAME.get("direct-server")!)); return 0; }
     if (parsed.options.has("orchestrator")) throw new Error(orchestratorRefusal("direct-server", operation));
-    if (!buildFlag("remote_direct_connect")) throw new Error("Connexion directe absente de cette distribution.");
+    if (!buildFlag("remote_direct_connect") && !connectionLabel) throw new Error("Connexion directe absente de cette distribution.");
     if (deps.env.ownBoolean("OFFLINE_MINIMAL") === true) throw new Error("Connexion directe indisponible en mode minimal hors ligne.");
     if (!["start", "connect"].includes(operation)) throw new Error("Opération directe attendue : start ou connect.");
     const allowed = new Set(operation === "start" ? ["root", "listen", "credential-file", "verbose"] : ["non-interactive", "approval-mode", "verbose"]);
@@ -101,7 +101,7 @@ export async function runDirectAdmin(argv: readonly string[], deps: AdminDepende
     if (!nonInteractive) {
       app = new InteractiveApp({ terminal: deps.streams.terminal!, capabilities: detectCapabilities({ colorMode: settings.get<string>("ui.colorMode"), unicodeLevel: settings.get("ui.unicodeLevel"), noColorOption: false, variable: name => deps.env.public(name), platform: deps.system.platform }), settings: {
         maxFramesPerSecond: settings.get("ui.maxFramesPerSecond"), minColumns: settings.get("ui.minColumns"), retainedLines: settings.get("ui.retainedLines"), inputMinHeight: settings.get("ui.inputMinHeight"), inputMaxHeight: settings.get("ui.inputMaxHeight"), inputMaxChars: settings.get("ui.input.maxChars"), inputWarnChars: settings.get("ui.input.warnChars"), queueMax: settings.get("ui.queue.maxMessages"), queueAutoSend: settings.get("ui.queue.autoSend"), draftsMax: settings.get("ui.drafts.maxStashed"), exitConfirmation: settings.get("ui.exitConfirmation"), exitDoublePressMs: settings.get("ui.exitDoublePressWindow"), dialogGuardMs: 350,
-      }, status: () => ({ mode: permissionMode, model, remote: `${connection ? "connecté à" : "reconnexion à"} ${address!.kind === "websocket" ? address!.hostname : "socket local"}` }), describeCall: name => name });
+      }, status: () => ({ mode: permissionMode, model, remote: connectionLabel ?? `${connection ? "connecté à" : "reconnexion à"} ${address!.kind === "websocket" ? address!.hostname : "socket local"}` }), describeCall: name => name });
       app.start(); app.notice("system", `Dossier du serveur : ${metadata.cwd}`);
     }
     client.initialize();

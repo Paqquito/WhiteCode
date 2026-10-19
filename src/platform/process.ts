@@ -8,6 +8,8 @@ import { extname } from "node:path";
 import { currentPlatform } from "./system";
 
 export interface ChildOptions {
+  /** Inherited capabilities for a native confinement launcher; never inferred from tool input. */
+  readonly extraFds?: readonly number[];
   /** Supports: SPEC-INT-019. The application suspends its terminal while the editor owns these streams. */
   readonly inheritTerminal?: boolean;
   readonly cwd: string;
@@ -37,7 +39,7 @@ export interface Child {
   /** Stops the whole process tree: polite request, then forced after `graceMs`. */
   killTree(graceMs: number): Promise<void>;
   /** Standard input kept open (`keepInputOpen`). */
-  readonly input?: { write(text: string): void; end(): void };
+  readonly input?: { write(text: string | Uint8Array): void; end(): void };
 }
 
 function killWindowsTree(pid: number): void {
@@ -62,7 +64,7 @@ export function startChild(file: string, args: readonly string[], options: Child
   const child = spawn(file, [...args], {
     cwd: options.cwd,
     env: options.env,
-    stdio: options.inheritTerminal ? "inherit" : [options.input === undefined && !options.keepInputOpen ? "ignore" : "pipe", "pipe", "pipe"],
+    stdio: options.inheritTerminal ? "inherit" : [options.input === undefined && !options.keepInputOpen ? "ignore" : "pipe", "pipe", "pipe", ...(options.extraFds ?? [])],
     detached: !windows,
     windowsHide: true,
   });
@@ -100,7 +102,7 @@ export function startChild(file: string, args: readonly string[], options: Child
     exited,
     input: stdin
       ? {
-          write: (text: string) => {
+          write: (text: string | Uint8Array) => {
             if (!stdin.destroyed && stdin.writable) stdin.write(text);
           },
           end: () => {

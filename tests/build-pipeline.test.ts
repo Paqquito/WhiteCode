@@ -37,6 +37,13 @@ function fixture() {
   return { root, ws, build, manifest, run };
 }
 
+test("TECH — the internal-profile merge correction executes a local test and a native Git push after two agreements",async()=>{
+ const f=fixture();cpSync(join(ROOT,"tests/helpers"),join(f.root,"tests/helpers"),{recursive:true});cpSync(join(ROOT,"tests/fixtures"),join(f.root,"tests/fixtures"),{recursive:true});
+ const generated=await runToCompletion(BUN,["scripts/generate.ts","--profile","internal"],{cwd:f.root,env:productEnv(f.ws),timeoutMs:15000});expect(generated.code).toBe(0);
+ const output=join(f.root,"build/probes/fix-merge-probe.js"),built=await runToCompletion(BUN,["--no-env-file","build",join(f.root,"tests/fixtures/fix-merge-request-probe.ts"),"--target=bun","--outfile",output],{cwd:f.root,env:productEnv(f.ws),timeoutMs:25000});if(built.code!==0)throw Error(built.stderr);expect(built.code).toBe(0);
+ const probe=await runToCompletion(BUN,["--no-env-file",output],{cwd:f.root,env:productEnv(f.ws),timeoutMs:45000});if(probe.code!==0)throw Error(probe.stderr+probe.stdout);expect(probe.code).toBe(0);expect(probe.stdout).toContain("FIX_MERGE_REQUEST_NATIVE_PROBE_PASSED");
+},90000);
+
 test("TECH — the included test-profile year review asks before installation, plays cached frames and stays hidden when disabled",async()=>{
  const f=fixture();cpSync(join(ROOT,"tests/helpers"),join(f.root,"tests/helpers"),{recursive:true});cpSync(join(ROOT,"tests/fixtures"),join(f.root,"tests/fixtures"),{recursive:true});
  const generated=await runToCompletion(BUN,["scripts/generate.ts","--profile","test"],{cwd:f.root,env:productEnv(f.ws),timeoutMs:15000});expect(generated.code).toBe(0);
@@ -181,11 +188,15 @@ test("SPEC-BLD-001/CA-01, SPEC-BLD-003/CA-02, SPEC-BLD-007/CA-02 — two stable 
 }, 240_000);
 
 test("SPEC-BLD-002/CA-01 — disabled automatic approval: classifier code and its prompt are absent from the product bundle and executable", async () => {
-  const f = fixture(), options = f.ws.write("options.json", JSON.stringify({ compaction_cache_edit: false, permission_auto_approve: false, agent_explorer_planner: false, agent_verifier: false, stream_compact_profile: false, ui_fast_find: false, ui_history_browser: false, ui_message_menu: false, prompt_hints: false, mode_template_jobs: false, mode_background_sessions: false }));
+  const f = fixture(), options = f.ws.write("options.json", JSON.stringify({ engine_speculation: false, memory_living_docs: false, sandbox_commands: false, compaction_cache_edit: false, permission_auto_approve: false, agent_explorer_planner: false, agent_verifier: false, stream_compact_profile: false, ui_fast_find: false, ui_history_browser: false, ui_message_menu: false, prompt_hints: false, mode_template_jobs: false, mode_background_sessions: false }));
   const result = await f.build(["--build-options", options]);
   if (result.code !== 0) throw new Error(result.stderr + result.stdout);
   expect(result.code).toBe(0);
   const manifest = f.manifest();
+  expect(manifest.build.options.engine_speculation).toBe(false);
+  expect(manifest.build.options.memory_living_docs).toBe(false);
+  expect(manifest.build.options.sandbox_commands).toBe(false);
+  expect(manifest.build.options).not.toHaveProperty("living_docs");
   expect(manifest.build.options.compaction_cache_edit).toBe(false);
   expect(manifest.build.options.permission_auto_approve).toBe(false);
   expect(manifest.build.options.agent_explorer_planner).toBe(false);
@@ -195,6 +206,11 @@ test("SPEC-BLD-002/CA-01 — disabled automatic approval: classifier code and it
   expect(manifest.build.options.prompt_hints).toBe(false); expect(manifest.build.options.mode_template_jobs).toBe(false); expect(manifest.build.options.mode_background_sessions).toBe(false);
   for (const d of manifest.deliverables.filter((d: { target: string }) => ["bundle", "current"].includes(d.target))) {
     const contents = readFileSync(join(f.root, "dist", d.file)).toString("latin1");
+    expect(contents).not.toContain("Unsupported speculative target");
+    expect(contents).not.toContain("Speculation buffer limit");
+    expect(contents).not.toContain("Living document update abandoned:");
+    expect(contents).not.toContain("Sandbox channel unavailable.");
+    expect(contents).not.toContain("Sandbox mount must be a physical directory.");
     expect(contents).not.toContain("Older tool results may be removed from the service cache");
     expect(contents).not.toContain("You are the approval classifier for a coding session");
     expect(contents).not.toContain("The complete action is too large for an approval decision");
@@ -206,6 +222,11 @@ test("SPEC-BLD-002/CA-01 — disabled automatic approval: classifier code and it
     expect(contents).not.toContain("Predict one short next user request"); expect(contents).not.toContain("Classify the whole main-agent turn");
     expect(contents).not.toContain("Job workspace must be an ordinary directory"); expect(contents).not.toContain("Summarize this session's task, current progress and next need");
   }
+  // An enabled runtime setting cannot silently turn an excluded sandbox into ordinary execution.
+  writeFileSync(join(f.ws.configHome, "config.json"), JSON.stringify({ sandbox: { enabled: true } }));
+  const executable = manifest.deliverables.find((d: { target: string }) => d.target === "current").file;
+  const refused = await f.run(executable, ["--non-interactive", "--ephemeral", "create a file"]);
+  expect(refused.code).toBe(2); expect(refused.stderr + refused.stdout).toContain("Bac à sable absent de cette distribution");
 }, 150_000);
 
 test("SPEC-BLD-002/CA-02 — an unknown literal flag makes actual compilation fail", async () => {
@@ -247,7 +268,8 @@ test("TECH — build metadata stays outside the executable and runtime identity 
 
 test("TECH — nonmacro feature reads fail before bundling and cannot retain a disabled branch", async () => {
   const f = fixture(), entry = join(f.root, "src/main.ts"), options = f.ws.write("options.json", JSON.stringify({ permission_auto_approve: false }));
-  writeFileSync(entry, readFileSync(entry, "utf8") + '\nimport { buildFlag } from "./extension-points/build-flags"; if (buildFlag("permission_auto_approve")) console.log("nonmacro-branch-probe");\n');
+  writeFileSync(join(f.root, "src/nonmacro-probe.ts"), '// Supports: SPEC-BLD-002\nimport { buildFlag } from "./extension-points/build-flags"; if (buildFlag("permission_auto_approve")) console.log("nonmacro-branch-probe");\n');
+  writeFileSync(entry, readFileSync(entry, "utf8") + '\nimport "./nonmacro-probe";\n');
   const result = await f.build(["--build-options", options]);
   expect(result.code).not.toBe(0); expect(result.stderr).toContain("requires a macro import"); expect(existsSync(join(f.root, "dist/manifest.json"))).toBe(false);
 }, 150_000);

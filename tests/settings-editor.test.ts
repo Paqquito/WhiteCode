@@ -50,7 +50,7 @@ test("TECH — the editor artifact is versioned, accepts nested and dotted keys,
   expect(source).not.toMatch(/\{\{[A-Z][A-Z0-9_]*(\|[a-z]+)*\}\}/);
   expect(schema.properties["api.provider"].default).toBeUndefined();
   expect(schema.properties["models.selected"].default).toBeUndefined();
-  expect(schema.properties["browser.enabled"]["x-availability"]).toBe("catalogue");
+  expect(schema.properties["browser.enabled"]["x-availability"]).toBe("disponible");
   expect(schema.properties["api.baseUrl"]["x-availability"]).toBe("proposé");
   const validate = new Ajv({ strict: false }).compile(schema);
   expect(validate({ $schema: "file:///config.schema.json", permissions: { allowRules: ["read_file"] }, "ui.reducedMotion": true })).toBe(true);

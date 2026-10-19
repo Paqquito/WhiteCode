@@ -187,11 +187,12 @@ export const backgroundStopTool: Tool<{ task_id: string }> = {
 };
 
 /** A shell command run in the background as a task of the session (SPEC-OUT-008 FA-01, SPEC-AGT-017). */
-export function startShellTask(ctx: ToolContext, kind: "shell" | "monitor", command: string, description: string, timeoutMs: number, powershell: boolean): string {
+export function startShellTask(ctx: ToolContext, kind: "shell" | "monitor", command: string, description: string, timeoutMs: number, powershell: boolean, unsandboxed = false): string {
   const shell = ctx.shell!;
   const t = ctx.background!.start(kind, description, async (signal, write) => {
-    const r = powershell ? await shell.runPowerShell(command, timeoutMs, signal, write) : await shell.runPosix(command, timeoutMs, signal, write);
-    const status = r.interrupted ? (signal.reason === "rate" ? "rate_limited" : "stopped") : r.timedOut ? "timed_out" : r.exitCode === 0 ? "completed" : "failed";
+    const r = powershell ? await shell.runPowerShell(command, timeoutMs, signal, write, unsandboxed) : await shell.runPosix(command, timeoutMs, signal, write, unsandboxed);
+    if (r.violations?.length) write("\n[" + r.violations.join(" ") + "]\n");
+    const status = r.interrupted ? (signal.reason === "rate" ? "rate_limited" : "stopped") : r.timedOut ? "timed_out" : r.exitCode === 0 && !r.violations?.length ? "completed" : "failed";
     return { status, exitCode: r.exitCode };
   });
   return t.id;
@@ -199,6 +200,8 @@ export function startShellTask(ctx: ToolContext, kind: "shell" | "monitor", comm
 
 export const monitorProcessTool: Tool<{ command: string; description: string; timeout_ms?: number; persistent?: boolean }> = {
   name: "monitor_process",
+  validate: (input, ctx) => ctx.shell?.sandboxRefusal(input.command),
+  permissionContribution: (input, ctx) => ctx.shell?.sandboxContribution(input.command),
   // EF-01: decided like `run_shell`, by its rules.
   permissionName: "run_shell",
   inputSchema: {

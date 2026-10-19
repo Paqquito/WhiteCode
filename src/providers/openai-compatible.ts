@@ -1,5 +1,6 @@
 // Implements: SPEC-API-001 (adapters `openai` and `openai_compatible`: mandatory base URL and optional key for the latter, FA-01, EF-01, EF-04, CA-01, CA-02), SPEC-API-002 (EF-01, EF-02, EF-05, EF-07, FA-01, FA-02), SPEC-MOT-025 (EF-02)
 // Supports: decisions D-01 (official SDK of the protocol), D-10 (reference provider), D-13; gaps E-021, E-022, E-032, E-042, E-043
+// Supports: SPEC-MOT-035 (explicit v1 extension with signed native blocks and no text leakage).
 // Supports: gap E-245 (opaque tool-call metadata remains in native history).
 // Adapter for servers speaking the OpenAI-compatible chat protocol (streamed chat completions with tool calls).
 // Protocol details that differ between servers come from `providerOptions` of the catalogue entry, never from the engine.
@@ -9,6 +10,8 @@ import type { ContentPart, HistoryMessage, ModelEvent, ModelProvider, ModelReque
 import { CacheEditRejectedError, ProviderError } from "./types";
 import { warmProviderConnection } from "../platform/network";
 import type { ModelCapabilities } from "./catalog";
+import { ConnectorTextStream } from "./connector-text";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 export interface OpenAICompatibleOptions {
   /** Base URL: mandatory for `openai_compatible`; for `openai`, the SDK default unless `OPENAI_BASE_URL` is set. */
@@ -39,7 +42,7 @@ function partsToContent(parts: readonly ContentPart[], images: boolean): string 
 }
 
 /** Converts the neutral history to chat messages. Deterministic: same history, same bytes (D-12). */
-export function toChatMessages(system: readonly SystemBlock[], history: readonly HistoryMessage[], caps: ModelCapabilities): ChatMessage[] {
+export function toChatMessages(system: readonly SystemBlock[], history: readonly HistoryMessage[], caps: ModelCapabilities, connectorText = false, provider = "openai_compatible"): ChatMessage[] {
   const out: ChatMessage[] = [];
   const systemText = system.map((b) => b.text).join("\n\n");
   if (systemText !== "") out.push({ role: "system", content: systemText });
@@ -48,7 +51,10 @@ export function toChatMessages(system: readonly SystemBlock[], history: readonly
     if (m.role === "assistant") {
       const native = m.native.content as OpenAI.Chat.ChatCompletionAssistantMessageParam;
       // Native assistant messages remain verbatim (D-12); only tool results can be pruned.
-      out.push(native);
+      if (native && typeof native === "object" && "connector_text_blocks" in native && (!connectorText || m.native.provider !== provider)) {
+        const ordinary = { ...native } as typeof native & { connector_text_blocks?: unknown }; delete ordinary.connector_text_blocks;
+        out.push(ordinary);
+      } else out.push(native);
       continue;
     }
     if (m.role === "system_note") {
@@ -78,7 +84,7 @@ export function buildChatRequest(request: ModelRequest): OpenAI.Chat.ChatComplet
   const opts = request.model.providerOptions;
   const body: Record<string, unknown> = {
     model: request.model.id,
-    messages: toChatMessages(request.system, request.history, caps),
+    messages: toChatMessages(request.system, request.history, caps, buildFlag("connector_text_summary") && request.connectorText === true && opts["connectorTextProtocol"] === "v1" && request.model.provider === "openai_compatible", request.model.provider),
     stream: true,
     stream_options: { include_usage: true },
   };
@@ -98,6 +104,8 @@ export function buildChatRequest(request: ModelRequest): OpenAI.Chat.ChatComplet
   if (opts["extraBody"] && typeof opts["extraBody"] === "object") Object.assign(body, opts["extraBody"]);
   // Supports: SPEC-MOT-015. The distribution must declare this separate protocol explicitly.
   delete body["cache_edits"];
+  delete body["connector_text_summary"];
+  if (buildFlag("connector_text_summary") && request.connectorText === true && request.model.provider === "openai_compatible" && opts["connectorTextProtocol"] === "v1") body["connector_text_summary"] = { version: 1 };
   if (caps.cacheEditing && opts["cacheEditingProtocol"] === "v1" && request.cachedToolEdits?.length) body["cache_edits"] = { version: 1, remove_tool_results: request.cachedToolEdits };
   if (request.serviceOptions) body["service_tier"] = request.serviceOptions.service_tier;
   return body as unknown as OpenAI.Chat.ChatCompletionCreateParamsStreaming;
@@ -190,6 +198,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     let requestId: string | undefined;
     const cacheProtocol = request.cachedToolEdits?.length && request.model.capabilities.cacheEditing && request.model.providerOptions["cacheEditingProtocol"] === "v1";
     let cacheApplied: string[] | undefined;
+    const connectorText = buildFlag("connector_text_summary") && request.connectorText === true && request.model.provider === "openai_compatible" && request.model.providerOptions["connectorTextProtocol"] === "v1" ? new ConnectorTextStream() : undefined;
     const complete = (index: number | string): ToolCall | undefined => {
       const c = calls.get(index);
       if (!c || emitted.has(index)) return undefined;
@@ -224,6 +233,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
         const choice = chunk.choices[0];
         if (!choice) continue;
         const delta = choice.delta as typeof choice.delta & { reasoning_content?: string; reasoning?: string };
+        if ((delta as Record<string, unknown>)["connector_text"] !== undefined) connectorText?.fragment((delta as Record<string, unknown>)["connector_text"]);
         const reasoning = delta.reasoning_content ?? delta.reasoning;
         if (reasoning) yield { type: "thinking_delta", text: reasoning };
         if (delta.content) {
@@ -269,6 +279,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
       // A message without text holds `null` only next to tool calls: an empty response sent back by the relaunch of gap E-072
       // must still have a content, or the server refuses the request.
       const native: OpenAI.Chat.ChatCompletionAssistantMessageParam = { role: "assistant", content: text === "" && toolCalls.length > 0 ? null : text };
+      const connectorBlocks = connectorText?.finish();
+      if (connectorBlocks?.length) (native as typeof native & { connector_text_blocks: unknown }).connector_text_blocks = connectorBlocks;
       if (toolCalls.length > 0) {
         native.tool_calls = orderedCalls
           .map(([, c]) => ({ id: c.id, type: "function" as const, function: { name: c.name, arguments: c.args }, ...(c.extraContent === undefined ? {} : { extra_content: c.extraContent }) }));
@@ -281,6 +293,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
         assistant: { role: "assistant", text, toolCalls, native: { provider: this.id, content: native } },
         providerRequestId: requestId,
         ...(cacheApplied === undefined ? {} : { cacheEditing: { applied: cacheApplied } }),
+        ...(connectorText ? { connectorTextBlocks: connectorBlocks, connectorTextIncidents: connectorText.incidents } : {}),
       };
     } catch (error) {
       if (error instanceof ProviderError) throw error;

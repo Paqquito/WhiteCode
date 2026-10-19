@@ -1,4 +1,6 @@
-import { expect, test } from "bun:test";
+import { expect } from "bun:test";
+import { profiledTest } from "./helpers/profiled-test";
+const test = profiledTest(import.meta.path);
 import { bench } from "./helpers/engine";
 import { runTurn } from "../src/engine/loop";
 import { checkPlanProgressTool } from "../src/tools/check-plan-progress";

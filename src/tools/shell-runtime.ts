@@ -13,6 +13,7 @@ import { stripShellHints, ShellHintStream } from "./shell-hints";
 import { encryptedStore, storeWrite } from "../session/private-storage";
 import { randomUUID } from "node:crypto";
 import { ShellMetadataStream } from "./shell-metadata";
+import type { CommandSandbox } from "../platform/sandbox";
 
 export interface PosixShell {
   readonly path: string;
@@ -34,6 +35,8 @@ export interface ShellSettings {
 }
 
 export interface ShellResult {
+  readonly sandboxed?: boolean;
+  readonly violations?: readonly string[];
   readonly output: string;
   readonly exitCode: number | null;
   readonly timedOut: boolean;
@@ -109,6 +112,7 @@ const BEGIN = "#--snapshot-begin--";
 const END = "#--snapshot-end--";
 
 export interface ShellRuntimeOptions {
+  readonly sandbox?: CommandSandbox;
   /** A non-Git custom copy must not accidentally discover the original enclosing repository. */
   readonly repositoryCeiling?: () => string | undefined;
   readonly hintTag?: string;
@@ -146,6 +150,9 @@ export class ShellRuntime {
   }
 
   get running(): boolean { return this.#running.size > 0; }
+  get sandboxEnabled(): boolean { return this.options.sandbox?.profile(this.#cwd, this.options.allowedDirectories).enabled ?? false; }
+  sandboxRefusal(command: string, outside = false) { return this.options.sandbox?.refusal(command, this.#cwd, this.options.allowedDirectories, outside); }
+  sandboxContribution(command: string, outside = false) { return this.options.sandbox?.contribution(command, this.#cwd, this.options.allowedDirectories, outside); }
   /** Supports: SPEC-OUT-026; trusted composition changes the working folder only while idle. */
   selectWorkingDirectory(path: string): void {
     if (this.running || !this.options.allowedDirectories.some(folder => isWithin(path, folder, this.options.platform))) throw new Error("Shell working folder cannot change while active or outside its perimeter.");
@@ -163,6 +170,7 @@ export class ShellRuntime {
 
   /** Environment snapshot (EF-03): aliases, functions and exported variables of the user's shell, captured once. */
   snapshot(): string | undefined {
+    if (this.sandboxEnabled) return undefined;
     if (this.#snapshot !== null) return this.#snapshot;
     this.#snapshot = undefined;
     const shell = this.options.posix;
@@ -211,11 +219,12 @@ export class ShellRuntime {
   }
 
   /** Runs `command` in the POSIX shell (§ 5.3). */
-  async runPosix(command: string, timeoutMs: number, signal: AbortSignal, onOutput?: (chunk: string) => void): Promise<ShellResult> {
+  async runPosix(command: string, timeoutMs: number, signal: AbortSignal, onOutput?: (chunk: string) => void, outside = false): Promise<ShellResult> {
     const shell = this.options.posix!;
+    const confined = this.options.sandbox?.mode(command, this.#cwd, this.options.allowedDirectories, outside) === "confined";
     const p = (x: string) => posixPath(x, this.options.platform);
-    const snapshot = this.snapshot();
-    const privateMode = encryptedStore(this.options.workDir);
+    const snapshot = confined ? undefined : this.snapshot();
+    const privateMode = confined || encryptedStore(this.options.workDir);
     const metadata = privateMode ? randomUUID() : undefined;
     const cwdFile = join(this.options.workDir, `cwd-${process.pid}-${++this.#counter}`);
     // Windows: the POSIX layer's own process id, to stop the command's process group through the shell (gap E-051).
@@ -224,8 +233,8 @@ export class ShellRuntime {
     const lines = [
       groupFile ? `echo $$ > ${quotePosix(p(groupFile))}` : "",
       snapshot ? `. ${quotePosix(p(snapshot))} >/dev/null 2>&1` : "",
-      this.#snapshotText ? ". /dev/stdin >/dev/null 2>&1 || :" : "",
-      this.options.initFile ? `. ${quotePosix(p(this.options.initFile))}` : "",
+      !confined && this.#snapshotText ? ". /dev/stdin >/dev/null 2>&1 || :" : "",
+      !confined && this.options.initFile ? `. ${quotePosix(p(this.options.initFile))}` : "",
       `cd -- ${quotePosix(p(this.#cwd))} || exit 1`,
       this.options.repositoryCeiling?.() ? `export GIT_CEILING_DIRECTORIES=${quotePosix(p(this.options.repositoryCeiling()!))}` : "",
       `eval ${quotePosix(command)}`,
@@ -240,17 +249,18 @@ export class ShellRuntime {
         }
       : undefined;
     try {
-      return await this.#run(shell.path, ["-c", lines.filter((l) => l !== "").join("\n")], cwdFile, timeoutMs, signal, stopDescendants, onOutput, command, this.#snapshotText, metadata);
+      return await this.#run(shell.path, ["-c", lines.filter((l) => l !== "").join("\n")], cwdFile, timeoutMs, signal, stopDescendants, onOutput, command, confined ? undefined : this.#snapshotText, metadata, confined);
     } finally {
       if (groupFile) rmSync(groupFile, { force: true });
     }
   }
 
   /** Runs `command` in PowerShell (§ 5.3 of SPEC-OUT-009): no profile unless configured, UTF-8 output, syntax errors reported. */
-  async runPowerShell(command: string, timeoutMs: number, signal: AbortSignal, onOutput?: (chunk: string) => void): Promise<ShellResult> {
+  async runPowerShell(command: string, timeoutMs: number, signal: AbortSignal, onOutput?: (chunk: string) => void, outside = false): Promise<ShellResult> {
     const ps = this.options.powershell!;
+    const confined = this.options.sandbox?.mode(command, this.#cwd, this.options.allowedDirectories, outside) === "confined";
     const cwdFile = join(this.options.workDir, `cwd-${process.pid}-${++this.#counter}`);
-    const privateMode = encryptedStore(this.options.workDir);
+    const privateMode = confined || encryptedStore(this.options.workDir);
     const metadata = privateMode ? randomUUID() : undefined;
     if (!privateMode) mkdirSync(this.options.workDir, { recursive: true });
     const encoded = Buffer.from(command, "utf8").toString("base64");
@@ -272,8 +282,8 @@ export class ShellRuntime {
       metadata ? `[Console]::Out.Write([char]30 + '${metadata}:' + (Get-Location).ProviderPath + [char]31)` : `[IO.File]::WriteAllText(${quotePs(cwdFile)}, (Get-Location).ProviderPath)`,
       "exit $__code",
     ].join("\n");
-    const args = ["-NoLogo", "-NonInteractive", ...(this.options.settings.powershellLoadProfile ? [] : ["-NoProfile"]), "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")];
-    const result = await this.#run(ps.path, args, cwdFile, timeoutMs, signal, undefined, onOutput, command, undefined, metadata);
+    const args = ["-NoLogo", "-NonInteractive", ...(!confined && this.options.settings.powershellLoadProfile ? [] : ["-NoProfile"]), "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")];
+    const result = await this.#run(ps.path, args, cwdFile, timeoutMs, signal, undefined, onOutput, command, undefined, metadata, confined);
     // ERR-02: a script blocked by the execution policy of the machine is stated explicitly.
     if (/PSSecurityException|UnauthorizedAccess|running scripts is disabled/i.test(result.output)) {
       return { ...result, output: `${result.output}\n[Script execution is blocked by the execution policy of this machine.]` };
@@ -281,7 +291,7 @@ export class ShellRuntime {
     return result;
   }
 
-  async #run(file: string, args: string[], cwdFile: string, timeoutMs: number, signal: AbortSignal, stopDescendants?: () => void, onOutput?: (chunk: string) => void, command = "", input?: string, metadataNonce?: string): Promise<ShellResult> {
+  async #run(file: string, args: string[], cwdFile: string, timeoutMs: number, signal: AbortSignal, stopDescendants?: () => void, onOutput?: (chunk: string) => void, command = "", input?: string, metadataNonce?: string, confined = false): Promise<ShellResult> {
     const started = Date.now();
     const chunks: Buffer[] = [];
     // The output as it comes, for the shell mode of the interface (SPEC-IHM-012 EF-04).
@@ -294,7 +304,10 @@ export class ShellRuntime {
       chunks.push(c);
       if (onOutput) { const decoded = decoder.decode(c, { stream: true }); const safe = hints ? hints.push(decoded) : decoded; if (safe) onOutput(safe); }
     };
-    const child = startChild(file, args, { cwd: existsSync(this.#cwd) ? this.#cwd : this.options.projectCwd, env: this.options.childEnv, onData, stopDescendants, input });
+    const launch = confined ? this.options.sandbox!.launch({ command, file, args, cwd: this.#cwd, allowed: this.options.allowedDirectories, environment: this.options.childEnv }) : undefined;
+    let child: Child;
+    try { child = startChild(launch?.file ?? file, launch?.args ?? args, { cwd: existsSync(this.#cwd) ? this.#cwd : this.options.projectCwd, env: launch?.environment ?? this.options.childEnv, extraFds: launch?.fds, onData, stopDescendants, input }); launch?.spawned(); }
+    catch (error) { launch?.close(); throw error; }
     this.#running.add(child);
     let timedOut = false;
     let interrupted = false;
@@ -318,6 +331,7 @@ export class ShellRuntime {
     // The group can outlive its leader: wait for cancellation before returning a stopped result.
     await stopping;
     this.#running.delete(child);
+    launch?.close();
 
     // New working folder (§ 5.3 point 5): kept when inside the allowed folders, otherwise reset (ERR-04, CA-07).
     let cwdNotice: string | undefined;
@@ -342,15 +356,19 @@ export class ShellRuntime {
     // Bounded output (§ 5.3 point 7); the complete output is stored apart.
     const raw = cleanOutput(Buffer.concat(chunks));
     const full = this.options.hintTag ? stripShellHints(raw, this.options.hintTag, ref => this.options.recommend?.(ref, command)) : raw;
+    const violations = [...(launch?.violations ?? [])];
+    if (confined && /Read-only file system|Permission denied|Operation not permitted|Sandbox relay disconnected/i.test(full)) { const message = "Sandbox filesystem or system access denied; see command diagnostics."; violations.push(message); this.options.warn?.(message); }
     const bounded = boundText(full, this.options.settings.outputLimit);
     const fullOutputPath = bounded.truncated && this.options.store ? this.options.store.store(`shell-${started}-${this.#counter}`, full) : undefined;
-    return { output: bounded.text, exitCode, timedOut, interrupted, durationMs: Date.now() - started, cwdNotice, fullOutputPath, truncated: bounded.truncated };
+    return { output: bounded.text, exitCode, timedOut, interrupted, durationMs: Date.now() - started, cwdNotice, fullOutputPath, truncated: bounded.truncated, ...(confined ? { sandboxed: true, violations } : {}) };
   }
 }
 
 /** Text returned to the model (§ 5.3 point 8): output, exit code, and the notices of time limit, interruption and working folder. */
 export function formatShellResult(r: ShellResult, timeoutMs: number): string {
   const notes: string[] = [];
+  if (r.sandboxed) notes.push("Confined command.");
+  if (r.violations?.length) notes.push(...r.violations);
   if (r.timedOut) notes.push(`Command stopped after ${Math.round(timeoutMs / 1000)} s (time limit); the output above is partial.`); // ERR-03
   else if (r.interrupted) notes.push("Command interrupted.");
   else if (r.exitCode !== 0) notes.push(`Exit code ${r.exitCode ?? "unknown (ended by a signal)"}.`); // ERR-01: not a tool error

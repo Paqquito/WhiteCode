@@ -2,6 +2,7 @@
 import { closeSync, constants, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { restrictFileToOwner } from "../platform/private-file";
+import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 
 export type PerformancePhase = "startup" | "query" | "headless";
 export interface PerformanceSample { readonly name: string; readonly phase: PerformancePhase; readonly startMs: number; readonly durationMs: number; readonly rssBytes: number; readonly heapUsedBytes: number; readonly sizeBytes?: number }
@@ -52,10 +53,12 @@ export class PerformanceRecorder {
   readonly #traceEvents: Array<Record<string, unknown>> = [];
   constructor(options: PerformanceOptions) {
     this.#o = options; this.#now = options.now ?? (() => performance.now()); this.#start = options.originMs ?? this.#now();
-    this.#phases = new Set((options.profile ?? "").split(","));
+    this.#phases = new Set((buildFlag("diagnostics_profiling") ? options.profile ?? "" : "").split(","));
+    if (buildFlag("diagnostics_profiling")) {
     if ([...this.#phases].some(phase => phase !== "" && !["startup", "query", "headless", "all"].includes(phase))) { this.#phases.clear(); options.warn("Profil de performance invalide : startup, query, headless ou all attendus."); }
-    if (options.trace) this.#open("trace", options.trace === "1" ? join(options.directory, "performance-trace.json") : options.trace);
     if (this.#phases.size && !this.#phases.has("")) this.#open("profile", join(options.directory, "performance-profile.json"));
+    }
+    if (options.trace) this.#open("trace", options.trace === "1" ? join(options.directory, "performance-trace.json") : options.trace);
     if (this.#files.size) { this.#timer = setInterval(() => this.flush(), 500); this.#timer.unref?.(); }
   }
   #open(kind: "trace" | "profile", path: string): void {
@@ -76,7 +79,7 @@ export class PerformanceRecorder {
       if (this.#traceEvents.length >= limit) { this.flush(); const previous = this.#files.get("trace")!; previous.close(); this.#files.delete("trace"); this.#open("trace", `${this.#o.trace === "1" ? join(this.#o.directory, "performance-trace.json") : this.#o.trace}.${++this.#rotation}.json`); this.#traceEvents.length = 0; }
       this.#traceEvents.push({ name: sample.name, cat: sample.phase, ph: "X", ts: Math.round(sample.startMs * 1000), dur: Math.max(1, Math.round(sample.durationMs * 1000)), pid: process.pid, tid: this.#track++, args: { sizeBytes: sample.sizeBytes ?? 0, rssBytes: sample.rssBytes, heapUsedBytes: sample.heapUsedBytes } });
     }
-    if (this.#files.has("profile") && (this.#phases.has("all") || this.#phases.has(sample.phase))) { this.#samples.push({ name: sample.name, phase: sample.phase, startMs: sample.startMs, durationMs: sample.durationMs, rssBytes: sample.rssBytes, heapUsedBytes: sample.heapUsedBytes, sizeBytes: sample.sizeBytes }); if (this.#samples.length > limit) this.#samples.shift(); }
+    if (buildFlag("diagnostics_profiling") && this.#files.has("profile") && (this.#phases.has("all") || this.#phases.has(sample.phase))) { this.#samples.push({ name: sample.name, phase: sample.phase, startMs: sample.startMs, durationMs: sample.durationMs, rssBytes: sample.rssBytes, heapUsedBytes: sample.heapUsedBytes, sizeBytes: sample.sizeBytes }); if (this.#samples.length > limit) this.#samples.shift(); }
     if (this.#o.slowMs !== undefined && sample.durationMs > this.#o.slowMs) {
       this.#o.log(sample.name, sample.durationMs, sample.sizeBytes ?? 0);
       this.#recent.push({ name: sample.name, durationMs: sample.durationMs, sizeBytes: sample.sizeBytes ?? 0, expiresMs: this.#now() + 5000 }); if (this.#recent.length > 5) this.#recent.shift();

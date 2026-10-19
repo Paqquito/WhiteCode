@@ -11,11 +11,14 @@ import { writeAtomic } from "../tools/text-file";
 import { currentPlatform } from "../platform/system";
 import { securePrivateDirectory } from "../platform/private-file";
 import { encryptedStore, storeRemove } from "../session/private-storage";
+import { readPrivateText } from "../shared/private-text";
+import type { Task } from "../engine/task-list";
 
 export interface TeamNotice { readonly type: "idle" | "message" | "stopped" | "error"; readonly from: string; readonly text: string; readonly forced?: boolean }
-export interface TeamInput { readonly name: string; readonly prompt: string; readonly role?: string; readonly model?: string; readonly resume?: string }
+export interface TeamInput { readonly name: string; readonly prompt: string; readonly role?: string; readonly model?: string; readonly resume?: string; readonly attach?: boolean }
+export interface TeamSnapshot { readonly active: { team: string; folder: string; tasksFile: string }; readonly members: readonly { name: string; role?: string; model?: string; state: Member["state"]; resume?: string; queue?: readonly Message[] }[] }
 interface Message { readonly from: string; readonly at: string; readonly text: string }
-interface Member { readonly name: string; readonly role?: string; readonly model?: string; state: "active" | "idle" | "stopping" | "stopped"; resume?: string; readonly controller: AbortController; readonly queue: Message[]; work?: Promise<void>; cleanup?: Promise<void>; timer?: ReturnType<typeof setTimeout>; forced?: boolean }
+interface Member { readonly name: string; readonly role?: string; readonly model?: string; state: "active" | "idle" | "stopping" | "stopped"; resume?: string; attach?: boolean; readonly controller: AbortController; readonly queue: Message[]; work?: Promise<void>; cleanup?: Promise<void>; timer?: ReturnType<typeof setTimeout>; forced?: boolean }
 const namePattern = /^[a-z][a-z0-9-]{0,47}$/;
 export class Teams {
   readonly #members = new Map<string, Member>();
@@ -25,8 +28,9 @@ export class Teams {
   get active() { return this.#active; }
   get tasks() { return this.#tasks; }
   get members() { return [...this.#members.values()].map(({ name, state, resume }) => ({ name, state, id: resume })); }
+  get snapshot(): TeamSnapshot | undefined { return this.#active ? { active: this.#active, members: [...this.#members.values()].map(({ name, role, model, state, resume, queue }) => ({ name, role, model, state, resume, queue: [...queue] })) } : undefined; }
   has(name: string): boolean { return name === "lead" || this.#members.has(name); }
-  constructor(readonly options: { readonly folder: string; readonly enabled: () => boolean; readonly maxMembers: () => number; readonly maxBytes: () => number; readonly shutdownMs: () => number; readonly run: (input: TeamInput, signal: AbortSignal) => Promise<{ id: string; text: string; isError: boolean }>; readonly stop?: (name: string) => Promise<void>; readonly waiting?: (name: string, text: string, signal: AbortSignal) => Promise<string | undefined>; readonly notify: (notice: TeamNotice) => void; readonly redact: (text: string) => string }) {}
+  constructor(readonly options: { readonly folder: string; readonly enabled: () => boolean; readonly maxMembers: () => number; readonly maxBytes: () => number; readonly shutdownMs: () => number; readonly run: (input: TeamInput, signal: AbortSignal) => Promise<{ id: string; text: string; isError: boolean }>; readonly stop?: (name: string) => Promise<void>; readonly waiting?: (name: string, text: string, signal: AbortSignal) => Promise<string | undefined>; readonly notify: (notice: TeamNotice) => void; readonly redact: (text: string) => string; readonly changed?: () => void; readonly detached?: (name: string) => boolean; readonly acceptsLeadMail?: () => boolean }) {}
   #check(): void { if (this.#closed || !this.options.enabled()) throw new Error("Teams are disabled or this session has ended."); }
   form(team: string) {
     this.#check(); if (this.#active) throw new Error("A team is already active.");
@@ -36,7 +40,22 @@ export class Teams {
     const tasks = new TaskList();
     const save = () => { ordinaryPrivateFile(tasksFile, 1024 * 1024); writeAtomic(tasksFile, Buffer.from(JSON.stringify(tasks.tasks)), currentPlatform(), true); };
     save(); tasks.onChange(save); this.#tasks = tasks;
-    return this.#active = { team, folder, tasksFile };
+    this.#active = { team, folder, tasksFile }; this.options.changed?.(); return this.#active;
+  }
+  restore(snapshot: TeamSnapshot): void {
+    this.#check(); if (this.#active || !snapshot || !namePattern.test(snapshot.active?.team) || !/^[a-f0-9-]{36}$/.test(snapshot.active.folder.slice(resolve(this.options.folder).length + 1)) || resolve(snapshot.active.folder, "..") !== resolve(this.options.folder) || snapshot.active.tasksFile !== join(snapshot.active.folder, "tasks.json") || !Array.isArray(snapshot.members) || snapshot.members.length >= this.options.maxMembers()) throw new Error("Invalid saved team.");
+    const tasks = JSON.parse(readPrivateText(snapshot.active.tasksFile, 1024 * 1024)) as Task[];
+    if (!Array.isArray(tasks) || tasks.some(task => !task || typeof task.id !== "string" || typeof task.owner !== "string" || !["pending", "in_progress", "completed"].includes(task.status))) throw new Error("Invalid saved team tasks.");
+    const members = new Map<string, Member>();
+    for (const saved of snapshot.members) {
+      if (!namePattern.test(saved.name) || saved.name === "lead" || members.has(saved.name) || !["active", "idle", "stopping", "stopped"].includes(saved.state)) throw new Error("Invalid saved teammate.");
+      if (saved.queue !== undefined && (!Array.isArray(saved.queue) || saved.queue.length > 32 || saved.queue.some((message: Message) => typeof message?.from !== "string" || typeof message.at !== "string" || typeof message.text !== "string" || Buffer.byteLength(message.text) > this.options.maxBytes()))) throw new Error("Invalid saved teammate mailbox.");
+      members.set(saved.name, { ...saved, attach: saved.state === "active" || saved.state === "stopping", controller: new AbortController(), queue: [...(saved.queue ?? [])] });
+    }
+    const restored = new TaskList(); restored.restore(tasks); this.#tasks = restored; this.#active = snapshot.active;
+    restored.onChange(() => writeAtomic(snapshot.active.tasksFile, Buffer.from(JSON.stringify(restored.tasks)), currentPlatform(), true));
+    for (const member of members.values()) this.#members.set(member.name, member);
+    for (const member of members.values()) { if (member.state === "active" || member.state === "stopping") this.#start(member, ""); else if (member.state === "idle" && member.queue.length) this.#drain(member); }
   }
   spawn(name: string, prompt: string, role?: string, model?: string): void {
     this.#check(); if (!this.#active) throw new Error("Form a team before starting a teammate.");
@@ -48,10 +67,12 @@ export class Teams {
   }
   #start(member: Member, prompt: string): void {
     member.state = "active";
+    this.options.changed?.();
     member.work = (async () => {
       let report: string | undefined;
       try {
-        const result = await this.options.run({ name: member.name, prompt, resume: member.resume, role: member.role, model: member.model }, member.controller.signal);
+        const result = await this.options.run({ name: member.name, prompt, resume: member.resume, role: member.role, model: member.model, attach: member.attach }, member.controller.signal);
+        member.attach = false;
         member.resume = result.id;
         if (!member.controller.signal.aborted && result.isError) { this.options.notify({ type: "error", from: member.name, text: this.options.redact(result.text) }); member.controller.abort(); }
         else if (!member.controller.signal.aborted) {
@@ -59,17 +80,19 @@ export class Teams {
           const resume = await this.options.waiting?.(member.name, report, member.controller.signal);
           if (resume && !member.controller.signal.aborted) member.queue.push({ from: "lead", at: new Date().toISOString(), text: "The configured teammate_waiting hook requests another turn: " + this.options.redact(resume) });
         }
-      } catch (error) { if (!member.controller.signal.aborted) this.options.notify({ type: "error", from: member.name, text: this.options.redact(error instanceof Error ? error.message : String(error)) }); member.controller.abort(); }
+      } catch (error) { if (this.#closed && this.options.detached?.(member.name)) return; if (!member.controller.signal.aborted) this.options.notify({ type: "error", from: member.name, text: this.options.redact(error instanceof Error ? error.message : String(error)) }); member.controller.abort(); }
       finally {
+        if (this.#closed && this.options.detached?.(member.name)) return;
         member.work = undefined;
         if (member.controller.signal.aborted) await this.#finishStopped(member);
         else if (member.timer) member.state = "stopping";
         else member.state = "idle";
         if (report !== undefined && member.state !== "stopped") this.options.notify({ type: "idle", from: member.name, text: report });
+        this.options.changed?.();
         if (member.queue.length && member.state !== "stopped") this.#drain(member);
       }
     })();
-    void member.work.catch(error => this.options.notify({ type: "error", from: member.name, text: this.options.redact(error instanceof Error ? error.message : String(error)) }));
+    void member.work.catch(error => { try { this.options.notify({ type: "error", from: member.name, text: this.options.redact(error instanceof Error ? error.message : String(error)) }); } catch { /* Bounded storage refusal preserves the pending worker report for reconnection. */ } });
   }
   #drain(member: Member): void {
     if (member.work || !member.queue.length || member.state === "stopped") return;
@@ -82,6 +105,7 @@ export class Teams {
     if (!text.trim() || Buffer.byteLength(text) > Math.min(65536, this.options.maxBytes())) throw new Error("Team message is empty or too long.");
     const targets = to === "*" ? ["lead", ...this.members.filter(member => member.state !== "stopped").map(member => member.name)].filter(name => name !== from) : [to];
     for (const name of targets) {
+      if (name === "lead" && this.options.acceptsLeadMail?.() === false) throw new Error("Team leader inbox is full.");
       if (name === from) throw new Error("A teammate cannot message itself.");
       const member = this.#members.get(name);
       if (name !== "lead" && (!member || member.state === "stopped")) throw new Error("Unknown or stopped teammate: " + name + ". Members: lead, " + this.members.map(member => member.name).join(", "));
@@ -97,6 +121,7 @@ export class Teams {
       if (name === "lead") this.options.notify({ type: "message", from, text: message.text });
       else { const member = this.#members.get(name)!; member.queue.push(message); queueMicrotask(() => this.#drain(member)); }
     }
+    this.options.changed?.();
     return targets;
   }
   shutdown(from: string, to: string): void {
@@ -120,7 +145,7 @@ export class Teams {
     this.#check(); if (!this.#active) throw new Error("No team is active.");
     const live = this.members.filter(member => member.state !== "stopped"); if (live.length) throw new Error("Stop all teammates before dissolving the team: " + live.map(member => member.name).join(", "));
     ordinaryPrivateFile(this.#active.tasksFile, 1024 * 1024); storeRemove(this.#active.folder, true);
-    this.#active = undefined; this.#tasks = undefined; this.#members.clear();
+    this.#active = undefined; this.#tasks = undefined; this.#members.clear(); this.options.changed?.();
   }
-  async close(): Promise<void> { this.#closed = true; for (const member of this.#members.values()) this.#stop(member); await Promise.allSettled([...this.#members.values()].flatMap(member => [member.work, member.cleanup])); }
+  async close(): Promise<void> { this.#closed = true; for (const member of this.#members.values()) { if (this.options.detached?.(member.name)) member.controller.abort(); else this.#stop(member); } await Promise.allSettled([...this.#members.values()].flatMap(member => [member.work, member.cleanup])); }
 }

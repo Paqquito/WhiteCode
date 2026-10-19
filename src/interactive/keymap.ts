@@ -35,6 +35,7 @@ export const ACTIONS: readonly ActionDef[] = [
   { id: "input.toggleModal", context: "app", label: "Activer ou désactiver l'édition modale (contenu conservé)", defaults: ["alt+m"] },
   { id: "view.transcript", context: "app", label: "Ouvrir la vue plein écran de la transcription", defaults: ["alt+t"] },
   { id: "task.background", context: "app", label: "Mettre la commande en cours en arrière-plan", defaults: ["alt+g"] }, // Supports: SPEC-AGT-017 CA-02, E-147.
+  { id: "session.background", context: "app", label: "Mettre le tour principal en arrière-plan (deux pressions)", defaults: ["alt+j"] }, // Supports: SPEC-AGT-021 CA-01.
   { id: "task.panel", context: "app", label: "Ouvrir le panneau des tâches de fond", defaults: ["alt+k"] }, // Supports: SPEC-IHM-028, E-148.
   { id: "input.submit", context: "input", label: "Envoyer le message (en file pendant un tour)", defaults: ["enter"] },
   { id: "input.externalEditor", context: "input", label: "Modifier le brouillon dans l’éditeur externe", defaults: ["ctrl+g"] },

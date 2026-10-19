@@ -1,3 +1,4 @@
+// Supports: SPEC-MOT-029 (the same minimal transcript writer port as the turn loop).
 // Implements: SPEC-MOT-011 (§ 5.1, § 5.3 points 1 to 6, FA-01 to FA-03, EF-01 to EF-05, ERR-01, ERR-02, RG-01, RG-02, CA-01, CA-03)
 // Supports: decision D-12 and architecture § 7.2 (simple compaction: a new segment, nothing replayed), SPEC-MOD-005 § 5.5 (side request admitted by the budget)
 // Implements: SPEC-MOT-017 (CA-01/02, fresh session notes with a faithful recent-history tail and classic fallback).
@@ -27,7 +28,7 @@ export interface CompactionDeps {
   readonly meter: ContextMeter;
   readonly hooks: HookBus;
   readonly emit: EventSink;
-  readonly transcript?: TranscriptWriter;
+  readonly transcript?: Pick<TranscriptWriter, "append" | "flush">;
   readonly thinking: ThinkingRequest;
   readonly effort?: ApiEffort;
   /** Output reserved for the summary. */

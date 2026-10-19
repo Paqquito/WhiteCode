@@ -120,6 +120,14 @@ export class Screen {
     return this.#broken;
   }
 
+  /** Another conversation used the physical terminal; forget its cursor and redraw this live area. */
+  reclaim(): void {
+    if (this.#stopped || this.#broken) return;
+    this.#prev = []; this.#height = 1; this.#row = 0; this.#col = 0;
+    this.#write(`${ESC}0m${ESC}2J${ESC}H${ESC}?2004h${ESC}?25h`);
+    this.flush();
+  }
+
   start(): void {
     if (this.#started) return;
     this.#started = true;

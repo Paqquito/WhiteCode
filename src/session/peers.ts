@@ -16,6 +16,7 @@ export interface PeerMessage { readonly from: string; readonly name: string; rea
 const hmac = (token: string, text: string) => createHmac("sha256", token).update(text).digest("hex");
 function privateFolder(path: string): void { for (let cursor = resolve(path); ; cursor = dirname(cursor)) { if (existsSync(cursor)) { const stat = lstatSync(cursor); if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Linked peer directory."); } if (cursor === dirname(cursor)) break; } mkdirSync(path, { recursive: true, mode: 0o700 }); securePrivateDirectory(path); }
 export class LocalPeers {
+  get address(): string { return this.#id; }
   readonly #id = randomUUID(); readonly #token = randomBytes(32).toString("hex"); readonly #seen = new Set<string>();
   readonly #server: Server; readonly #file: string; readonly #address: string;
   readonly #sockets = new Set<Socket>();

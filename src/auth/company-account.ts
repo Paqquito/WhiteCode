@@ -81,12 +81,17 @@ export class CompanyAccount {
   async request(service: CompanyService, path: string, body: unknown, parent: AbortSignal, identity?: { readonly organizationId: string; readonly account?: string }): Promise<unknown> {
     return json(await this.#response(service,path,body,AbortSignal.any([parent,AbortSignal.timeout(15000)]),identity));
   }
+  /** The device proof is an extra capability, never a replacement for the authenticated account. */
+  async trustedDeviceRequest(path: string, body: unknown, parent: AbortSignal, identity: { readonly organizationId: string; readonly account: string }, device?: string): Promise<unknown> {
+    if (!/^environments\/[A-Za-z0-9_/-]+$/.test(path) || device !== undefined && !/^device_[A-Za-z0-9_-]{32,256}$/.test(device)) throw Error("Requête d’appareil invalide.");
+    return json(await this.#response("sessions", path, body, AbortSignal.any([parent, AbortSignal.timeout(15000)]), identity, "application/json", device));
+  }
   async *events(path:string,after:number,signal:AbortSignal,identity?:{readonly organizationId:string;readonly account?:string}):AsyncGenerator<unknown>{
     if(!Number.isSafeInteger(after)||after<0)throw new Error("Curseur distant invalide.");
     const response=await this.#response("sessions",path+`?after=${after}`,undefined,signal,identity,"text/event-stream");
     yield*remoteEvents(response,signal);
   }
-  async #response(service: CompanyService, path: string, body: unknown, parent: AbortSignal, identity?: { readonly organizationId: string; readonly account?: string },accept="application/json"): Promise<Response> {
+  async #response(service: CompanyService, path: string, body: unknown, parent: AbortSignal, identity?: { readonly organizationId: string; readonly account?: string },accept="application/json",device?:string): Promise<Response> {
     const profileRequest = service === "account" && path === "profile", required = this.options.forceOrganization?.();
     let verified = !profileRequest ? required ? await this.#validatedProfile(parent) : await this.#cachedProfile() ?? await this.#validatedProfile(parent) : undefined;
     const assertIdentity=()=>{if(identity&&(!verified||verified.profile.organization.id!==identity.organizationId||identity.account!==undefined&&verified.profile.account!==identity.account))throw new Error("Compte ou organisation modifiés pendant l’opération ; recommencez.");};assertIdentity();
@@ -98,7 +103,7 @@ export class CompanyAccount {
     const authorize = async () => { try { return await this.#oauth.authorize(signal, { expectedGeneration: verified?.generation }); } catch (error) { if (!(error instanceof OAuthGenerationChanged) || profileRequest) throw error; verified = await this.#validatedProfile(signal);assertIdentity(); return this.#oauth.authorize(signal, { expectedGeneration: verified.generation }); } };
     let selected = await authorize();
     if (!selected) throw new Error("Connectez un compte de la société pour utiliser ce service.");
-    const run = () => this.options.fetch(url, { method: body === undefined ? "GET" : "POST", headers: { Authorization: selected!.authorization, Accept: accept, ...(body === undefined ? {} : { "Content-Type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: "error", signal });
+    const run = () => this.options.fetch(url, { method: body === undefined ? "GET" : "POST", headers: { Authorization: selected!.authorization, Accept: accept, ...(device ? { "X-Trusted-Device": device } : {}), ...(body === undefined ? {} : { "Content-Type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: "error", signal });
     let response = await run();
     if (response.status === 401) { await response.body?.cancel(); if (!profileRequest) verified = await this.#validatedProfile(signal);assertIdentity(); selected = await this.#oauth.authorize(signal, { force: true, rejected: selected.authorization, rejectedVersion: selected.version, expectedGeneration: verified?.generation }); if (!selected) throw new Error("Connexion expirée ; reconnectez le compte."); response = await run(); }
     return response;

@@ -98,7 +98,7 @@ const targets = all ? TARGETS : options.has("--target") ? [options.get("--target
 for (const target of targets) {
   const name = target ? `${cli}-${target.replace(/^bun-/, "")}` : cli;
   const file = target?.includes("windows") || (!target && process.platform === "win32") ? `${name}.exe` : name;
-  await step(`compilation ${target ?? "plateforme courante"}`, [process.execPath, "build", join(outDir, bundleName), "--compile", "--minify", "--outfile", join(outDir, file), ...(target ? [`--target=${target}`] : [])]);
+  await step(`compilation ${target ?? "plateforme courante"}`, [process.execPath, "build", join(outDir, bundleName), "--compile", "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--minify", "--outfile", join(outDir, file), ...(target ? [`--target=${target}`] : [])]);
   record(target ?? "current", file); control();
 }
 publishSettingsSchema(root, outDir, { cli, version: RESOLVED_IDENTITY.version }); record("settings-schema", "config.schema.json");

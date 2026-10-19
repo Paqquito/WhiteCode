@@ -297,7 +297,7 @@ test("SPEC-PER-001/CA-09 — a child in ask mode presents its identified demand 
   const run = interactive([], ws, { provider });
   await run.idle();
   run.type("Delegate.\r");
-  await run.waitFor((text) => text.includes("Autorisation requise") && text.includes("Demandé par : general"));
+  await run.waitFor((text) => text.includes("Autorisation requise") && /Demandé par : conversation \d+ — general\b/.test(text));
   expect(existsSync(target)).toBe(false);
   await sleep(370);
   run.type("1");

@@ -14,7 +14,7 @@ import {
   storeMkdir,
   bindPrivateStorage,
 } from "../session/private-storage";
-import { ResidentWorker, type WorkerRecord } from "./worker";
+import { ResidentWorker, ResidentCapacityError, type WorkerRecord } from "./worker";
 import { parseJobRestrictions, type JobRestrictions } from "./jobs";
 const UUID =
   /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
@@ -74,7 +74,8 @@ function workerRecord(raw: unknown): WorkerRecord {
     !object(raw) ||
     typeof raw["id"] !== "string" ||
     !UUID.test(raw["id"]) ||
-    !["assistant", "background", "job"].includes(String(raw["kind"])) ||
+    !["assistant", "background", "job", "remote"].includes(String(raw["kind"])) ||
+    (raw["kind"] === "remote" && (typeof raw["remoteBinding"] !== "string" || !/^[a-f0-9]{64}$/.test(raw["remoteBinding"]))) ||
     !["ask", "no_prompt"].includes(String(raw["mode"])) ||
     ![
       "starting",
@@ -120,6 +121,7 @@ function workerRecord(raw: unknown): WorkerRecord {
     summary: raw["summary"],
     restarts: Number(raw["restarts"]),
     pending,
+    ...(raw["kind"] === "remote" ? { remoteBinding: raw["remoteBinding"] as string } : {}),
     ...(raw["jobRestrictions"] !== undefined
       ? { jobRestrictions: parseJobRestrictions(raw["jobRestrictions"]) }
       : {}),
@@ -151,6 +153,7 @@ export class ResidentSupervisor {
       assertPolicy: () => void;
       program: (record: WorkerRecord) => { file: string; args: string[] };
       environment: (record: WorkerRecord) => Record<string, string>;
+      launchCwd?: (record: WorkerRecord) => string;
       wasAccepted: (record: WorkerRecord, id: string) => boolean;
       history: (record: WorkerRecord) => unknown[];
       notify: (
@@ -164,6 +167,7 @@ export class ResidentSupervisor {
       jobState?: (
         record: WorkerRecord,
       ) => { state: string; summary: string } | undefined;
+      remote?: { start(body: Record<string, unknown>): Promise<unknown>; state(): unknown; stop(): Promise<void>; revoke(body: Record<string, unknown>): Promise<unknown> };
     },
   ) {
     this.#registry = join(options.root, "background-sessions", "registry.json");
@@ -215,9 +219,12 @@ export class ResidentSupervisor {
         currentPlatform(),
         true,
       );
-      for (const worker of this.#workers.values())
+      for (const worker of this.#workers.values()) {
+        // A new service must re-establish account/device authority before launching a remote worker.
+        if (worker.record.kind === "remote") { worker.record.status = "stopped"; worker.record.pending.length = 0; continue; }
         if (!["completed", "stopped", "error"].includes(worker.record.status))
           worker.launch();
+      }
       this.#note("Superviseur local actif.");
     } catch (error) {
       await this.close();
@@ -265,6 +272,7 @@ export class ResidentSupervisor {
     const worker = new ResidentWorker(record, {
       command: this.options.program,
       environment: this.options.environment,
+      launchCwd: this.options.launchCwd,
       persist: bindPrivateStorage(this.#save),
       assertPolicy: this.options.assertPolicy,
       waitMs: this.options.waitMs,
@@ -291,6 +299,23 @@ export class ResidentSupervisor {
         : {}),
     };
   }
+  remoteWorkers(binding: string): readonly ResidentWorker[] {
+    return [...this.#workers.values()].filter(worker => worker.record.kind === "remote" && worker.record.remoteBinding === binding);
+  }
+  createRemote(id: string, cwd: string, prompt: string, binding: string): ResidentWorker {
+    if (this.#closed || !UUID.test(id) || !/^[a-f0-9]{64}$/.test(binding) || !prompt.trim() || prompt.length > 32000) throw Error("Session distante invalide.");
+    this.options.assertPolicy(); cwd = directory(cwd);
+    const old = this.#workers.get(id);
+    if (old) {
+      if (old.record.kind !== "remote" || old.record.remoteBinding !== binding || old.record.cwd !== cwd) throw Error("Identifiant de session occupé.");
+      return old;
+    }
+    if ([...this.#workers.values()].filter(worker => !["completed", "stopped", "error"].includes(worker.record.status)).length >= this.options.maxConcurrent || this.#workers.size >= 100) throw new ResidentCapacityError();
+    const record: WorkerRecord = { id, kind: "remote", remoteBinding: binding, cwd, createdAt: Date.now(), mode: "ask", status: "starting", summary: "Session pilotée à distance.", restarts: 0, pending: [{ id: randomUUID(), text: prompt }] };
+    const worker = this.#add(record);
+    try { this.#save(); worker.launch(); return worker; }
+    catch (error) { this.#workers.delete(id); throw error; }
+  }
   async #handle(request: Request): Promise<Response> {
     const supplied = request.headers.get("authorization") ?? "",
       expected = "Bearer " + this.#token;
@@ -312,6 +337,7 @@ export class ResidentSupervisor {
           this.#view(worker),
         ),
       });
+    if (request.method === "GET" && url.pathname === "/remote") return Response.json(this.options.remote?.state() ?? { active: false });
     if (request.method === "GET" && url.pathname === "/log")
       return Response.json({ lines: this.#log });
     if (request.method !== "POST")
@@ -332,6 +358,9 @@ export class ResidentSupervisor {
     if (this.#closed)
       return Response.json({ error: "Service is closing." }, { status: 503 });
     this.options.assertPolicy();
+    if (url.pathname === "/remote/start" && this.options.remote) return Response.json(await this.options.remote.start(body));
+    if (url.pathname === "/remote/stop" && this.options.remote) { await this.options.remote.stop(); return Response.json({ active: false }); }
+    if (url.pathname === "/remote/revoke" && this.options.remote) return Response.json(await this.options.remote.revoke(body));
     if (url.pathname === "/workers") {
       if (
         body["mode"] !== undefined &&
@@ -517,6 +546,7 @@ export class ResidentSupervisor {
   async #close() {
     this.#closed = true;
     try {
+      await this.options.remote?.stop();
       await Promise.allSettled(
         [...this.#workers.values()].map((worker) => worker.close(false)),
       );

@@ -1,3 +1,4 @@
+// Supports: SPEC-MOT-035 (separate connector-content presentation event).
 // Supports: SPEC-MOD-029, SPEC-OUT-034, gap E-161.
 // Implements: SPEC-MOT-001 (EF-07 structured events), SPEC-MOT-002 (EF-07 per-call events)
 // Supports: SPEC-MOD-003 (EF-05 order, EF-08 conversation rebuilt from the events)
@@ -17,6 +18,7 @@ export type StopCause =
   | "error";
 
 export type EngineEvent =
+  | { readonly type: "connector_content"; readonly blocks: readonly import("../providers/connector-text").ConnectorTextBlock[]; readonly incidents: number }
   | { readonly type: "output_files"; readonly files: readonly { path: string; id: string; sha256: string }[]; readonly failed: readonly { path: string; reason: string }[] }
   | { readonly type: "progress_summary"; readonly text: string }
   | { readonly type: "input_suggestion"; readonly text: string }

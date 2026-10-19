@@ -12,7 +12,7 @@ import { storeAppend as appendFileSync, storeMkdir as mkdirSync, storeRead as re
 import { join } from "node:path";
 import type { Reminder, ReminderProducer } from "./reminders";
 
-export type TaskKind = "shell" | "agent" | "monitor" | "workflow";
+export type TaskKind = "shell" | "agent" | "monitor" | "workflow" | "session";
 export type TaskStatus = "running" | "completed" | "failed" | "stopped" | "timed_out" | "rate_limited";
 export interface WorkflowAgent { id: string; status: TaskStatus }
 export interface WorkflowStepStatus { readonly id: string; state: string; readonly agents: WorkflowAgent[] }
@@ -189,7 +189,7 @@ export class BackgroundTasks {
    */
   start(kind: TaskKind, description: string, work: (signal: AbortSignal, write: (chunk: string) => void) => Promise<{ readonly status: TaskStatus; readonly exitCode?: number | null; readonly summary?: string }>): BackgroundTask {
     mkdirSync(this.#o.dir, { recursive: true });
-    const id = `${kind === "agent" ? "a" : kind === "monitor" ? "m" : kind === "workflow" ? "w" : "b"}${this.#next++}`;
+    const id = `${kind === "agent" ? "a" : kind === "monitor" ? "m" : kind === "workflow" ? "w" : kind === "session" ? "s" : "b"}${this.#next++}`;
     const task: BackgroundTask = { id, kind, description, startedAt: this.#now(), status: "running", outputFile: join(this.#o.dir, `${id}.log`) };
     writeFileSync(task.outputFile, "");
     this.#tasks.set(id, task);
@@ -234,7 +234,7 @@ export class BackgroundTasks {
 
   /** § 5.3 step 3: a summary and where to read the output. */
   #endNote(t: BackgroundTask): string {
-    const what = t.kind === "agent" ? "background agent" : t.kind === "monitor" ? "monitor" : t.kind === "workflow" ? "workflow" : "background command";
+    const what = t.kind === "agent" ? "background agent" : t.kind === "monitor" ? "monitor" : t.kind === "workflow" ? "workflow" : t.kind === "session" ? "main-session turn" : "background command";
     const how =
       t.status === "completed"
         ? `ended${t.exitCode !== null && t.exitCode !== undefined ? ` with exit code ${t.exitCode}` : ""}`

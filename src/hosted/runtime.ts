@@ -9,6 +9,7 @@ import { ordinaryPrivateFile, readPrivateText } from "../shared/private-text";
 import { startHostedHttp } from "../platform/hosted-http";
 import { assertHostedControlFile } from "../platform/hosted-isolation";
 import { restrictFileToOwner } from "../platform/private-file";
+import { upstreamConfiguration } from "../platform/hosted-proxy";
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 function configuration(path: string): Record<string, unknown> { const raw: unknown = JSON.parse(readPrivateText(path, 1024 * 1024)); if (!object(raw)) throw Error("Configuration de service invalide."); return raw; }
 function accounts(path: string): Array<HostedPrincipal & { tokenHash: string; repositories: string[] }> {
@@ -58,5 +59,5 @@ export function hostedWorkerFile(path: string, environment: Readonly<Record<stri
   assertHostedControlFile(resolve(path));
   const raw = configuration(path);
   if (typeof raw.root !== "string" || typeof raw.serviceUrl !== "string" || typeof raw.workerToken !== "string" || typeof raw.prefix !== "string" || typeof raw.productBinary !== "string" || !object(raw.isolation) || typeof raw.isolation.firstUid !== "number" || typeof raw.isolation.lastUid !== "number") throw Error("Configuration du travailleur incomplète : binaire installé et plage d’identités isolées requis.");
-  return new HostedWorker({ root: resolve(raw.root), serviceUrl: raw.serviceUrl, workerToken: raw.workerToken, prefix: raw.prefix, productBinary: resolve(raw.productBinary), environment, isolation: { firstUid: raw.isolation.firstUid, lastUid: raw.isolation.lastUid } });
+  return new HostedWorker({ root: resolve(raw.root), serviceUrl: raw.serviceUrl, workerToken: raw.workerToken, prefix: raw.prefix, productBinary: resolve(raw.productBinary), environment, isolation: { firstUid: raw.isolation.firstUid, lastUid: raw.isolation.lastUid }, ...(raw.upstream !== undefined ? { upstream: upstreamConfiguration(raw.upstream) } : {}) });
 }

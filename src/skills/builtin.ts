@@ -1,4 +1,4 @@
-// Implements: SPEC-EXT-021, SPEC-EXT-022, SPEC-EXT-026, SPEC-EXT-028, SPEC-EXT-029, SPEC-EXT-031, SPEC-EXT-032 (the skills
+// Implements: SPEC-EXT-021, SPEC-EXT-022, SPEC-EXT-026, SPEC-EXT-028, SPEC-EXT-029, SPEC-EXT-031, SPEC-EXT-032, SPEC-EXT-033 (the skills
 // built into the product: their definitions, their invocation and their tools)
 // Supports: SPEC-EXT-019 (same header and same invocation as the other skills), gap E-117
 
@@ -17,10 +17,11 @@ import loop from "../../prompts/skills/loop.md" with { type: "text" };
 import shortcutHelp from "../../prompts/skills/shortcut-help.md" with { type: "text" };
 import apiGuide from "../../prompts/skills/ai-api-guide.md" with { type: "text" };
 import memoryConsolidation from "../../prompts/skills/memory-consolidation.md" with { type: "text" };
+import browserControl from "../../prompts/skills/browser-control.md" with { type: "text" };
 import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 import { splitHeader, type Invocation, type Skill } from "./registry";
 
-const SOURCES = [...(buildFlag("defect_scan")?[defectScan]:[]),...(buildFlag("scheduled_triggers_remote")?[schedule]:[]),...(buildFlag("skill_filler_text")?[filler]:[]),...(buildFlag("skill_session_rescue")?[rescue]:[]),batch, configGuide, debug, promoteMemory, simplify, skillFromSession, verify, shortcutHelp, apiGuide, ...(buildFlag("scheduled_triggers") ? [loop] : []), ...(buildFlag("memory_consolidation") ? [memoryConsolidation] : [])];
+const SOURCES = [...(buildFlag("defect_scan")?[defectScan]:[]),...(buildFlag("scheduled_triggers_remote")?[schedule]:[]),...(buildFlag("skill_filler_text")?[filler]:[]),...(buildFlag("skill_session_rescue")?[rescue]:[]),batch, configGuide, debug, promoteMemory, simplify, skillFromSession, verify, shortcutHelp, apiGuide, browserControl, ...(buildFlag("scheduled_triggers") ? [loop] : []), ...(buildFlag("memory_consolidation") ? [memoryConsolidation] : [])];
 
 /** The skills of the product, scope `product`: a skill of the same name of any other scope replaces it. */
 export function builtinSkills(): Skill[] {

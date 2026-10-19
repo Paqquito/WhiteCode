@@ -1,3 +1,5 @@
+// Supports: SPEC-MCP-007 (managed-only identity provider, pinned resources and administrator fallback).
+// Supports: SPEC-MOT-035 (user-controlled connector-content capability).
 // Supports: SPEC-MOD-029, SPEC-OUT-013/034/038, SPEC-IHM-023/038, gap E-161.
 // Implements: SPEC-CFG-002 (EF-02, § 6 widening keys, § 6.1 catalogue for the keys of lot 1)
 // Supports: SPEC-CFG-003 (policy.requiredKeys), SPEC-PER-001 (detachedWaitTimeout catalogue), gap E-120.
@@ -52,14 +54,28 @@ const strList = () => Type.Array(Type.String());
 const durationSchema = () => Type.Union([Type.Number({ minimum: 0 }), Type.String()]);
 const enumOf = (values: readonly string[]) => Type.Union(values.map((v) => Type.Literal(v)));
 const mode = () => enumOf(PERMISSION_MODES);
+const identityProviderSchema = Type.Object({
+  issuer: Type.String({ minLength: 1, maxLength: 2048 }), clientId: Type.String({ minLength: 1, maxLength: 240 }),
+  clientSecret: Type.String({ pattern: "^\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}$" }),
+  callbackPort: Type.Optional(int(1, 65535)), allowOAuthFallback: Type.Optional(bool()),
+  connectors: Type.Array(Type.Object({
+    name: Type.String({ pattern: "^[a-z0-9][a-z0-9-]{1,47}$" }), resource: Type.String({ minLength: 1, maxLength: 2048 }),
+    authorizationServer: Type.String({ minLength: 1, maxLength: 2048 }), clientId: Type.String({ minLength: 1, maxLength: 240 }),
+    clientSecret: Type.String({ pattern: "^\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}$" }),
+    scopes: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 128, pattern: "^[\\x21\\x23-\\x5B\\x5D-\\x7E]+$" }), { maxItems: 100, uniqueItems: true })),
+  }, { additionalProperties: false }), { maxItems: 100 }),
+}, { additionalProperties: false });
 
 export const SETTINGS: readonly SettingDef[] = [
+  { key: "mcp.identityProvider", schema: identityProviderSchema, scopes: [G], owner: "SPEC-MCP-007", secret: true, hot: true },
+  {key:"integrations.forge.testCommand",schema:Type.String({minLength:1,maxLength:4096}),scopes:[U,G],owner:"SPEC-CMD-081",widening:true},
   { key: "modes.coordinator", schema: bool(), default: false, scopes: [U, P], owner: "SPEC-MOD-028" },
   {key:"voice.input.enabled",schema:bool(),default:false,scopes:[U],owner:"SPEC-VOX-001",hot:true},
   {key:"voice.autoSubmit",schema:bool(),default:false,scopes:[U],owner:"SPEC-VOX-001",hot:true},
   {key:"voice.language",schema:Type.String({pattern:"^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$"}),scopes:[U],owner:"SPEC-VOX-001",hot:true},
   {key:"voice.extraTerms",schema:strList(),default:[],scopes:[U,P],owner:"SPEC-VOX-003",hot:true},
   { key: "remote.runner.concurrency", schema: int(1, 16), default: 1, scopes: [U], owner: "SPEC-MOD-024" },
+  { key: "remote.capacity", schema: int(1, 16), default: 1, scopes: [U], owner: "SPEC-MOD-013" },
   { key: "ui.surveys.enabled", schema: Type.Boolean(), default: true, scopes: [U, G], owner: "SPEC-IHM-037" },
   { key: "skills.discovery.remote", schema: Type.Boolean(), default: false, scopes: [U, G], owner: "SPEC-EXT-038" },
   { key: "tools.terminalSession.enabled", schema: Type.Boolean(), default: false, scopes: [U, G], owner: "SPEC-OUT-010" },
@@ -93,6 +109,8 @@ export const SETTINGS: readonly SettingDef[] = [
   {key:"ide.autoConnect",schema:bool(),default:false,scopes:[U],owner:"SPEC-INT-001"},
   {key:"ide.autoInstallExtension",schema:bool(),default:true,scopes:[U,G],owner:"SPEC-INT-005"},
   {key:"git.mergeRequestStatus.enabled",schema:bool(),default:true,scopes:[U],owner:"SPEC-INT-008"},
+  // Supports: SPEC-CMD-037. Company deployment contracts are never accepted from a project.
+  { key: "git.forgeApp", schema: Type.Object({ workflow: Type.String({ maxLength: 300 }), installationCheckUrl: Type.String({ maxLength: 2048 }), secretName: Type.String({ maxLength: 100 }), secretInput: Type.String({ maxLength: 100 }) }, { additionalProperties: false }), scopes: [U, G], owner: "SPEC-CMD-037" },
   {key:"git.mergeRequestStatus.refreshSeconds",schema:int(10,3600),default:60,scopes:[U],owner:"SPEC-INT-008"},
   {key:"daemon.workers",schema:Type.Array(Type.Literal("assistant"),{maxItems:1,uniqueItems:true}),default:["assistant"],scopes:[U],owner:"SPEC-MOD-021"},
   {key:"daemon.installAsService",schema:bool(),default:false,scopes:[U],owner:"SPEC-MOD-021"},
@@ -142,6 +160,7 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "skills.improvements.enabled", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-EXT-039" },
   { key: "skills.improvements.everyTurns", schema: int(2, 100), default: 3, scopes: [U], owner: "SPEC-EXT-039" },
   { key: "ui.promptSuggestions", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-MOT-028", hot: true },
+  { key: "engine.speculation.enabled", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-MOT-029", hot: true },
   { key: "ui.returnSummary.enabled", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-MOT-030", hot: true },
   { key: "ui.returnSummary.afterMinutes", schema: int(1, 1440), default: 30, scopes: [U], owner: "SPEC-MOT-030" },
   { key: "sessions.taskSummary.enabled", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-MOT-044" },
@@ -152,7 +171,11 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "modes.brief", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-MOD-029" },
   { key: "ui.shortMessages.maxAttachmentBytes", schema: int(1, 104857600), default: 10485760, scopes: [U], owner: "SPEC-OUT-034" },
   { key: "tools.browser.allowLocalhost", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-OUT-014" },
+  { key: "browser.enabled", schema: bool(), default: false, scopes: [U], owner: "SPEC-INT-011", hot: true },
+  { key: "browser.extensionId", schema: Type.String({ pattern: "^(?:[a-p]{32})?$" }), default: "", scopes: [U, G], owner: "SPEC-INT-011", hot: true },
   { key: "integrations.keepAwake", schema: bool(), default:true, scopes:[U], owner:"SPEC-INT-022",hot:true },
+  { key: "integrations.computerControl.enabled", schema: bool(), default: false, scopes: [U, G], owner: "SPEC-INT-015", hot: true },
+  { key: "integrations.computerControl.deniedApps", schema: strList(), default: ["password", "passphrase", "credential", "bank", "banque", "wallet", "mot de passe"], scopes: [G], owner: "SPEC-INT-015", hot: true },
   {key:"ui.fileDelivery.maxBytes",schema:int(1,52428800),default:52428800,scopes:[U,G],owner:"SPEC-OUT-035"},
   {key:"attribution.notes",schema:bool(),default:false,scopes:[U,P,G],owner:"SPEC-INT-010"},
   {key:"attribution.commitTrailer",schema:Type.String({maxLength:1024}),default:"",scopes:[U,P,G],owner:"SPEC-INT-010"},
@@ -318,8 +341,10 @@ export const SETTINGS: readonly SettingDef[] = [
 
   // Sandbox (widening keys, SPEC-CFG-002 § 6)
   { key: "sandbox.enabled", schema: bool(), default: false, scopes: [U, P, G], owner: "SPEC-PER-015", restrictiveValues: [true] },
+  { key: "sandbox.autoAllowSandboxed", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-PER-015", widening: true },
+  { key: "sandbox.allowUnsandboxedCommands", schema: bool(), default: true, scopes: [G], owner: "SPEC-PER-015", restrictiveValues: [false] },
   { key: "sandbox.excludedCommands", schema: strList(), default: [], scopes: [U, G], owner: "SPEC-PER-015", merge: "concat", widening: true },
-  { key: "sandbox.network.allowedDomains", schema: strList(), default: [], scopes: [U, G], owner: "SPEC-PER-015", merge: "concat", widening: true },
+  { key: "sandbox.network.allowedDomains", schema: Type.Array(Type.String({ maxLength: 253, pattern: "^(?:\\*\\.)?(?![0-9.]+$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$" }), { maxItems: 1024 }), default: [], scopes: [U, G], owner: "SPEC-PER-015", merge: "concat", widening: true },
 
   // API
   // No default provider (decision D-09, gap E-039).
@@ -415,6 +440,7 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "mcp.denyList", schema: Type.Array(Type.Unknown()), default: [], scopes: [G], owner: "SPEC-MCP-021" },
   { key: "mcp.managedServersOnly", schema: bool(), default: false, scopes: [G], owner: "SPEC-MCP-021" },
   { key: "mcp.connectTimeout", schema: durationSchema(), kind: "duration", default: 30_000, scopes: [U, G], owner: "SPEC-MCP-002" },
+  { key: "mcp.connectorText.enabled", schema: bool(), default: true, scopes: [U], owner: "SPEC-MOT-035" },
   { key: "mcp.skillsFromServers", schema: strList(), default: [], scopes: [U, G], owner: "SPEC-MCP-014", hot: true },
   { key: "mcp.richOutputMaxLines", schema: Type.Integer({ minimum: 3, maximum: 200 }), default: 40, scopes: [U, G], owner: "SPEC-MCP-015" },
   { key: "mcp.toolTimeout", schema: durationSchema(), kind: "duration", default: 600_000, scopes: [U, G], owner: "SPEC-MCP-009" },
@@ -457,6 +483,8 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "agents.teams.maxMembers", schema: int(2, 32), default: 8, scopes: [U, G], owner: "SPEC-OUT-019" },
   { key: "agents.teams.shutdownTimeoutSeconds", schema: int(1, 600), default: 60, scopes: [U], owner: "SPEC-AGT-011" },
   { key: "agents.teams.permissionTimeoutSeconds", schema: int(1, 3600), default: 600, scopes: [U], owner: "SPEC-AGT-014" },
+  { key: "agents.teams.displayBackend", schema: enumOf(["auto", "multiplexer", "split-terminal", "in-process"]), default: "auto", scopes: [U], owner: "SPEC-AGT-012" },
+  { key: "agents.teams.orphanTimeoutMinutes", schema: int(1, 1440), default: 15, scopes: [U], owner: "SPEC-AGT-015" },
   { key: "agents.messaging.maxBytes", schema: int(1, 65536), default: 65536, scopes: [U], owner: "SPEC-OUT-017" },
   { key: "agents.maxDepth", schema: int(0, 10), default: 2, scopes: [U, G], owner: "SPEC-OUT-016" },
   { key: "agents.maxParallel", schema: int(1, 100), default: 10, scopes: [U, G], owner: "SPEC-OUT-016" },

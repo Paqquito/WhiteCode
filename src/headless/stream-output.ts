@@ -1,3 +1,4 @@
+// Supports: SPEC-MOT-035 (connector-content counts never masquerade as assistant output).
 // Supports: SPEC-OUT-034, gap E-161.
 // Implements: SPEC-MOD-003 (§ 5.3 event types, § 5.4 points 3 and 4, FA-04, EF-02 to EF-06, RG-01, RG-02, CA-01, CA-02, CA-06, edge cases: large events, control characters)
 // Supports: decision D-03 (`jsonl` in increment 2), gaps E-016 (`toolId` carries the tool name), E-050 (input messages)
@@ -99,6 +100,7 @@ export class EventStream {
 
   /** Engine events mapped to the event types of § 5.3; others are not written. */
   engine(e: EngineEvent): void {
+    if (e.type === "connector_content") return this.emit("progress", { label: "Contenu destiné à un connecteur", blocks: e.blocks.length, incidents: e.incidents });
     if (e.type === "addressed_message") return this.emit("addressed_message", { content: e.message, status: e.status, attachments: e.attachments });
     if (e.type === "notification") return this.emit("notification", { message: e.message });
     if (buildFlag("stream_compact_profile") && this.options.profile === "compact") {

@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import type { CredentialVault } from "../platform/credential-vault";
 import { startChild } from "../platform/process";
 import type { Child } from "../platform/process";
+import type { SandboxLaunch } from "../platform/sandbox-kernel";
 import { productProcess } from "../platform/product-process";
 import { findExecutable } from "../platform/system";
 import { readPrivateText } from "../shared/private-text";
@@ -132,13 +133,17 @@ async function processResult(
     input?: string;
     write?: (text: string) => void;
     child?: (child: Child) => void;
+    launch?: (file: string, args: readonly string[], cwd: string, environment: Record<string, string>) => SandboxLaunch;
   },
 ): Promise<{ code: number; output: string }> {
   o.signal.throwIfAborted();
   let output = "";
-  const child = startChild(file, args, {
+  const launch = o.launch?.(file, args, o.cwd, o.env);
+  let child: Child;
+  try { child = startChild(launch?.file ?? file, launch?.args ?? args, {
     cwd: o.cwd,
-    env: o.env,
+    env: launch?.environment ?? o.env,
+    extraFds: launch?.fds,
     input: o.input,
     onData: (chunk) => {
       const text = chunk.toString();
@@ -146,7 +151,7 @@ async function processResult(
       if (output.length < 128000)
         output += text.slice(0, 128000 - output.length);
     },
-  });
+  }); launch?.spawned(); } catch (error) { launch?.close(); throw error; }
   o.child?.(child);
   const stop = () => {
     void child.killTree(500);
@@ -160,6 +165,7 @@ async function processResult(
   } finally {
     o.signal.removeEventListener("abort", stop);
     if (o.signal.aborted) await child.killTree(500);
+    launch?.close();
   }
 }
 export function nativeExecutorPorts(o: {
@@ -168,6 +174,7 @@ export function nativeExecutorPorts(o: {
   prefix: string;
   redact: (text: string) => string;
   onPrepareChild?: (child: Child) => void;
+  prepareLaunch?: (file: string, args: readonly string[], cwd: string, environment: Record<string, string>) => SandboxLaunch;
 }) {
   const git = findExecutable("git");
   if (!git) throw Error("Git est requis pour préparer les travaux.");
@@ -191,6 +198,7 @@ export function nativeExecutorPorts(o: {
             },
             signal,
             child: o.onPrepareChild,
+            launch: o.prepareLaunch,
           },
         );
         if (result.code !== 0) throw Error("Préparation du dépôt impossible.");

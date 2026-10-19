@@ -11,6 +11,7 @@ import type { InternalCommand } from "./catalog";
 import { buildFlag, buildProfile } from "../extension-points/build-flags" with { type: "macro" };
 
 export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
+  ...(["internal", "development", "test"].includes(buildProfile()) ? [{name:"fix-merge-request",description:"Propose une correction des vérifications en échec, vérifie localement et demande séparément l’accord avant de pousser.",kind:"action",widening:false,usage:"[numéro]"}] as readonly InternalCommand[] : []),
   ...(buildFlag("ui_year_review")?[{name:"year-review",description:"Regarde ou génère la rétrospective annuelle locale avec l’extension officielle.",kind:"action",widening:false,interactiveOnly:true,usage:"[watch|generate|modify|fix|recreate]"}]as readonly InternalCommand[]:[]),
   { name: "explain-context", description: "Estime les influences du contexte sur une réponse, sans modifier la conversation.", kind: "display", widening: false, usage: "[numéro depuis la plus récente]" },
   {name:"agents-platform",description:"Liste les agents hébergés, publie une définition locale après accord ou consulte ses exécutions.",kind:"action",widening:false,usage:"[list | publish <agent local> | runs [identifiant]]"},
@@ -24,6 +25,7 @@ export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
   { name: "praise", description: "Signale un échange réussi après relecture ; sa transcription reste facultative.", kind: "action", widening: false, interactiveOnly: true, usage: "[commentaire]" },
   { name: "merge-request-subscribe", description: "Liste, crée ou résilie les abonnements aux événements de forge.", kind: "action", widening: false, usage: "[numéro|off]" },
   ...(buildFlag("remote_sessions") ? [
+    ...(buildProfile()==="internal"?[{name:"handoff",description:"Transfère la session et son dépôt vers le service distant après accord.",kind:"action",widening:false}] as readonly InternalCommand[]:[]),
     { name: "deep-plan", description: "Confie un plan au service distant après accord et importe la version approuvée.", kind: "action", widening: false, usage: "<consigne>" },
     { name: "deep-review", description: "Présente l’estimation et demande l’accord avant une revue distante.", kind: "action", widening: false, usage: "[numéro]" },
     { name: "cloud-environment", description: "Choisit un environnement distant accessible et mémorise ce choix.", kind: "action", widening: false },
@@ -32,6 +34,7 @@ export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
     { name: "share", description: "Partage une copie relue de la conversation après confirmation.", kind: "action", widening: false },
   ] as readonly InternalCommand[] : []),
   ...(buildFlag("remote_control") ? [{ name: "remote-access", description: "Rattache la session locale au service distant ; off déconnecte.", kind: "action", widening: true, usage: "[nom|off]" }] as readonly InternalCommand[] : []),
+  ...(buildFlag("remote_control") && buildFlag("mode_resident_service") ? [{ name: "remote-access-server", description: "Démarre, arrête ou consulte l’exposition distante du service résident.", kind: "action", widening: true, interactiveOnly: true, usage: "[start|stop|status]" }] as readonly InternalCommand[] : []),
   ...(buildFlag("remote_control") && buildProfile() === "internal" ? [{ name: "remote-access-reset", description: "Injecte une défaillance locale dans le relais distant pour vérifier sa reprise.", kind: "action", widening: false, usage: "<disconnect|expired-token|service-error>" }] as readonly InternalCommand[] : []),
   { name: "usage-report", description: "Analyse les sessions récentes et leurs frictions ; cache local des facettes et synthèse.", kind: "action", widening: false },
   { name: "cache-reset", description: "Rompt volontairement le cache au prochain appel au modèle.", kind: "action", widening: false },
@@ -54,9 +57,10 @@ export const INTERNAL_COMMANDS: readonly InternalCommand[] = [
   ...(buildFlag("automation_scripts") ? [{ name: "workflows", description: "Liste les flux par source et paramètres ; lance après approbation du plan.", kind: "action", widening: false, usage: "[run <nom> [objet JSON]]" }] as readonly InternalCommand[] : []),
   { name: "resident-agent", description: "Installe l’assistant hors des projets et s’y rattache.", kind: "action", widening: true, interactiveOnly:true },
   ...(buildFlag("voice_input")?[{name:"dictation",description:"Active ou désactive la dictée après consentement à la capture et à la transcription.",kind:"action",widening:false,interactiveOnly:true}] as readonly InternalCommand[]:[]),
-  { name: "browser", description: "Affiche les instructions d’installation de l’extension navigateur configurée.", kind: "display", widening: false },
+  { name: "browser", description: "Connecte l’extension navigateur et affiche son état ; « off » coupe le pont.", kind: "display", widening: false },
   { name: "browser-panel", description: "Ouvre le panneau du navigateur isolé ; « takeover » reprend ou rend la main.", kind: "display", widening: false },
   { name: "install-chat-app", description: "Ouvre les instructions d’installation de l’application de messagerie configurée.", kind: "action", widening: false, interactiveOnly: true },
+  { name: "install-forge-app", description: "Installe l’application de forge avec un secret masqué et une demande de fusion à relire.", kind: "action", widening: false, interactiveOnly: true },
   { name: "prune-history", description: "Demande l’élagage des anciens résultats d’outils au prochain tour.", kind: "action", widening: false },
   { name: "getting-started", description: "Reprend les choix de thème et de modèle en conservant les paramètres existants.", kind: "action", widening: false, interactiveOnly: true },
   { name: "send-feedback", description: "Prépare un retour à relire avant son envoi, sans transcription.", kind: "action", widening: false, interactiveOnly: true },

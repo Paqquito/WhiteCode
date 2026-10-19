@@ -1,8 +1,10 @@
+// Supports: SPEC-MOT-035 (reopened signed connector content remains accessible in the transcript).
 // Implements: SPEC-MOD-001 (FA-06 history shown again on reopening, § 11 `ui.replayOnResume`, RG-02)
 // The history of a reopened session, shown again before the input area: condensed (messages of the user and answers of
 // the model, a few lines each) or full (calls of tools and their results as well).
 
 import type { TranscriptRecord } from "../session/transcript";
+import { connectorTextBlocks } from "../providers/connector-text";
 import { principalElement, type InteractiveApp } from "./app";
 import { interruptionView, modelView, toolCallView, toolResultView, userView } from "./views";
 
@@ -31,6 +33,8 @@ export function replayHistory(app: InteractiveApp, chain: readonly TranscriptRec
         shown++;
       }
     } else if (r.type === "assistant") {
+      const blocks = connectorTextBlocks(d["content"]);
+      if (blocks.length) app.onEngineEvent({ type: "connector_content", blocks, incidents: 0 });
       const text = typeof d["text"] === "string" ? d["text"].trim() : "";
       if (text) {
         app.commit(modelView(condense(text, full), view));

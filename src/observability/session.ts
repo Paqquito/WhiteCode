@@ -66,6 +66,7 @@ export interface ObserverOptions {
   readonly configDir: string; readonly platform: string; readonly persist: boolean;
   readonly sessionId: () => string; readonly entrypoint: "interactive" | "non-interactive" | "control";
   readonly productEnabled: () => boolean; readonly otelEnabled: () => boolean;
+  readonly traceEnabled?: () => boolean;
   readonly errorEnabled: () => boolean; readonly includePrompts: boolean; readonly includeSessionId: boolean;
   readonly environment: (name: string) => string | undefined;
   readonly productUrl?: string; readonly errorUrl?: string;
@@ -78,7 +79,7 @@ interface Span {
   startTimeUnixNano: string; endTimeUnixNano?: string; attributes: OtlpAttribute[];
   status: { code: number; message?: string };
 }
-interface Interaction { root: Span; spans: Span[]; calls: Map<string, { span?: Span; name: string; start: number }> }
+interface Interaction { root?: Span; spans: Span[]; calls: Map<string, { span?: Span; name: string; start: number }> }
 interface ProductEvent { name: EventName; attributes: Attributes }
 
 export class SessionObserver {
@@ -99,8 +100,10 @@ export class SessionObserver {
 
   constructor(options: ObserverOptions) { this.#o = options; }
   get traceId(): string | undefined { return this.#manualTrace; }
-  beginTrace(): string { this.#traceStopped = false; return this.#manualTrace ??= randomBytes(16).toString("hex"); }
+  beginTrace(): string { if (buildFlag("telemetry_trace_export")) { this.#traceStopped = false; return this.#manualTrace ??= randomBytes(16).toString("hex"); } return ""; }
   stopTrace(): void { this.#traceStopped = true; this.#manualTrace = undefined; }
+  #otelEnabled(): boolean { return buildFlag("telemetry_otel_export") && this.#o.otelEnabled(); }
+  #traceEnabled(): boolean { return buildFlag("telemetry_trace_export") && (this.#o.traceEnabled?.() ?? this.#o.otelEnabled()); }
   start(): void {
     this.#diagnostic("session_started");
     if (this.#o.persist && this.#o.productEnabled() && exportUrl(this.#o.productUrl)) this.#loadPending();
@@ -122,31 +125,40 @@ export class SessionObserver {
     if (this.#products.length < 256) this.#products.push({ name, attributes: { ...productAttributes(data), ...this.#o.commonProductAttributes, ...(this.#o.experimentBaseline ? { "experiment.baseline": true } : {}) } });
   }
   #log(name: EventName, data: Attributes): void {
-    if (!this.#o.otelEnabled() || this.#logs.length >= 512) return;
+    if (buildFlag("telemetry_otel_export")) {
+    if (!this.#otelEnabled() || this.#logs.length >= 512) return;
     const ctx = this.#context.getStore();
-    this.#logs.push({ timeUnixNano: nano(), severityNumber: 9, severityText: "INFO", body: { stringValue: name }, attributes: attributes(data), ...(ctx ? { traceId: ctx.root.traceId, spanId: ctx.root.spanId } : {}) });
+    this.#logs.push({ timeUnixNano: nano(), severityNumber: 9, severityText: "INFO", body: { stringValue: name }, attributes: attributes(data), ...(buildFlag("telemetry_trace_export") && ctx?.root ? { traceId: ctx.root.traceId, spanId: ctx.root.spanId } : {}) });
+    }
   }
   #count(name: string, data: Attributes, n: number): void {
-    if (!this.#o.otelEnabled() || !Number.isFinite(n) || n < 0) return;
+    if (buildFlag("telemetry_otel_export")) {
+    if (!this.#otelEnabled() || !Number.isFinite(n) || n < 0) return;
     const key = name + JSON.stringify(data), previous = this.#metrics.get(key);
     if (!previous && this.#metrics.size >= 128) return;
     this.#metrics.set(key, { name, attributes: data, value: (previous?.value ?? 0) + n });
+    }
   }
   #duration(name: string, ms: number): void {
-    if (!this.#o.otelEnabled()) return;
+    if (buildFlag("telemetry_otel_export")) {
+    if (!this.#otelEnabled()) return;
     const previous = this.#durations.get(name) ?? { name, values: [] };
     if (previous.values.length < 10000) previous.values.push(Math.max(0, ms));
     this.#durations.set(name, previous);
+    }
   }
   #span(name: string, data: Attributes = {}): Span | undefined {
+    if (buildFlag("telemetry_trace_export")) {
     const ctx = this.#context.getStore();
-    if (!ctx || this.#traceStopped || !this.#o.otelEnabled() || ctx.spans.length >= 1000) return undefined;
+    if (!ctx?.root || this.#traceStopped || !this.#traceEnabled() || ctx.spans.length >= 1000) return undefined;
     const span: Span = { traceId: ctx.root.traceId, spanId: randomBytes(8).toString("hex"), parentSpanId: ctx.root.spanId, name, kind: 1, startTimeUnixNano: nano(), attributes: attributes(data), status: { code: 0 } };
     ctx.spans.push(span); return span;
+    }
+    return undefined;
   }
   async interaction<T>(parts: string | readonly ContentPart[], signal: AbortSignal, run: () => Promise<T>): Promise<T> {
-    const root: Span = { traceId: this.#manualTrace ?? randomBytes(16).toString("hex"), spanId: randomBytes(8).toString("hex"), name: "interaction", kind: 1, startTimeUnixNano: nano(), attributes: [], status: { code: 0 } };
-    const ctx: Interaction = { root, spans: [root], calls: new Map() }, start = Date.now();
+    const root: Span | undefined = buildFlag("telemetry_trace_export") && this.#traceEnabled() ? { traceId: this.#manualTrace ?? randomBytes(16).toString("hex"), spanId: randomBytes(8).toString("hex"), name: "interaction", kind: 1, startTimeUnixNano: nano(), attributes: [], status: { code: 0 } } : undefined;
+    const ctx: Interaction = { root, spans: root ? [root] : [], calls: new Map() }, start = Date.now();
     return this.#context.run(ctx, async () => {
       const prompt = typeof parts === "string" ? parts : parts.filter(p => p.type === "text").map(p => p.text).join("\n");
       this.#record("message_submitted", { length: prompt.length });
@@ -159,7 +171,7 @@ export class SessionObserver {
         const cancelled = signal.aborted;
         for (const span of ctx.spans) { span.endTimeUnixNano ??= nano(); if (cancelled) span.status = { code: 2, message: "cancelled" }; else if (failed) span.status = { code: 2, message: "error" }; }
         this.#duration("interaction.duration", Date.now() - start);
-        if (!this.#traceStopped && this.#o.otelEnabled() && this.#spans.length + ctx.spans.length <= 2000) this.#spans.push(...ctx.spans);
+        if (buildFlag("telemetry_trace_export") && !this.#traceStopped && this.#traceEnabled() && this.#spans.length + ctx.spans.length <= 2000) this.#spans.push(...ctx.spans);
       }
     });
   }
@@ -247,6 +259,7 @@ export class SessionObserver {
     return { attributes: attributes({ "service.name": this.#o.slug, "service.version": this.#o.version, "entrypoint": this.#o.entrypoint, ...this.#o.commonTraceAttributes, ...(this.#o.experimentBaseline ? { "experiment.baseline": true } : {}), ...(this.#o.includeSessionId ? { "session.id": this.#sessionId() } : {}) }) };
   }
   #metricData(): Array<Record<string, unknown>> {
+    if (buildFlag("telemetry_otel_export")) {
     const groups = new Map<string, Array<Record<string, unknown>>>(), time = nano();
     for (const m of this.#metrics.values()) { const list = groups.get(m.name) ?? []; list.push({ attributes: attributes(m.attributes), startTimeUnixNano: this.#started, timeUnixNano: time, ...(Number.isSafeInteger(m.value) ? { asInt: String(m.value) } : { asDouble: m.value }) }); groups.set(m.name, list); }
     const result: Array<Record<string, unknown>> = [...groups].map(([name, dataPoints]) => ({ name: this.#o.slug + "." + name, sum: { aggregationTemporality: 2, isMonotonic: true, dataPoints } }));
@@ -257,6 +270,8 @@ export class SessionObserver {
       result.push({ name: this.#o.slug + "." + d.name, unit: "ms", histogram: { aggregationTemporality: 2, dataPoints: [{ startTimeUnixNano: this.#started, timeUnixNano: time, count: String(d.values.length), sum: d.values.reduce((a, b) => a + b, 0), explicitBounds: bounds, bucketCounts: buckets.map(String) }] } });
     }
     return result;
+    }
+    return [];
   }
   async #post(url: string, body: string, type: string, enabled: () => boolean, headers?: Record<string, string>, scope?: AbortSignal): Promise<boolean> {
     if (!enabled() || this.#abort.signal.aborted) return false;
@@ -270,7 +285,9 @@ export class SessionObserver {
     finally { signal.removeEventListener("abort", onAbort); }
   }
   async #export(signal: "metrics" | "logs" | "traces", body: unknown): Promise<boolean> {
-    if (!this.#o.otelEnabled()) return true;
+    if (buildFlag("telemetry_otel_export") || buildFlag("telemetry_trace_export")) {
+    const enabled = () => signal === "traces" ? this.#traceEnabled() : this.#otelEnabled();
+    if (!enabled()) return true;
     const env = this.#o.environment, upper = signal.toUpperCase(), exporter = env(`OTEL_${upper}_EXPORTER`) ?? (signal === "traces" ? "none" : "otlp");
     if (exporter === "none") return true;
     if (exporter === "console") { this.#o.console(JSON.stringify({ signal, data: body })); return true; }
@@ -282,7 +299,9 @@ export class SessionObserver {
     if (!url) return false;
     const headers: Record<string, string> = {};
     try { for (const pair of (env(`OTEL_EXPORTER_OTLP_${upper}_HEADERS`) ?? env("OTEL_EXPORTER_OTLP_HEADERS") ?? "").split(",").filter(Boolean)) { const at = pair.indexOf("="), key = pair.slice(0, at).trim(), value = decodeURIComponent(pair.slice(at + 1).trim()); if (at <= 0 || !/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(key) || /[\r\n\u0000]/.test(value)) return false; headers[key] = value; } } catch { return false; }
-    return this.#post(url, JSON.stringify(body), "application/json", this.#o.otelEnabled, headers);
+    return this.#post(url, JSON.stringify(body), "application/json", enabled, headers);
+    }
+    return true;
   }
   async flush(): Promise<void> {
     if (this.#flushing) return this.#flushing;
@@ -295,16 +314,20 @@ export class SessionObserver {
       if (!await this.#post(this.#o.productUrl!, JSON.stringify({ events }), "application/json", this.#o.productEnabled, undefined, this.#productAbort.signal)) this.#products = this.#o.productEnabled() ? [...pending, ...this.#products].slice(0, 256) : [];
       else { for (const file of this.#previousFiles) if (ordinaryFile(file, 65536)) { try { unlinkSync(file); } catch {} } this.#previousFiles = []; }
     }
-    if (!this.#o.otelEnabled()) { this.#logs = []; this.#spans = []; return; }
+    if (buildFlag("telemetry_otel_export") || buildFlag("telemetry_trace_export")) {
+    if (!this.#otelEnabled()) this.#logs = [];
+    if (!this.#traceEnabled()) this.#spans = [];
+    if (!this.#otelEnabled() && !this.#traceEnabled()) return;
     const resource = this.#resource(), scope = { name: this.#o.slug, version: this.#o.version }, logs = this.#logs.splice(0), spans = this.#spans.splice(0);
     const results = await Promise.allSettled([
-      this.#export("metrics", { resourceMetrics: [{ resource, scopeMetrics: [{ scope, metrics: this.#metricData() }] }] }),
-      logs.length ? this.#export("logs", { resourceLogs: [{ resource, scopeLogs: [{ scope, logRecords: logs }] }] }) : Promise.resolve(true),
-      spans.length ? this.#export("traces", { resourceSpans: [{ resource, scopeSpans: [{ scope, spans }] }] }) : Promise.resolve(true),
+      buildFlag("telemetry_otel_export") ? this.#export("metrics", { resourceMetrics: [{ resource, scopeMetrics: [{ scope, metrics: this.#metricData() }] }] }) : Promise.resolve(true),
+      buildFlag("telemetry_otel_export") && logs.length ? this.#export("logs", { resourceLogs: [{ resource, scopeLogs: [{ scope, logRecords: logs }] }] }) : Promise.resolve(true),
+      buildFlag("telemetry_trace_export") && spans.length ? this.#export("traces", { resourceSpans: [{ resource, scopeSpans: [{ scope, spans }] }] }) : Promise.resolve(true),
     ]);
     for (const result of results) if (result.status === "rejected" || !result.value) this.#o.warn("Export de télémétrie indisponible ; données bornées conservées jusqu'à l'arrêt.");
     if (results[1]?.status === "fulfilled" && !results[1].value) this.#logs = [...logs, ...this.#logs].slice(0, 512);
     if (results[2]?.status === "fulfilled" && !results[2].value) this.#spans = [...spans, ...this.#spans].slice(0, 2000);
+    }
   }
   #loadPending(): void {
     const dir = join(this.#o.configDir, "telemetry");

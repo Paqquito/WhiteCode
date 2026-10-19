@@ -9,6 +9,22 @@ function fixture(run: ConstructorParameters<typeof Teams>[0]["run"] = async () =
   const teams = new Teams({ folder, enabled: () => true, maxMembers: () => 8, maxBytes: () => 65536, shutdownMs: () => 30, run, notify: notice => notices.push(notice), redact: text => text });
   return { teams, folder, notices };
 }
+test("TECH — detaching a leader preserves its live team and reconnects the pending turn before queued mail", async () => {
+  const folder = join(workspace().root, "teams"), notices: TeamNotice[] = []; let stops = 0;
+  const options = { folder, enabled: () => true, maxMembers: () => 8, maxBytes: () => 65536, shutdownMs: () => 30, redact: (text: string) => text, notify: (notice: TeamNotice) => notices.push(notice), detached: () => true, stop: async () => { stops++; } };
+  const first = new Teams({ ...options, run: async (_input, signal) => { await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true })); return { id: "retained", text: "Interrupted", isError: true }; } });
+  first.form("review"); first.spawn("reader", "ORIGINAL_TASK"); first.tasks!.create("Shared task", { owner: "reader" }); first.send("lead", "reader", "QUEUED_MAIL_51"); const saved = first.snapshot!; await first.close(); expect(stops).toBe(0); expect(notices).toHaveLength(0);
+  const calls: Array<{ attach?: boolean; prompt: string }> = [], next = new Teams({ ...options, detached: () => false, run: async input => { calls.push(input); return { id: "retained", text: "Recovered report", isError: false }; } });
+  try { next.restore(saved); await until(() => calls.length === 2 && next.members[0]?.state === "idle"); expect(calls[0]).toMatchObject({ attach: true, prompt: "" }); expect(calls[1]?.attach).toBe(false); expect(calls[1]?.prompt).toContain("QUEUED_MAIL_51"); expect(calls[1]?.prompt).not.toContain("ORIGINAL_TASK"); expect(next.tasks!.tasks[0]?.owner).toBe("reader"); }
+  finally { await next.close(); }
+});
+
+test("TECH — malformed saved members are all rejected before any teammate is started", async () => {
+  const { teams } = fixture(); teams.form("review"); const saved = teams.snapshot!, folder = teams.options.folder; let starts = 0;
+  const resumed = new Teams({ ...teams.options, folder, run: async () => { starts++; return { id: "unexpected", text: "unexpected", isError: false }; } });
+  try { expect(() => resumed.restore({ ...saved, members: [{ name: "reader", state: "active" }, { name: "reader", state: "active" }] })).toThrow("Invalid saved teammate"); expect(starts).toBe(0); expect(resumed.active).toBeUndefined(); }
+  finally { await teams.close(); await resumed.close(); }
+});
 test("TECH — a failed teammate releases its unfinished shared tasks", async () => {
   const { teams } = fixture(async () => ({ id: "failed-reader", text: "Failure", isError: true })); teams.form("review");
   try { const task = teams.tasks!.create("Work", { owner: "reader" }); teams.tasks!.update(task.id, { status: "in_progress" }); teams.spawn("reader", "Start"); await until(() => teams.members[0]?.state === "stopped"); expect(teams.tasks!.get(task.id)).toMatchObject({ owner: "", status: "pending" }); expect(teams.tasks!.update(task.id, { owner: "replacement" }).ok).toBe(true); }

@@ -21,6 +21,8 @@ import { boundText } from "../tools/output-bounds";
 export interface ExecutorDeps {
   /** Authenticated remote reconnection gate, before previews and immediately before an effect. */
   readonly waitConnected?: (signal: AbortSignal) => Promise<void>;
+  /** Supports: SPEC-MOT-029. A speculative turn stops before consulting any approval authority. */
+  readonly beforePermissionResolution?: (signal: AbortSignal) => Promise<void>;
   readonly prepareDescriptiveRules?: (query: PermissionQuery, context: PermissionContext, signal: AbortSignal) => Promise<void>;
   /** SPEC-OUT-025: actual executions, with their reviewed difference, after the current plan approval. */
   readonly recordExecution?: (call: ToolCall, outcome: ToolOutcome, difference?: string, change?: FileChange) => void;
@@ -305,6 +307,7 @@ export class ResponseExecution {
           this.#deps.emit({ type: "permission", callId: call.callId, decision: "allow", reason: "approved by control_host (parameters replaced)", step: decision.step });
           break;
         }
+        if (decision.kind === "ask") await this.#deps.beforePermissionResolution?.(signal);
         const resolved = await this.#resolve(call, tool, decision, pctx.mode, preview && "diff" in preview ? preview : undefined, signal, subject, query);
         if (!resolved.allowed) return finish(preview && "humanOnly" in preview && preview.humanOnly ? textOutcome("Passage not found: the anchored edit was not confirmed by a human.", true, "invalid_input") : await this.#refuse(call, resolved.reason, decision.step), false);
         if (!resolved.input) break;

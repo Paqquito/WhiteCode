@@ -51,6 +51,7 @@ import { openAuthorizationUrl } from "../platform/browser";
 import { detectPowerShell } from "../tools/shell-runtime";
 import { SettingsSync } from "../config/settings-sync";
 import { runExecutorAdmin } from "../remote/executor-admin";
+import { remoteEnvironmentOperation, remoteEnvironmentText } from "../remote/environment-admin";
 
 // Supports: SPEC-MOD-011 (CA-10, CA-11: explicit refusal before any session or service), gap E-140.
 export interface AdminDependencies {
@@ -134,6 +135,13 @@ export async function runSubcommand(argv: readonly string[], deps: AdminDependen
     }
   }
   const json = parsed.options.has("json");
+  if (family.name === "remote-access") {
+    try {
+      if (parsed.args.length) throw Error("Usage : remote-access start [--name nom] [--concurrent-sessions n].");
+      const state = await remoteEnvironmentOperation(deps, "start", { ...(typeof parsed.options.get("name") === "string" ? { name: parsed.options.get("name") as string } : {}), ...(parsed.options.has("concurrent-sessions") ? { capacity: Number(parsed.options.get("concurrent-sessions")) } : {}) });
+      out(json ? JSON.stringify(state) : remoteEnvironmentText(state)); return 0;
+    } catch (error) { err((error as Error).message); return 2; }
+  }
   if (family.name === "session" && operation.name === "read") {
     if (parsed.args.length !== 1) { err("Usage : session read <référence>. Aucun chemin de fichier n'est accepté."); return ExitCode.UsageOrConfiguration; }
     try {

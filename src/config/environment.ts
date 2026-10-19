@@ -95,7 +95,9 @@ export interface EnvironmentIssue {
   readonly message: string;
 }
 
+// Supports: SPEC-MCP-007 (managed identity secrets withheld from child environments).
 export class EnvironmentView {
+  readonly #protectedVariables = new Set<string>();
   readonly #raw: Readonly<Record<string, string>>;
   readonly #prefix: string;
   readonly issues: EnvironmentIssue[] = [];
@@ -116,6 +118,8 @@ export class EnvironmentView {
   get prefix(): string {
     return this.#prefix;
   }
+  /** Managed authentication secrets are available internally, never inherited by tools or connector processes. */
+  protectVariables(names: readonly string[]): void { for (const name of names) this.#protectedVariables.add(name); }
 
   /** Raw value of an own variable (name without prefix). */
   own(name: string): string | undefined {
@@ -194,6 +198,7 @@ export class EnvironmentView {
       out[k] = v;
     }
     for (const [k, v] of Object.entries(extra)) out[k] = v;
+    for (const name of this.#protectedVariables) delete out[name];
     // SPEC-MOD-008 EF-05: the depth of `run_agent` follows the processes, so that a chain of connectors stays bounded.
     // SPEC-PER-022 § 5.3 step 4: the extra authorities reach the children by the usual variable.
     const ca = this.#raw[`${this.#prefix}EXTRA_CA_CERTS`];

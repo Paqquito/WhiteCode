@@ -1,4 +1,5 @@
 // Implements: SPEC-SES-017 (CA-01/02, immutable content references and transparent reading).
+// Supports: SPEC-INT-015 (application screenshots never enter persistent content storage).
 // Supports: SPEC-IHM-010, SPEC-MOT-006, SPEC-SES-016; gap E-162.
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, unlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -75,6 +76,7 @@ export class ContentStore {
     if (Array.isArray(value)) { if (value.length > 1024) throw new Error("Too many content parts."); return value.map(part => this.encode(part, depth + 1)); }
     if (!value || typeof value !== "object") return value;
     const row = value as Record<string, unknown>;
+    if (row["type"] === "image" && row["sessionOnly"] === true) return { type: "text", text: "[Application screenshot omitted: it is available only in the active session.]" };
     if (["image", "document"].includes(String(row["type"])) && typeof row["dataBase64"] === "string") {
       const bytes = Buffer.from(row["dataBase64"], "base64"); if (bytes.toString("base64") !== row["dataBase64"]) throw new Error("Invalid image encoding.");
       return { ...row, dataBase64: this.#put(bytes, "base64") };

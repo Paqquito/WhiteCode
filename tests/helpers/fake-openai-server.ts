@@ -13,6 +13,7 @@ export interface FakeChatTurn {
   readonly noUsage?: boolean;
   readonly omitToolIndexes?: boolean;
   readonly cacheEdits?: unknown;
+  readonly connectorTextFragments?: readonly unknown[];
   readonly errorCode?: string;
 }
 
@@ -49,6 +50,7 @@ export function startFakeOpenAI(turns: FakeChatTurn[]): FakeChatServer {
           const chunk = (delta: unknown, finish: string | null = null, extra: Record<string, unknown> = {}) =>
             controller.enqueue(enc.encode(`data: ${JSON.stringify({ id: "chatcmpl-1", object: "chat.completion.chunk", created: 0, model: body["model"], choices: [{ index: 0, delta, finish_reason: finish }], ...extra })}\n\n`));
           chunk({ role: "assistant", content: "" });
+          for (const fragment of turn.connectorTextFragments ?? []) chunk({ connector_text: fragment });
           if (turn.hang) return;
           if (turn.reasoning) chunk({ reasoning_content: turn.reasoning });
           if (turn.text) for (const piece of turn.text.match(/.{1,5}/gs) ?? []) chunk({ content: piece });

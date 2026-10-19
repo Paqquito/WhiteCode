@@ -1,5 +1,7 @@
 // Supports: SPEC-OBS-018; root recording/replay, bounded private references.
-import { expect, test } from "bun:test";
+import { expect } from "bun:test";
+import { profiledTest } from "./helpers/profiled-test";
+const test = profiledTest(import.meta.path), publicTest = profiledTest(import.meta.path, "public");
 import { readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { cli, workspace, loadIdentity } from "./helpers/env";
@@ -46,11 +48,18 @@ test("SPEC-OBS-018/CA-02 — a missing replay reference names its fingerprint an
   expect(r.code).not.toBe(0); expect(r.stderr).toContain("Aucune réponse enregistrée"); expect(r.stderr).toMatch(/[a-f0-9]{64}/); expect(p.requests).toHaveLength(0);
 });
 
-test("TECH — public builds refuse API references and known credentials are removed from recorded responses", async () => {
+publicTest("TECH — public builds refuse API references even when the legacy development port is supplied", async () => {
   const ws = workspace(), prefix = loadIdentity().get("ENV_PREFIX"), directory = join(ws.root, "references"), p = new ScriptedProvider([{ text: "dummy-fixture-secret" }]);
   const env = { [`${prefix}API_RECORDING`]: "record", [`${prefix}API_RECORDING_DIR`]: directory, OPENAI_API_KEY: "dummy-fixture-secret" };
   const denied = await cli(["--non-interactive", "x"], ws, { provider: p, env });
   expect(denied.code).toBe(2); expect(p.requests).toHaveLength(0);
-  const recorded = await cli(["--non-interactive", "x"], ws, { provider: p, env, extra: { allowApiRecording: true } });
+  const bypass = await cli(["--non-interactive", "x"], ws, { provider: p, env, extra: { allowApiRecording: true } });
+  expect(bypass.code).toBe(2); expect(p.requests).toHaveLength(0); expect(existsSync(directory)).toBe(false);
+});
+
+test("TECH — known credentials are removed from responses recorded by an actual included test profile", async () => {
+  const ws = workspace(), prefix = loadIdentity().get("ENV_PREFIX"), directory = join(ws.root, "references"), p = new ScriptedProvider([{ text: "dummy-fixture-secret" }]);
+  const env = { [`${prefix}API_RECORDING`]: "record", [`${prefix}API_RECORDING_DIR`]: directory, OPENAI_API_KEY: "dummy-fixture-secret" };
+  const recorded = await cli(["--non-interactive", "x"], ws, { provider: p, env });
   expect(recorded.code).toBe(0); expect(readFileSync(join(directory, readdirSync(directory)[0]!), "utf8")).not.toContain("dummy-fixture-secret");
 });

@@ -1,6 +1,7 @@
 // Implements: SPEC-MOD-021/022 (standalone local service and detached session launcher).
 import { join } from "node:path";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, lstatSync, realpathSync, readdirSync } from "node:fs";
+import { ResidentRemote } from "./remote";
 import type { AdminDependencies } from "../admin/subcommands";
 import type { ParsedSubcommand } from "../cli/families";
 import { loadConfiguration } from "../config/load";
@@ -49,9 +50,15 @@ function productEnvironment(
   }
   return environment;
 }
+export function residentBootstrap(root: string): string {
+  const path = join(root, "resident-runtime"); mkdirSync(path, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(path); if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync.native(path) !== path || readdirSync(path).length) throw Error("Dossier de lancement résident non sûr.");
+  return path;
+}
 export async function ensureResident(
   deps: AdminDependencies,
   root: string,
+  privateLaunch = false,
 ): Promise<ResidentEndpoint> {
   deps.assertPolicy?.();
   let old = readResidentEndpoint(root);
@@ -67,7 +74,7 @@ export async function ensureResident(
     } catch {}
   const command = productProcess(["service", "start", "--foreground"]);
   await detachProduct(command.file, command.args, {
-    cwd: deps.cwd,
+    cwd: privateLaunch ? residentBootstrap(root) : deps.cwd,
     environment: productEnvironment(deps, root),
   });
   const deadline = Date.now() + 15000;
@@ -99,6 +106,7 @@ async function foregroundResident(
     environment = productEnvironment(deps, root);
   const transcript = (record: WorkerRecord) =>
     join(root, "sessions", projectKey(record.cwd), record.id + ".jsonl");
+  let remote: ResidentRemote;
   const supervisor = new ResidentSupervisor({
     root,
     maxConcurrent: settings.get<number>("sessions.background.maxConcurrent"),
@@ -107,8 +115,11 @@ async function foregroundResident(
       Math.max(1000, settings.get<number>("permissions.detachedWaitTimeout")),
     ),
     assertPolicy: () => deps.assertPolicy?.(),
+    launchCwd: record => record.kind === "remote" ? residentBootstrap(root) : record.cwd,
+    remote: { start: body => remote.start(body), state: () => remote.state(), stop: () => remote.stop(), revoke: body => remote.revoke(body) },
     environment: (record) => ({
       ...environment,
+      ...(record.kind === "remote" ? { [deps.env.prefix + "REMOTE_WORKER"]: "1" } : {}),
       ...(record.kind === "assistant"
         ? { [deps.identity.get("ENV_PREFIX") + "ASSISTANT_WORKER"]: "1" }
         : {}),
@@ -119,6 +130,7 @@ async function foregroundResident(
     program: (record) =>
       productProcess([
         "--non-interactive",
+        ...(record.kind === "remote" ? ["--cwd", record.cwd] : []),
         "--control-channel",
         "--request-format=jsonl",
         "--result-format=jsonl",
@@ -195,6 +207,7 @@ async function foregroundResident(
         );
     },
   });
+  remote = new ResidentRemote(deps, supervisor);
   const stop = () => {
     void supervisor.close();
   };

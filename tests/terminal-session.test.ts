@@ -1,5 +1,7 @@
 // Supports: SPEC-OUT-010/CA-03 (actual tool call refuses before execution without a multiplexer).
-import { expect, test } from "bun:test";
+import { expect } from "bun:test";
+import { profiledTest } from "./helpers/profiled-test";
+const test = profiledTest(import.meta.path);
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { cli, workspace } from "./helpers/env";

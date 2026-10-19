@@ -15,6 +15,8 @@ export interface DirectSession {
   readonly privateFiles: readonly string[];
 }
 export interface DirectServerOptions {
+  /** A trusted SSH worker serves exactly one active session. */
+  readonly maxSessions?: number;
   readonly root: string;
   readonly privateFiles?: readonly string[];
   readonly listen: DirectListen;
@@ -35,6 +37,8 @@ interface OwnedSession { readonly link: FramedLink; readonly abort: AbortControl
 export function startDirectServer(options: DirectServerOptions): { readonly url: string; readonly sessionCount: number; stop(): Promise<void> } {
   const root = realpathSync.native(options.root);
   if (!statSync(root).isDirectory()) throw new Error("Racine servie introuvable.");
+  const maxSessions = options.maxSessions ?? 16;
+  if (!Number.isInteger(maxSessions) || maxSessions < 1 || maxSessions > 16) throw new Error("Limite de sessions directes invalide.");
   const sessions = new Map<string, OwnedSession>(), peers = new Map<WsPeer, OwnedSession>();
   let stopping = false;
   const server = listenWebSocket({
@@ -44,7 +48,7 @@ export function startDirectServer(options: DirectServerOptions): { readonly url:
       if (stopping || options.refusal() || !bearerMatches(opening.headers, options.token)) return false;
       if (options.listen.kind !== "unix" && !originAllowed(opening.remoteAddress, opening.headers.get("origin"), options.allowedOrigins)) return false;
       const id = opening.headers.get("x-direct-session");
-      return id ? /^[0-9a-f-]{36}$/.test(id) && sessions.has(id) : sessions.size < 16;
+      return id ? /^[0-9a-f-]{36}$/.test(id) && sessions.has(id) : sessions.size < maxSessions;
     },
     onOpen: (peer, opening) => {
       if (stopping || options.refusal()) return peer.close(1001);
@@ -54,7 +58,7 @@ export function startDirectServer(options: DirectServerOptions): { readonly url:
         if (!owned) return peer.close(4409);
         peers.set(peer, owned); owned.link.open(peer); return;
       }
-      if (sessions.size >= 16) return peer.close(4429);
+      if (sessions.size >= maxSessions) return peer.close(4429);
       const id = randomUUID(), abort = new AbortController();
       const link = new FramedLink({ maxFrameBytes: options.maxFrameBytes, maxBuffered: 10000, maxBufferedBytes: 16 * 1024 * 1024, maxInboundBytes: 4 * 1024 * 1024, maxPending: 4, keepAliveMs: options.keepAliveMs, resumeWindowMs: options.resumeWindowMs, notice: options.notice, trace: () => {} });
       let partial = "";

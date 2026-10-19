@@ -4,8 +4,21 @@ export const BUILD_PROFILES = ["public", "internal", "development", "test"] as c
 export type BuildProfile = (typeof BUILD_PROFILES)[number];
 const option = (value: boolean, description: string, specs: string[], absentMarkers: string[] = []) => ({ description, specs, implemented: value, values: { public: value, internal: value, development: value, test: value }, absentMarkers });
 export const BUILD_OPTIONS = {
+  telemetry_otel_export: option(true, "Export OpenTelemetry explicitement activé par l’utilisateur ou l’administrateur.", ["SPEC-OBS-002"], ["resourceMetrics", "resourceLogs"]),
+  telemetry_trace_export: option(true, "Export explicite des traces de session OpenTelemetry.", ["SPEC-OBS-004"], ["resourceSpans"]),
+  diagnostics_profiling: option(true, "Profilage explicite du démarrage, des requêtes et du mode non interactif.", ["SPEC-OBS-009"], ["performance-profile.json", "Profil de performance invalide"]),
+  diagnostics_debug_log: option(true, "Journal détaillé sur activation explicite.", ["SPEC-OBS-012"], ["Unsafe debug file.", "Journal de débogage inaccessible : repli sur la sortie d'erreur."]),
+  diagnostics_terminal_recording: option(true, "Enregistrement terminal vers une destination explicitement choisie.", ["SPEC-OBS-016"], ["Unsafe recording directory", "Enregistrement terminal fermé :"]),
+  diagnostics_api_replay: { ...option(true, "Enregistrement et rejeu de références d’API de développement.", ["SPEC-OBS-018"], ["API invalide."]), values: { public: false, internal: true, development: true, test: true } },
+  planning_progress_check: { ...option(true, "Vérification en lecture seule d’un plan approuvé.", ["SPEC-OUT-025"], ["Compare the actual approved plan with execution evidence"]), values: { public: false, internal: true, development: true, test: true } },
+  tools_terminal_session: { ...option(true, "Terminaux persistants pilotés soumis aux permissions ordinaires.", ["SPEC-OUT-010"], ["Persistent terminals unavailable: no supported terminal multiplexer is installed."]), values: { public: false, internal: true, development: true, test: true } },
+  tools_code_runtime: { ...option(true, "Environnement de script avec permission pour chaque appel d’outil.", ["SPEC-OUT-011"], ["Execute a JSONC instruction array in a persistent isolated environment", "A script is already running."]), values: { public: false, internal: true, development: true, test: true } },
+  connector_text_summary: option(true, "Blocs signés de connecteur sur contrat compatible v1 explicitement déclaré.", ["SPEC-MOT-035"]),
+  mode_resident_service: option(true, "Service résident local avec exposition distante authentifiée facultative.", ["SPEC-MOD-021", "SPEC-CMD-104"]),
   compaction_cache_edit: option(true, "Édition ciblée sur un service compatible explicitement déclaré.", ["SPEC-MOT-015"], ["Older tool results may be removed from the service cache"]),
+  session_via_ssh: option(true, "Session Linux par SSH avec authentification sur le poste local.", ["SPEC-MOD-020"]),
   remote_direct_connect: option(true, "Connexion directe authentifiée avec interface locale et racine de fichiers imposée par le serveur.", ["SPEC-MOD-018", "SPEC-MOD-019"]),
+  computer_control: option(true, "Pilotage Windows natif autorisé par application, captures éphémères et arrêt global.", ["SPEC-INT-015"], ["Ctrl+Alt+Pause immediately stops control"]),
   mode_orchestrator: option(true, "Coordination locale avec exécutants autonomes et rôle conservé à la reprise.", ["SPEC-MOD-028"]),
   ui_embedded_terminal: option(true, "Panneau tmux utilisateur avec capture bornée et masquée.", ["SPEC-IHM-041", "SPEC-OUT-015"], ["Read the human-operated terminal panel of this conversation"]),
   ui_year_review:{...option(true,"Rétrospective locale à activation explicite et extension officielle.",["SPEC-IHM-033","SPEC-CMD-078"],["Local annual statistics (no code or conversation content):"]),values:{public:false,internal:true,development:true,test:true}},
@@ -23,7 +36,6 @@ export const BUILD_OPTIONS = {
   ide_bridge: option(true,"Liaison locale authentifiée à un IDE compatible.",["SPEC-INT-001","SPEC-MCP-023"]),
   connector_websocket: option(true,"Transport WebSocket avec battement de vie.",["SPEC-MCP-004"]),
   inbound_channels: option(true,"Canaux entrants déclarés et autorisés.",["SPEC-MCP-013"]),
-  script_mode: option(true,"Langage JSONC borné avec permissions par appel.",["SPEC-OUT-011"]),
   remote_sessions: option(true,"Client de création et de suivi des sessions distantes.",["SPEC-MOD-014"]),
   extension_maintenance: option(true,"Maintenance asynchrone, versions conservées et trousseau des options.",["SPEC-EXT-006","SPEC-EXT-015"]),
   skill_filler_text: option(true,"Remplissage local du contexte sur demande.",["SPEC-EXT-025"]),
@@ -34,7 +46,9 @@ export const BUILD_OPTIONS = {
   organization_metrics: option(true, "Agrégats d’organisation soumis aux refus locaux et distants.", ["SPEC-OBS-003", "SPEC-API-025"]),
   team_memory: option(true, "Mémoire d’équipe liée au dépôt et à l’organisation.", ["SPEC-MOT-041"]),
   agent_memory: option(true, "Mémoire propre aux agents déclarant une portée.", ["SPEC-AGT-007"]),
-  living_docs: option(true, "Documents vivants après lecture et décisions durables.", ["SPEC-MOT-032"]),
+  memory_living_docs: option(true, "Documents vivants après lecture et décisions durables.", ["SPEC-MOT-032"], ["Living document update abandoned:"]),
+  engine_speculation: option(true, "Anticipation isolée, soumise au réglage explicite de la session.", ["SPEC-MOT-029"], ["Unsupported speculative target", "Speculation buffer limit"]),
+  sandbox_commands: option(true, "Confinement des commandes sur une plateforme compatible, activé explicitement.", ["SPEC-PER-015"], ["Sandbox channel unavailable.", "Sandbox mount must be a physical directory."]),
   terminal_setup: option(true, "Configuration confirmée des raccourcis du terminal.", ["SPEC-INT-021", "SPEC-CMD-071"]),
   memory_consolidation: option(true, "Consolidation de mémoire sous verrou, copie préalable et tâche visible.", ["SPEC-MOT-039", "SPEC-AGT-022", "SPEC-EXT-035"]),
   context_folding: option(true, "Préparation et repli de tours anciens avec inspection bornée.", ["SPEC-MOT-020", "SPEC-OUT-044"]),
@@ -93,7 +107,7 @@ export function resolveBuildOptions(profile: string, overrides: unknown = {}): B
     if (!Object.hasOwn(BUILD_OPTIONS, name)) throw new Error(`Option de build inconnue : ${name}.`);
     if (typeof value !== "boolean") throw new Error(`Valeur booléenne attendue pour ${name}.`);
     if (value && profile !== "internal" && ["state_capture","internal_discreet"].includes(name))throw new Error(`Option réservée au profil interne : ${name}.`);
-    if (value && profile === "public" && ["ui_year_review", "telemetry_orchestrator_role", "ui_dev_bar", "strict_failure", "system_instructions_export"].includes(name)) throw new Error(`Option réservée aux profils internes : ${name}.`);
+    if (value && profile === "public" && ["ui_year_review", "telemetry_orchestrator_role", "ui_dev_bar", "strict_failure", "system_instructions_export", "diagnostics_api_replay", "planning_progress_check", "tools_terminal_session", "tools_code_runtime"].includes(name)) throw new Error(`Option réservée aux profils internes : ${name}.`);
     if (value && profile !== "test" && ["installation_test_versions", "permission_test", "context_overflow_probe"].includes(name)) throw new Error(`Option réservée au profil de test : ${name}.`);
     if (value && !BUILD_OPTIONS[name as BuildFlagName].implemented) throw new Error(`Option de build réservée, fonctionnalité non livrée : ${name}.`);
     values[name as BuildFlagName] = value;

@@ -1,3 +1,5 @@
+// Supports: SPEC-MOT-035 (signed connector content is persisted separately from the final answer).
+// Supports: SPEC-MOT-029 (buffered transcript port and interruptible request preparation).
 // Supports: SPEC-MOD-029, SPEC-OUT-034, gap E-161.
 // Supports: SPEC-OBS-021 (CA-03, recorded tariff fingerprints), gap E-160.
 // Implements: SPEC-MOT-001 (§ 5.3 steps 1 to 10, FA-01 to FA-03, EF-01 to EF-10, RG-01 to RG-04, CA-01 to CA-06, CA-10), SPEC-MOD-005 (FA-01 to FA-03, FA-06, EF-02, EF-03, EF-08, EF-10),
@@ -48,7 +50,7 @@ export interface LoopDeps {
   readonly conversation: Conversation;
   readonly executor: Omit<ExecutorDeps, "emit">;
   readonly hooks: HookBus;
-  readonly transcript?: TranscriptWriter;
+  readonly transcript?: Pick<TranscriptWriter, "append" | "flush">;
   readonly maxOutputTokens: number;
   readonly thinking: ThinkingRequest;
   /** Effort sent with each request, read at each request (a session level may change, SPEC-MOT-025). */
@@ -448,6 +450,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
       providerRequestId: response.providerRequestId,
     });
     deps.postSampling?.(assistant, deps.agentId);
+    if (response.connectorTextBlocks?.length || response.connectorTextIncidents) deps.emit({ type: "connector_content", blocks: response.connectorTextBlocks ?? [], incidents: response.connectorTextIncidents ?? 0 });
     deps.emit({ type: "assistant_message", text: assistant.text, toolCalls: assistant.toolCalls.map((c) => ({ callId: c.callId, name: c.name, input: c.input })) });
 
     execution.responseComplete(stopReason);
@@ -505,7 +508,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
     // Gap E-072: a final response without text (reasoning only, or nothing) is relaunched once; if it stays empty,
     // the turn ends with a warning instead of a silent empty answer.
     if (finalText.trim() === "" && deps.publishedMessage?.()) finalText = deps.publishedMessage()!;
-    if (finalText.trim() === "") {
+    if (finalText.trim() === "" && !response.connectorTextBlocks?.length) {
       if (!emptyRelaunched) {
         emptyRelaunched = true;
         conv.appendUser([{ type: "text", text: ASK_FOR_ANSWER }]);

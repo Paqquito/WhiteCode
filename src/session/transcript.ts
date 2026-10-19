@@ -1,5 +1,6 @@
 // Implements: SPEC-SES-001 (§ 5.1 location and record types, EF-01 to EF-05, EF-07 via E-013, FA-02, RG-01, ERR-01, ERR-02, CA-01 to CA-03)
 // Append-only JSON Lines transcript, written as soon as a message is complete.
+// Supports: SPEC-INT-015 (session-only images remain omitted after context forks or structural copies).
 
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
@@ -109,12 +110,13 @@ export class TranscriptWriter {
       ts: this.#clock().toISOString(),
       data,
     };
+    const line = JSON.stringify(record, (_key, value: unknown) => value && typeof value === "object" && "type" in value && value.type === "image" && "sessionOnly" in value && value.sessionOnly === true ? { type: "text", text: "[Application screenshot omitted: it is available only in the active session.]" } : value) + "\n";
     if (!this.#failed && encryptedStore(this.path)) {
-      try { storeAppend(this.path, `${JSON.stringify(record)}\n`); }
+      try { storeAppend(this.path, line); }
       catch (error) { this.#failed = true; this.warning = error instanceof Error ? error.message : "Enregistrement chiffré suspendu."; }
     } else if (this.#fd !== undefined && !this.#failed) {
       try {
-        writeSync(this.#fd, `${JSON.stringify(record)}\n`);
+        writeSync(this.#fd, line);
       } catch {
         this.#failed = true;
         this.warning = "La session n'est plus enregistrée : espace disque insuffisant ou écriture impossible.";
