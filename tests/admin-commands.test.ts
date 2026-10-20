@@ -100,7 +100,7 @@ describe("SPEC-CMD-041 /connectors", () => {
     // The configuration of the simulated server is missing at start: it fails; once written, the reconnection succeeds.
     const config = join(ws.root, "docs.json").replace(/\\/g, "/");
     const servers = JSON.stringify({ servers: { docs: { transport: "stdio", command: BUN, args: [SERVER, config] } } });
-    const h = new Host(ws, { provider: new ScriptedProvider([]), init: {}, argv: ["--connectors", servers, "--wait-for-mcp"], env: productEnv(ws) });
+    const h = new Host(ws, { provider: new ScriptedProvider([]), init: { decisionAuthority: true }, userConfig: { engine: { control: { allowEscalation: true } } }, answers: { confirm_escalation: params => ({ decision: "confirm", escalationId: params["escalationId"] }) }, argv: ["--connectors", servers, "--wait-for-mcp"], env: productEnv(ws) });
     const before = await h.request("invoke_command", { command: "/connectors" });
     writeFileSync(config, JSON.stringify({ tools: [{ name: "search" }] }));
     const after = await h.request("invoke_command", { command: "/connectors reconnect docs" });
@@ -108,5 +108,6 @@ describe("SPEC-CMD-041 /connectors", () => {
     await h.finish();
     expect(shown(before)).toMatch(/docs \(cli\) : (en échec|indisponible)/);
     expect(shown(after)).toContain("docs (cli) : connecté, 1 outil");
+    expect(h.demands("confirm_escalation")).toHaveLength(2);
   }, 30_000);
 });

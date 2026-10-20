@@ -9,7 +9,7 @@ const internalProfileTest = profiledTest(import.meta.path, "internal");
   const test = internalProfileTest;
 test("SPEC-CMD-089/CA-01 — an API key is masked, and uncatalogued variables are absent", async () => {
   const prefix = loadIdentity().get("ENV_PREFIX");
-  const r = await cli(["--non-interactive", "/env"], workspace(), { provider: new ScriptedProvider([]), env: { OPENAI_API_KEY: "opaque_fixture_value_291", [`${prefix}MODEL_DEFAULT`]: "medium", UNCATALOGUED_WITNESS: "private_unlisted_value" } });
+  const r = await cli(["--non-interactive", "/show-environment"], workspace(), { provider: new ScriptedProvider([]), env: { OPENAI_API_KEY: "opaque_fixture_value_291", [`${prefix}MODEL_DEFAULT`]: "medium", UNCATALOGUED_WITNESS: "private_unlisted_value" } });
   expect(r.code).toBe(0); expect(r.stdout).toContain("OPENAI_API_KEY = ••••");
   expect(r.stdout).toContain(`${prefix}MODEL_DEFAULT = medium`); expect(r.stdout).not.toContain("opaque_fixture_value_291"); expect(r.stdout).not.toContain("private_unlisted_value");
 });

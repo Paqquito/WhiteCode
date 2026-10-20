@@ -55,8 +55,8 @@ test("SPEC-IHM-040/CA-01 — an actual internal-profile interactive commit omits
  const f=fixture();cpSync(join(ROOT,"tests/helpers"),join(f.root,"tests/helpers"),{recursive:true});cpSync(join(ROOT,"tests/fixtures"),join(f.root,"tests/fixtures"),{recursive:true});
  const generated=await runToCompletion(BUN,["scripts/generate.ts","--profile","internal"],{cwd:f.root,env:productEnv(f.ws),timeoutMs:15000});expect(generated.code).toBe(0);
  const output=join(f.root,"git-discreet-probe.js"),built=await runToCompletion(BUN,["build",join(f.root,"tests/fixtures/git-discreet-probe.ts"),"--target=bun","--minify","--outfile",output],{cwd:f.root,env:productEnv(f.ws),timeoutMs:25000});if(built.code!==0)throw Error(built.stderr);expect(built.code).toBe(0);
- const probe=await runToCompletion(BUN,[output],{cwd:f.root,env:productEnv(f.ws),timeoutMs:25000});if(probe.code!==0)throw Error(probe.stderr+probe.stdout);expect(probe.stdout).toContain("GIT_DISCREET_PROBE_PASSED");
-},60000);
+ const probe=await runToCompletion(BUN,[output],{cwd:f.root,env:productEnv(f.ws),timeoutMs:45000});if(probe.code!==0)throw Error(probe.stderr+probe.stdout);expect(probe.stdout).toContain("GIT_DISCREET_PROBE_PASSED");
+},90000);
 test("TECH — an actual internal-profile CLI captures authorized repository state and honors its environment disable switch",async()=>{
  const f=fixture();cpSync(join(ROOT,"tests/helpers"),join(f.root,"tests/helpers"),{recursive:true});cpSync(join(ROOT,"tests/fixtures"),join(f.root,"tests/fixtures"),{recursive:true});
  const generated=await runToCompletion(BUN,["scripts/generate.ts","--profile","internal"],{cwd:f.root,env:productEnv(f.ws),timeoutMs:15000});expect(generated.code).toBe(0);

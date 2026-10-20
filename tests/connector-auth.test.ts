@@ -112,8 +112,8 @@ test("SPEC-MCP-006/CA-03 — authentication pending for one connector does not b
 test("SPEC-MCP-022/CA-03 — disabling docs removes its tools immediately and persists for the next session", async () => {
   const ws = workspace(), server = httpConnectorServer();
   await Bun.write(`${ws.configHome}/connectors.json`, JSON.stringify({ servers: { docs: { url: server.url } } }));
-  const h = new Host(ws, { argv: ["--wait-for-mcp"], provider: new ScriptedProvider([]), init: {} });
-  try { expect(JSON.stringify(await h.request("invoke_command", { command: "/connectors disable docs" }))).toContain("désactivé"); }
+  const h = new Host(ws, { argv: ["--wait-for-mcp"], provider: new ScriptedProvider([]), init: { decisionAuthority: true }, userConfig: { engine: { control: { allowEscalation: true } } }, answers: { confirm_escalation: params => ({ decision: "confirm", escalationId: params["escalationId"] }) } });
+  try { expect(JSON.stringify(await h.request("invoke_command", { command: "/connectors disable docs" }))).toContain("désactivé"); expect(h.demands("confirm_escalation")).toHaveLength(1); }
   finally { h.feed.end(); await h.finish(); }
   const p = new ScriptedProvider([{ text: "done" }]);
   try { const result = await cli(["--non-interactive", "--wait-for-mcp", "x"], ws, { provider: p }); expect(result.code).toBe(0); expect(p.requests[0]!.tools.map(t => t.name)).not.toContain("cnx_docs_lookup"); }

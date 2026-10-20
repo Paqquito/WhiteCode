@@ -113,6 +113,9 @@ test("SPEC-MCP-017/CA-02 — disabling an imported web connector persists and su
     extra: f.extra,
     provider: new ScriptedProvider([]),
     argv: ["--wait-for-mcp"],
+    init: { decisionAuthority: true },
+    userConfig: { engine: { control: { allowEscalation: true } } },
+    answers: { confirm_escalation: params => ({ decision: "confirm", escalationId: params["escalationId"] }) },
   });
   try {
     expect(
@@ -122,6 +125,7 @@ test("SPEC-MCP-017/CA-02 — disabling an imported web connector persists and su
         }),
       ),
     ).toContain("désactivé");
+    expect(h.demands("confirm_escalation")).toHaveLength(1);
   } finally {
     h.feed.end();
     expect((await h.finish()).code).toBe(0);

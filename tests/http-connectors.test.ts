@@ -34,10 +34,11 @@ test("SPEC-MCP-003/CA-02 — a protected server returns 401 and the connector sh
   let attempts = 0;
   const s = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { attempts++; return new Response("synthetic-secret29", { status: 401, headers: { "WWW-Authenticate": 'Bearer resource_metadata="https://example.invalid/oauth"' } }); } });
   const ws = workspace(); await Bun.write(`${ws.configHome}/connectors.json`, JSON.stringify({ servers: { guarded: { transport: "http", url: `http://127.0.0.1:${s.port}/mcp`, headers: { Authorization: "Bearer synthetic-secret29" } } } }));
-  const h = new Host(ws, { argv: ["--wait-for-mcp"], provider: new ScriptedProvider([]), init: {} });
+  const h = new Host(ws, { argv: ["--wait-for-mcp"], provider: new ScriptedProvider([]), init: { decisionAuthority: true }, userConfig: { engine: { control: { allowEscalation: true } } }, answers: { confirm_escalation: params => ({ decision: "confirm", escalationId: params["escalationId"] }) } });
   try {
     const status = await h.request("invoke_command", { command: "/connectors" });
     expect(JSON.stringify(status)).toContain("authentification requise");
+    expect(h.demands("confirm_escalation")).toHaveLength(1);
     expect(JSON.stringify(status)).not.toContain("synthetic-secret29");
     h.feed.end(); const r = await h.finish(); expect(r.stderr).not.toContain("synthetic-secret29"); expect(attempts).toBe(1);
   } finally { h.feed.end(); await h.finish(); s.stop(true); }
@@ -58,8 +59,8 @@ test("TECH — a 401 on the notification channel during discovery requires authe
     await new Promise((r) => setTimeout(r, 100)); return Response.json({ jsonrpc: "2.0", id: m.id, result: { tools: [] } });
   } });
   const ws = workspace(); await Bun.write(`${ws.configHome}/connectors.json`, JSON.stringify({ servers: { guarded: { transport: "http", url: `http://127.0.0.1:${s.port}/mcp` } } }));
-  const h = new Host(ws, { argv: ["--wait-for-mcp"], provider: new ScriptedProvider([]), init: {} });
-  try { await new Promise((r) => setTimeout(r, 1200)); const status = await h.request("invoke_command", { command: "/connectors" }); expect(JSON.stringify(status)).toContain("authentification requise"); expect(initializations).toBe(1); }
+  const h = new Host(ws, { argv: ["--wait-for-mcp"], provider: new ScriptedProvider([]), init: { decisionAuthority: true }, userConfig: { engine: { control: { allowEscalation: true } } }, answers: { confirm_escalation: params => ({ decision: "confirm", escalationId: params["escalationId"] }) } });
+  try { await new Promise((r) => setTimeout(r, 1200)); const status = await h.request("invoke_command", { command: "/connectors" }); expect(JSON.stringify(status)).toContain("authentification requise"); expect(initializations).toBe(1); expect(h.demands("confirm_escalation")).toHaveLength(1); }
   finally { h.feed.end(); await h.finish(); s.stop(true); }
 }, 15_000);
 

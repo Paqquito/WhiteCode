@@ -5,6 +5,7 @@ import { cli, workspace, ROOT } from "./helpers/env";
 import { BUN, bunCommand, productEnv, prefix, hook } from "./helpers/hooks";
 import { interactive, KEY, sleep } from "./helpers/interactive";
 import { ScriptedProvider } from "./helpers/scripted-provider";
+import { afterNativeStart } from "./helpers/native-ready";
 import type { CredentialVault } from "../src/platform/credential-vault";
 import {
   privateStorageScope,
@@ -223,7 +224,7 @@ test("TECH — an actual detached shell command has encrypted output that the mo
     keychain = vault(),
     script = ws.write(
       "scripts/output.ts",
-      'console.log("private shell witness");',
+      `import{writeFileSync}from"node:fs";writeFileSync(${JSON.stringify(join(ws.root,"output-ready"))},"ready");console.log("private shell witness");`,
     );
   const provider = new ScriptedProvider([
     {
@@ -245,6 +246,7 @@ test("TECH — an actual detached shell command has encrypted output that the mo
     },
     { text: "output retrieved" },
   ]);
+  afterNativeStart(provider,join(ws.root,"output-ready"));
   const result = await cli(
     ["--non-interactive", "--allow-rule", "run_shell", "Run output"],
     ws,
@@ -269,7 +271,7 @@ test("TECH — encrypted ephemeral background output stays in memory and an exte
     keychain = vault(),
     script = ws.write(
       "scripts/output.ts",
-      'console.log("private ephemeral witness");',
+      `import{writeFileSync}from"node:fs";writeFileSync(${JSON.stringify(join(ws.root,"output-ready"))},"ready");console.log("private ephemeral witness");`,
     );
   const provider = new ScriptedProvider([
     {
@@ -291,6 +293,7 @@ test("TECH — encrypted ephemeral background output stays in memory and an exte
     },
     { text: "output retrieved" },
   ]);
+  afterNativeStart(provider,join(ws.root,"output-ready"));
   const result = await cli(
     [
       "--non-interactive",

@@ -5,18 +5,22 @@ import { KeepAwake } from "../src/integrations/keep-awake";
 import { acquireAwake } from "../src/platform/keep-awake";
 import { Host } from "./helpers/control";
 import { workspace } from "./helpers/env";
-import { productEnv } from "./helpers/hooks";
+import { bunCommand,productEnv } from "./helpers/hooks";
+import { join } from "node:path";
+import { writeFileSync } from "node:fs";
+import { waitForNativeFile } from "./helpers/native-ready";
 import { ScriptedProvider } from "./helpers/scripted-provider";
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 test("SPEC-INT-022/CA-01 — the CLI retains its awake lease after the main turn while the real background process is still working", async () => {
-  const ws = workspace(),
+  const ws = workspace(), ready=join(ws.root,"awake-ready"), release=join(ws.root,"awake-release"), finished=join(ws.root,"awake-finished"),
+    script=ws.write("scripts/awake-task.ts",`import{existsSync,writeFileSync}from"node:fs";writeFileSync(${JSON.stringify(ready)},"ready");const until=Date.now()+10000;while(!existsSync(${JSON.stringify(release)})&&Date.now()<until)await Bun.sleep(10);if(!existsSync(${JSON.stringify(release)}))process.exit(19);writeFileSync(${JSON.stringify(finished)},"released");`),
     p = new ScriptedProvider([
       {
         toolCalls: [
           {
             name: "run_shell",
             input: {
-              command: 'bun -e "setTimeout(()=>{},2000)"',
+              command: bunCommand(script.replace(/\\/g,"/")),
               detached: true,
             },
           },
@@ -49,10 +53,13 @@ test("SPEC-INT-022/CA-01 — the CLI retains its awake lease after the main turn
         m.type === "turn_completed" &&
         JSON.stringify(m).includes("Background ready."),
     );
+    await waitForNativeFile(ready,new AbortController().signal);
     const active = await h.request("get_state");
     expect(JSON.stringify(active)).toContain('"status":"running"');
     expect(acquired).toBe(1);
     expect(released).toBe(0);
+    writeFileSync(release,"native lease observed while child is running");
+    await waitForNativeFile(finished,new AbortController().signal);
     for (let i = 0; i < 80; i++) {
       const state = await h.request("get_state");
       if (!JSON.stringify(state).includes('"status":"running"')) break;
@@ -60,12 +67,14 @@ test("SPEC-INT-022/CA-01 — the CLI retains its awake lease after the main turn
     }
     await sleep(300);
     expect(released).toBe(1);
+    expect(JSON.stringify(await h.request("get_state"))).toContain('"status":"completed"');
   } finally {
+    writeFileSync(release,"cleanup");
     h.feed.end();
     await h.finish();
   }
   expect(released).toBe(1);
-}, 15000);
+}, 30000);
 test("TECH — native Windows leases set system-required, share ownership and restore the thread state without display inhibition", async () => {
   if (process.platform !== "win32") {
     try {

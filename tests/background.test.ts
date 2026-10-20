@@ -8,6 +8,7 @@ import type { ModelRequest } from "../src/providers/types";
 import { cli, workspace, type Workspace } from "./helpers/env";
 import { bunCommand, productEnv } from "./helpers/hooks";
 import { ScriptedProvider } from "./helpers/scripted-provider";
+import { afterNativeStart } from "./helpers/native-ready";
 
 const script = (ws: Workspace, name: string, body: string) => bunCommand(ws.write(`scripts/${name}.ts`, body).replace(/\\/g, "/"));
 const call = (name: string, input: Record<string, unknown>) => ({ toolCalls: [{ name, input }] });
@@ -24,16 +25,18 @@ const alive = (pid: number) => {
   }
 };
 const main = (p: ScriptedProvider) => p.requests.filter((r) => r.purpose !== "subagent");
+const ready = (ws: Workspace) => `import {writeFileSync} from "node:fs"; writeFileSync(${JSON.stringify(join(ws.root,"native-ready"))},"ready");`;
 
 describe("SPEC-AGT-017 background commands", () => {
   test("SPEC-OUT-008/CA-05 — SPEC-AGT-017/CA-01 — a server started detached: the task id comes at once, the conversation goes on, the output is readable", async () => {
     const ws = workspace();
-    const server = script(ws, "server", 'console.log("serveur prêt"); await Bun.sleep(30_000);');
+    const server = script(ws, "server", ready(ws)+'console.log("serveur prêt"); await Bun.sleep(30_000);');
     const p = new ScriptedProvider([
       call("run_shell", { command: server, detached: true, description: "serveur de dev" }),
       call("background_output", { task_id: "b1", timeout: 3_000 }),
       { text: "le serveur tourne" },
     ]);
+    afterNativeStart(p,join(ws.root,"native-ready"));
     const started = Date.now();
     const r = await run(ws, p);
     expect(Date.now() - started).toBeLessThan(15_000);
@@ -52,7 +55,7 @@ describe("SPEC-AGT-017 background commands", () => {
     const parent = script(
       ws,
       "parent",
-      `const c = Bun.spawn([process.execPath, ${JSON.stringify(child)}], { stdout: "ignore" }); await Bun.write(${JSON.stringify(pids)}, process.pid + " " + c.pid); console.log("lancé"); await Bun.sleep(60_000);`,
+      `import {writeFileSync} from "node:fs"; const c = Bun.spawn([process.execPath, ${JSON.stringify(child)}], { stdout: "ignore" }); writeFileSync(${JSON.stringify(pids)}, process.pid + " " + c.pid); writeFileSync(${JSON.stringify(join(ws.root,"native-ready"))},"ready"); console.log("lancé"); await Bun.sleep(60_000);`,
     );
     const p = new ScriptedProvider([
       call("run_shell", { command: parent, detached: true }),
@@ -60,6 +63,7 @@ describe("SPEC-AGT-017 background commands", () => {
       call("background_stop", { task_id: "b1" }),
       { text: "arrêté" },
     ]);
+    afterNativeStart(p,join(ws.root,"native-ready"));
     await run(ws, p);
     expect(results(p.requests[3])).toContain("Task b1 stopped");
     const [a, b] = readFileSync(pids, "utf8").split(" ").map(Number);
@@ -70,13 +74,14 @@ describe("SPEC-AGT-017 background commands", () => {
 
   test("SPEC-AGT-016/CA-01 — SPEC-MOT-007/CA-02 — a task ending during a turn: the next request announces it once, with how to read its output", async () => {
     const ws = workspace();
-    const quick = script(ws, "quick", 'console.log("travail fait");');
+    const quick = script(ws, "quick", ready(ws)+'console.log("travail fait");');
     const p = new ScriptedProvider([
       call("run_shell", { command: quick, detached: true }),
       call("background_output", { task_id: "b1" }),
       call("find_files", { pattern: "*.nothing" }),
       { text: "fini" },
     ]);
+    afterNativeStart(p,join(ws.root,"native-ready"));
     await run(ws, p);
     const notice = "The background command b1";
     expect(all(p.requests[2])).toContain(notice);
@@ -88,13 +93,14 @@ describe("SPEC-AGT-017 background commands", () => {
 describe("SPEC-OUT-022 monitor_process", () => {
   test("SPEC-OUT-022/CA-01 — SPEC-OUT-022/CA-02 — a log filtered on ERROR: the line reaches the model, then the exit code", async () => {
     const ws = workspace();
-    const log = script(ws, "log", 'await Bun.sleep(200); console.log("ERROR disque plein"); await Bun.sleep(200);');
+    const log = script(ws, "log", ready(ws)+'await Bun.sleep(200); console.log("ERROR disque plein"); await Bun.sleep(200);');
     const p = new ScriptedProvider([
       call("monitor_process", { command: log, description: "erreurs du journal" }),
       call("background_output", { task_id: "m1", timeout: 5_000 }),
       call("find_files", { pattern: "*.nothing" }),
       { text: "fini" },
     ]);
+    afterNativeStart(p,join(ws.root,"native-ready"));
     await run(ws, p);
     expect(results(p.requests[1])).toContain("Monitor m1 started");
     const later = all(p.requests[3]);
@@ -105,8 +111,9 @@ describe("SPEC-OUT-022 monitor_process", () => {
 
   test("SPEC-OUT-022/CA-03 — a flood of lines: the monitor is stopped with the advice to filter", async () => {
     const ws = workspace();
-    const flood = script(ws, "flood", 'for (let i = 0; i < 10_000; i++) console.log("ligne " + i); await Bun.sleep(5_000);');
+    const flood = script(ws, "flood", ready(ws)+'for (let i = 0; i < 10_000; i++) console.log("ligne " + i); await Bun.sleep(5_000);');
     const p = new ScriptedProvider([call("monitor_process", { command: flood, description: "tout" }), call("background_output", { task_id: "m1", timeout: 8_000 }), call("find_files", { pattern: "*.x" }), { text: "fini" }]);
+    afterNativeStart(p,join(ws.root,"native-ready"));
     await run(ws, p);
     const later = all(p.requests[3]);
     expect(later).toContain("was stopped because its output came too fast: filter the command more");

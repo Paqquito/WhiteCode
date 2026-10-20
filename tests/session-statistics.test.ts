@@ -18,7 +18,7 @@ test("SPEC-IHM-030/CA-01 — the real statistics command displays activity dates
     const writer = new TranscriptWriter({ sessionsDir: join(ws.configHome, "sessions"), projectRealPath: ws.project, clock: () => new Date(ts) });
     writer.append("session_meta", {}); writer.append("user", { content: [{ type: "text", text: "PRIVATE_STATISTICS_WITNESS" }] }); writer.close();
   }
-  const provider = new ScriptedProvider([]); const r = await cli(["--non-interactive", "/stats"], ws, { provider });
+  const provider = new ScriptedProvider([]); const r = await cli(["--non-interactive", "/usage-stats"], ws, { provider });
   expect(r.code).toBe(0); expect(r.stdout).toContain("Calendrier 2026-07"); expect(r.stdout).toContain("04:1");
   expect(r.stdout).toContain("Calendrier 2026-08"); expect(r.stdout).toContain("09:1"); expect(r.stdout).toContain("Calendrier 2026-09"); expect(r.stdout).toContain("13:1");
   expect(r.stdout).not.toContain("PRIVATE_STATISTICS_WITNESS"); expect(provider.requests).toHaveLength(0);
@@ -31,12 +31,12 @@ test("SPEC-IHM-031/CA-01 — ten sessions with four single attempts display fort
     for (let attempt = 0; attempt < (n < 4 ? 1 : 3); attempt++) writer.append("user", { content: [{ type: "text", text: "attempt" }] });
     writer.close();
   }
-  const r = await cli(["--non-interactive", "/stats"], ws, { provider: new ScriptedProvider([]) });
+  const r = await cli(["--non-interactive", "/usage-stats"], ws, { provider: new ScriptedProvider([]) });
   expect(r.code).toBe(0); expect(r.stdout).toContain("1 : 4 sessions (40 %)"); expect(r.stdout).toContain("2 à 5 : 6 sessions (60 %)"); expect(r.stdout).toContain("10 sessions, 22 tentatives");
 });
 
 test("SPEC-CMD-066/CA-01 — a loading indicator appears in the terminal before the statistics result", async () => {
   const ws = workspace(); const controller = new AbortController(); const run = interactive([], ws, { provider: new ScriptedProvider([]), signal: controller.signal });
-  try { await run.idle(); run.type("/stats"); run.type(KEY.enter); await run.waitFor(text => text.includes("Calcul des statistiques locales")); await run.waitFor(text => text.includes("Aucune session avec échange")); }
+  try { await run.idle(); run.type("/usage-stats"); run.type(KEY.enter); await run.waitFor(text => text.includes("Calcul des statistiques locales")); await run.waitFor(text => text.includes("Aucune session avec échange")); }
   finally { controller.abort(); await run.done; }
 });

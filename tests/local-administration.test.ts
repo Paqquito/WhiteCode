@@ -10,19 +10,19 @@ import { parseSkill } from "../src/skills/registry";
 
 test("SPEC-CMD-004/CA-01 — assisted creation returns an English definition for review before a protected save", async () => {
   const ws = workspace(), draft = '---\nname: test-helper\ndescription: Runs repository tests.\ntools: [read_file]\n---\nRead the project test procedure and report observed results.\n'; let approvals = 0;
-  const provider = new ScriptedProvider([{ text: draft }]); const host = new Host(ws, { provider, init: { decisionAuthority: true }, answers: { approval_request: () => { approvals++; return { decision: "allow" }; } } });
+  const provider = new ScriptedProvider([{ text: draft }]); const host = new Host(ws, { provider, init: { decisionAuthority: true }, userConfig: { engine: { control: { allowEscalation: true } } }, answers: { confirm_escalation: params => ({ decision: "confirm", escalationId: params["escalationId"] }), approval_request: () => { approvals++; return { decision: "allow" }; } } });
   try {
-    const proposed = await host.request("invoke_command", { command: "/agents create Help with tests" }); expect(JSON.stringify(proposed)).toContain("test-helper"); const path = join(ws.configHome, "agents", "test-helper.md"); expect(existsSync(path)).toBe(false); expect(approvals).toBe(0);
-    const saved = await host.request("invoke_command", { command: "/agents save" }); expect(saved["ok"]).toBe(true); expect(readFileSync(path, "utf8")).toBe(draft); expect(approvals).toBeGreaterThan(0);
+    const proposed = await host.request("invoke_command", { command: "/agent-catalog create Help with tests" }); expect(JSON.stringify(proposed)).toContain("test-helper"); const path = join(ws.configHome, "agents", "test-helper.md"); expect(existsSync(path)).toBe(false); expect(approvals).toBe(0);
+    const saved = await host.request("invoke_command", { command: "/agent-catalog save" }); expect(saved["ok"]).toBe(true); expect(readFileSync(path, "utf8")).toBe(draft); expect(approvals).toBeGreaterThan(0); expect(host.demands("confirm_escalation")).toHaveLength(2);
   } finally { host.feed.end(); await host.finish(); }
 });
 test("SPEC-CMD-004/CA-02 — a built-in agent is read-only and offers a homonymous user copy", async () => {
-  const ws = workspace(), provider = new ScriptedProvider([]); const result = await cli(["--non-interactive", "/agents general"], ws, { provider });
-  expect(result.code).toBe(0); expect(result.stdout + result.stderr).toContain("lecture seule"); expect(result.stdout + result.stderr).toContain("/agents copy general"); expect(existsSync(join(ws.configHome, "agents", "general.md"))).toBe(false); expect(provider.requests).toHaveLength(0);
+  const ws = workspace(), provider = new ScriptedProvider([]); const result = await cli(["--non-interactive", "/agent-catalog general"], ws, { provider });
+  expect(result.code).toBe(0); expect(result.stdout + result.stderr).toContain("lecture seule"); expect(result.stdout + result.stderr).toContain("/agent-catalog copy general"); expect(existsSync(join(ws.configHome, "agents", "general.md"))).toBe(false); expect(provider.requests).toHaveLength(0);
 });
 test("TECH — incomplete assisted agent definitions and invalid skill headers are rejected", async () => {
   for (const draft of ["---\nname: incomplete\ndescription: Incomplete agent.\ntools: []\n---\n", "---\nname: incomplete\ndescription: Incomplete agent.\n---\nInstructions without explicit tools."]) {
-    const ws = workspace(), result = await cli(["--non-interactive", "/agents create Fixture"], ws, { provider: new ScriptedProvider([{ text: draft }]) });
+    const ws = workspace(), result = await cli(["--non-interactive", "/agent-catalog create Fixture"], ws, { provider: new ScriptedProvider([{ text: draft }]) });
     expect(result.code).toBe(2); expect(existsSync(join(ws.configHome, "agents", "incomplete.md"))).toBe(false);
   }
   for (const content of ["---\nname: check\n---\nUpdated instructions.", "---\nname: check\ndescription: Check fixtures.\ntools: wrong\n---\nInstructions."]) expect(parseSkill(content, "fixture", "check", "project", false, [])).toBeUndefined();
@@ -31,13 +31,13 @@ test("SPEC-CMD-062/CA-01 — missing sandbox dependencies display specific insta
   expect(sandboxDiagnostic("linux", () => undefined)).toContain("installer bubblewrap");
   expect(sandboxDiagnostic("macos", () => "/tool")).toContain("indisponible");
   expect(sandboxDiagnostic("linux", () => "/tool")).toContain("ne vérifie pas les capacités du noyau");
-  const result = await cli(["--non-interactive", "/sandbox"], workspace(), { provider: new ScriptedProvider([]) }); expect(result.code).toBe(0); expect(result.stdout + result.stderr).toContain("isolation");
+  const result = await cli(["--non-interactive", "/sandbox-settings"], workspace(), { provider: new ScriptedProvider([]) }); expect(result.code).toBe(0); expect(result.stdout + result.stderr).toContain("isolation");
 });
 test("SPEC-CMD-042/CA-01 — selecting missing local instructions creates a protected file and opens its editor", async () => {
   const ws = workspace(), path = join(ws.project, loadIdentity().get("LOCAL_INSTRUCTIONS_FILE")), stop = new AbortController();
   const run = interactive([], ws, { signal: stop.signal, provider: new ScriptedProvider([]) });
   try {
-    await run.idle(); run.type("/memory\r"); await run.waitFor(t => t.includes("Instructions locales")); await sleep(380); run.type("1");
+    await run.idle(); run.type("/edit-memory-files\r"); await run.waitFor(t => t.includes("Instructions locales")); await sleep(380); run.type("1");
     await run.waitFor(t => t.includes("Autorisation requise")); await sleep(380); run.type("1");
     await run.waitFor(t => t.includes("Éditer les instructions locales")); expect(existsSync(path)).toBe(true); expect(readFileSync(path, "utf8")).toContain("Local project instructions");
   } finally { stop.abort(); await run.done; }

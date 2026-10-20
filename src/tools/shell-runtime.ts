@@ -2,6 +2,7 @@
 //             SPEC-OUT-009 (§ 5.1, § 5.3 points 1, 3 to 5, EF-01 to EF-03, EF-05, RG-02, ERR-01, ERR-02, CA-01, CA-04, CA-05)
 // Supports: SPEC-CFG-007 (RG-02 environment of child processes), SPEC-MOT-002 (RG-05), gap E-051 (environment snapshot, detection)
 // Supports: SPEC-OUT-008 (RG-03, cancellation waits for the process group), gap E-148.
+// Supports: SPEC-AGT-016 (background initialization waits asynchronously).
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, normalize } from "node:path";
@@ -111,6 +112,12 @@ const VOLATILE = new Set(["PWD", "OLDPWD", "SHLVL", "_", "PS1", "PS2", "PS4", "P
 const BEGIN = "#--snapshot-begin--";
 const END = "#--snapshot-end--";
 
+interface SnapshotCapture {
+  readonly controller: AbortController;
+  readonly pending: Promise<string | undefined>;
+  waiters: number;
+}
+
 export interface ShellRuntimeOptions {
   readonly sandbox?: CommandSandbox;
   /** A non-Git custom copy must not accidentally discover the original enclosing repository. */
@@ -142,6 +149,9 @@ export class ShellRuntime {
   #cwd: string;
   #snapshot: string | undefined | null = null;
   #snapshotText?: string;
+  #snapshotCapture?: SnapshotCapture;
+  #stopEpoch = 0;
+  #preparing = 0;
   readonly #running = new Set<Child>();
   #counter = 0;
 
@@ -149,7 +159,7 @@ export class ShellRuntime {
     this.#cwd = options.projectCwd;
   }
 
-  get running(): boolean { return this.#running.size > 0; }
+  get running(): boolean { return this.#preparing > 0 || this.#running.size > 0; }
   get sandboxEnabled(): boolean { return this.options.sandbox?.profile(this.#cwd, this.options.allowedDirectories).enabled ?? false; }
   sandboxRefusal(command: string, outside = false) { return this.options.sandbox?.refusal(command, this.#cwd, this.options.allowedDirectories, outside); }
   sandboxContribution(command: string, outside = false) { return this.options.sandbox?.contribution(command, this.#cwd, this.options.allowedDirectories, outside); }
@@ -165,14 +175,57 @@ export class ShellRuntime {
 
   /** Stops every process still running (RG-03: none outlives the session). */
   async stopAll(): Promise<void> {
+    this.#stopEpoch++;
+    const capture = this.#snapshotCapture;
+    capture?.controller.abort();
     await Promise.all([...this.#running].map((c) => c.killTree(this.options.settings.graceMs)));
+    await capture?.pending.catch(() => {});
   }
 
   /** Environment snapshot (EF-03): aliases, functions and exported variables of the user's shell, captured once. */
-  snapshot(): string | undefined {
+  async snapshot(signal = new AbortController().signal): Promise<string | undefined> {
+    signal.throwIfAborted();
     if (this.sandboxEnabled) return undefined;
-    if (this.#snapshot !== null) return this.#snapshot;
-    this.#snapshot = undefined;
+    if (this.#snapshotCapture?.controller.signal.aborted) {
+      // Join the cancelled generation before a new caller retries the capture.
+      await this.#snapshotCapture.pending.catch(() => {});
+      return this.snapshot(signal);
+    }
+    if (!this.#snapshotCapture) {
+      if (this.#snapshot !== null) return this.#snapshot;
+      this.#snapshot = undefined;
+      const controller = new AbortController();
+      const capture: SnapshotCapture = {
+        controller, waiters: 0,
+        pending: this.#captureSnapshot(controller.signal).catch(error => {
+          if (controller.signal.aborted) this.#snapshot = null;
+          throw error;
+        }).finally(() => { if (this.#snapshotCapture === capture) this.#snapshotCapture = undefined; }),
+      };
+      this.#snapshotCapture = capture;
+    }
+    const capture = this.#snapshotCapture;
+    capture.waiters++;
+    let onAbort = () => {};
+    const cancelled = new Promise<never>((_, reject) => {
+      onAbort = () => reject(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      const value = await Promise.race([capture.pending, cancelled]);
+      signal.throwIfAborted();
+      return value;
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+      capture.waiters--;
+      if (signal.aborted && capture.waiters === 0) {
+        capture.controller.abort();
+        await capture.pending.catch(() => {});
+      }
+    }
+  }
+
+  async #captureSnapshot(signal: AbortSignal): Promise<string | undefined> {
     const shell = this.options.posix;
     if (!shell) return undefined;
     const dump =
@@ -182,14 +235,30 @@ export class ShellRuntime {
           ? `echo '${BEGIN}'; echo 'shopt -s expand_aliases'; alias -p; for f in $(declare -F | awk '{print $3}'); do case "$f" in _*) ;; *) declare -f -- "$f";; esac; done; export -p; echo '${END}'`
           : `echo '${BEGIN}'; alias 2>/dev/null; export -p; echo '${END}'`;
     const args = shell.name === "bash" || shell.name === "zsh" ? ["-i", "-c", dump] : ["-c", dump];
-    const r = runToCompletion(shell.path, args, { cwd: this.options.projectCwd, env: this.options.childEnv, timeoutMs: 10_000 });
-    const start = r.stdout.indexOf(BEGIN);
-    const end = r.stdout.lastIndexOf(END);
-    if (start === -1 || end === -1) {
-      this.options.warn?.("instantané de l'environnement du shell indisponible : les commandes s'exécutent sans les alias ni les fonctions de l'utilisateur.");
-      return undefined;
+    const chunks: Buffer[] = []; let stdoutBytes = 0, stderrBytes = 0, stopped = false, stopping: Promise<void> | undefined;
+    let child: Child;
+    const stop = () => { stopped = true; return stopping ??= child.killTree(this.options.settings.graceMs); };
+    const receive = (chunk: Buffer, error: boolean) => {
+      if (error) stderrBytes += chunk.length; else stdoutBytes += chunk.length;
+      // Bound each initialization stream to one MiB; oversized capture is discarded.
+      if (stdoutBytes > 1_048_576 || stderrBytes > 1_048_576) { void stop(); return; }
+      if (!error) chunks.push(chunk);
+    };
+    const unavailable = () => { this.options.warn?.("instantané de l'environnement du shell indisponible : les commandes s'exécutent sans les alias ni les fonctions de l'utilisateur."); return undefined; };
+    try { child = startChild(shell.path, args, { cwd: this.options.projectCwd, env: this.options.childEnv, onData: chunk => receive(chunk, false), onErrorData: chunk => receive(chunk, true) }); }
+    catch { return unavailable(); }
+    const tracked: Child = { ...child, killTree: () => stop() };
+    this.#running.add(tracked);
+    const onAbort = () => { void stop(); };
+    signal.addEventListener("abort", onAbort, { once: true }); if (signal.aborted) onAbort();
+    const timer = setTimeout(onAbort, 10_000);
+    try { await child.exited; await stopping; signal.throwIfAborted(); }
+    finally { clearTimeout(timer); signal.removeEventListener("abort", onAbort); this.#running.delete(tracked); }
+    const stdout = Buffer.concat(chunks).toString("utf8"), start = stdout.indexOf(BEGIN), end = stdout.lastIndexOf(END);
+    if (stopped || start === -1 || end === -1) {
+      return unavailable();
     }
-    const body = r.stdout.slice(start + BEGIN.length, end).replace(/\r\n/g, "\n");
+    const body = stdout.slice(start + BEGIN.length, end).replace(/\r\n/g, "\n");
     const kept: string[] = [];
     let keep = true;
     for (const line of body.split("\n")) {
@@ -221,9 +290,23 @@ export class ShellRuntime {
   /** Runs `command` in the POSIX shell (§ 5.3). */
   async runPosix(command: string, timeoutMs: number, signal: AbortSignal, onOutput?: (chunk: string) => void, outside = false): Promise<ShellResult> {
     const shell = this.options.posix!;
-    const confined = this.options.sandbox?.mode(command, this.#cwd, this.options.allowedDirectories, outside) === "confined";
+    let confined = this.options.sandbox?.mode(command, this.#cwd, this.options.allowedDirectories, outside) === "confined";
     const p = (x: string) => posixPath(x, this.options.platform);
-    const snapshot = confined ? undefined : this.snapshot();
+    const epoch = this.#stopEpoch, preparingAt = Date.now(); let snapshot: string | undefined;
+    this.#preparing++;
+    try {
+      snapshot = confined ? undefined : await this.snapshot(signal);
+      signal.throwIfAborted();
+      if (epoch !== this.#stopEpoch) throw Object.assign(new Error("Shell operation stopped."), { name: "AbortError" });
+      // The live managed policy may have changed while the profile process was pending.
+      confined = this.options.sandbox?.mode(command, this.#cwd, this.options.allowedDirectories, outside) === "confined";
+      if (confined) snapshot = undefined;
+    } catch (error) {
+      if (signal.aborted || epoch !== this.#stopEpoch) {
+        return { output: "", exitCode: null, timedOut: false, interrupted: true, durationMs: Date.now() - preparingAt, truncated: false };
+      }
+      throw error;
+    } finally { this.#preparing--; }
     const privateMode = confined || encryptedStore(this.options.workDir);
     const metadata = privateMode ? randomUUID() : undefined;
     const cwdFile = join(this.options.workDir, `cwd-${process.pid}-${++this.#counter}`);

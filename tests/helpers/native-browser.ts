@@ -40,7 +40,15 @@ export async function nativeBrowserFixture(shared?: { ws: Workspace; slug: strin
       await pageEvaluate("chrome.windows.getCurrent().then(w=>chrome.windows.update(w.id,{state:'normal',focused:true}))");
       expect(await pageEvaluate("chrome.windows.getCurrent().then(w=>w.state)")).toBe("normal");
     };
+    const captureState = async (tab: number) => { if (!Number.isSafeInteger(tab) || tab < 1) throw Error("Invalid owned fixture tab."); return evaluate(`chrome.tabs.get(${tab}).then(async t=>{const w=await chrome.windows.get(t.windowId);return{active:t.active,status:t.status,windowState:w.state,focused:w.focused,nativeConnected:port!==undefined,busy}})`); };
+    const prepareCapture = async (tab: number) => {
+      const before = await captureState(tab);
+      // Only this fixture's profile is reachable. Keep the controlled tab in the background.
+      await evaluate(`chrome.tabs.get(${tab}).then(t=>chrome.windows.update(t.windowId,{${before.windowState === "minimized" ? "state:'normal'," : ""}focused:true}))`);
+      const after = await captureState(tab); expect(["normal", "maximized", "fullscreen"]).toContain(after.windowState); expect(after.focused).toBe(true);
+      return { before, after };
+    };
     const previous = loadIdentity().resolved, identity = new Identity({ ...previous, values: { ...previous.values, PRODUCT_SLUG: { value: slug, origin: "provided" }, SERVICE_BROWSER_EXTENSION: { value: "https://extensions.fixture.test/" + id, origin: "provided" } } });
-    return { ws, slug, id, identity, extension, send, evaluate, pageEvaluate, allow, reconnect: () => clickSetting("#connect"), remove: async (origin: string) => { await pageEvaluate("document.querySelector('#origin').value=" + JSON.stringify(origin)); await clickSetting("#remove"); for (let i = 0; i < 100; i++) { if (await evaluate(`chrome.storage.local.get('allowedOrigins').then(s=>!s.allowedOrigins?.includes(${JSON.stringify(origin)}))`)) return; await sleep(30); } throw Error("Site permission was not removed."); }, close };
+    return { ws, slug, id, identity, extension, send, evaluate, pageEvaluate, allow, captureState, prepareCapture, reconnect: () => clickSetting("#connect"), remove: async (origin: string) => { await pageEvaluate("document.querySelector('#origin').value=" + JSON.stringify(origin)); await clickSetting("#remove"); for (let i = 0; i < 100; i++) { if (await evaluate(`chrome.storage.local.get('allowedOrigins').then(s=>!s.allowedOrigins?.includes(${JSON.stringify(origin)}))`)) return; await sleep(30); } throw Error("Site permission was not removed."); }, close };
   } catch (error) { await close(); throw error; }
 }

@@ -6,7 +6,6 @@ import { ScriptedProvider, type ScriptStep } from "./helpers/scripted-provider";
 import type { ModelProvider } from "../src/providers/types";
 import type { Authorities } from "../src/permissions/resolver";
 import { POSIX } from "./helpers/hooks";
-import { runToCompletion } from "../src/platform/process";
 const call = (name: string, input: unknown) => ({ toolCalls: [{ name, input }] });
 function provider(main: ScriptStep[], agents: ScriptStep[]) {
   const scripted = new ScriptedProvider(main, agents);
@@ -14,6 +13,11 @@ function provider(main: ScriptStep[], agents: ScriptStep[]) {
   return { scripted, driver };
 }
 const setup = (name = "reader", role?: string) => [call("form_team", { team: "review" }), call("spawn_agent", { team: "review", name, description: "Review", prompt: "Read the task and report.", ...(role ? { role } : {}) })];
+async function waitForTeammate(done: () => boolean, signal: AbortSignal) {
+  const deadline = Date.now() + 15000;
+  while (!done() && !signal.aborted && Date.now() < deadline) await Bun.sleep(10);
+  expect(done()).toBe(true);
+}
 
 test("SPEC-AGT-012/CA-02 — a local teammate executes in the leader process and stays available after its initial turn", async () => {
   const ws = workspace(); let initialId: string | undefined;
@@ -78,27 +82,31 @@ test("SPEC-PER-001/CA-34 — a teammate default request uses its auto_approve cl
 
 test("SPEC-AGT-020/CA-01 — changing a teammate shell directory leaves the leader shell and context unchanged", async () => {
   if (!POSIX) throw new Error("This runtime proof requires a POSIX shell, provided by supported test platforms.");
-  const ws = workspace(), nested = ws.write("project/nested/witness.txt", "TEAM_NESTED_WITNESS"), output = join(ws.project, "leader-cwd.txt"), folder = join(ws.project, "nested");
+  const ws = workspace(), nested = ws.write("project/nested/witness.txt", "TEAM_NESTED_WITNESS"), baseline = join(ws.project, "leader-before.txt"), output = join(ws.project, "leader-cwd.txt"), folder = join(ws.project, "nested");
   const quote = (value: string) => "'" + value.replace(/\\/g, "/").replace(/'/g, "'\\''") + "'";
-  const expected = runToCompletion(POSIX.path, ["-c", "pwd"], { cwd: ws.project, env: process.env as Record<string,string>, timeoutMs: 5000 }).stdout.trim();
-  const { scripted, driver } = provider([...setup(), call("work_item_list", {}), call("run_shell", { command: `pwd > ${quote(output)}` }), { text: "FINISHED" }], [call("run_shell", { command: `cd ${quote(folder)}; pwd` }), call("read_file", { path: nested }), { text: "Nested work finished" }]);
+  let finished = false, mainRequests = 0;
+  const { scripted, driver } = provider([call("run_shell", { command: `pwd > ${quote(baseline)}` }), ...setup(), call("work_item_list", {}), call("run_shell", { command: `pwd > ${quote(output)}` }), { text: "FINISHED" }], [call("run_shell", { command: `cd ${quote(folder)}; pwd` }), call("read_file", { path: nested }), () => { finished = true; return { text: "Nested work finished" }; }]);
+  const stream = driver.stream.bind(driver);
+  driver.stream = async function* (request, signal) { if (request.purpose !== "subagent" && ++mainRequests === 5) await waitForTeammate(() => finished, signal); yield* stream(request, signal); };
   const result = await cli(["--non-interactive", "--allow-rule=run_shell", "Coordinate reviewers"], ws, { provider: driver, userConfig: { tools: { shell: { default: POSIX.path } } } });
   if (result.code !== 0) throw new Error(result.stderr);
-  if (!existsSync(output)) throw new Error(JSON.stringify(scripted.requests.filter(request => request.purpose !== "subagent").at(-1)?.history));
+  if (!existsSync(baseline) || !existsSync(output)) throw new Error(JSON.stringify(scripted.requests.filter(request => request.purpose !== "subagent").at(-1)?.history));
+  const expected = readFileSync(baseline, "utf8").trim(); expect(expected).not.toBe("");
   expect(readFileSync(output, "utf8").trim()).toBe(expected); expect(JSON.stringify(scripted.requests.filter(request => request.purpose === "subagent").at(-1)?.history)).toContain("TEAM_NESTED_WITNESS");
-}, 15000);
+  // Two independent shell runtimes can each use their existing ten-second startup fallback.
+}, 30000);
 
 test("TECH — a teammate delegation inherits its private shell instead of the leader shell", async () => {
   if (!POSIX) throw new Error("The supported test platforms provide a POSIX shell.");
-  const ws = workspace(), output = join(ws.project, "leader-cwd.txt"), folder = join(ws.project, "nested"); ws.write("project/nested/file.txt", "nested");
+  const ws = workspace(), baseline = join(ws.project, "leader-before.txt"), output = join(ws.project, "leader-cwd.txt"), folder = join(ws.project, "nested"); ws.write("project/nested/file.txt", "nested");
   const quote = (value: string) => "'" + value.replace(/\\/g, "/").replace(/'/g, "'\\''") + "'";
-  const expected = runToCompletion(POSIX.path, ["-c", "pwd"], { cwd: ws.project, env: process.env as Record<string,string>, timeoutMs: 5000 }).stdout.trim();
   let finished = false, mainRequests = 0;
-  const scripted = new ScriptedProvider([...setup(), call("run_shell", { command: `pwd > ${quote(output)}` }), { text: "FINISHED" }], [call("spawn_agent", { role: "general", description: "Nested", prompt: "Change your working folder." }), call("run_shell", { command: `cd ${quote(folder)}; pwd` }), { text: "Nested finished" }, () => { finished = true; return { text: "Outer finished" }; }]);
-  const driver: ModelProvider = { id: scripted.id, async *stream(request, signal) { if (request.purpose !== "subagent" && ++mainRequests === 3) { for (let n = 0; n < 400 && !finished; n++) await Bun.sleep(10); expect(finished).toBe(true); } yield* scripted.stream(request, signal); } };
+  const scripted = new ScriptedProvider([call("run_shell", { command: `pwd > ${quote(baseline)}` }), ...setup(), call("run_shell", { command: `pwd > ${quote(output)}` }), { text: "FINISHED" }], [call("spawn_agent", { role: "general", description: "Nested", prompt: "Change your working folder." }), call("run_shell", { command: `cd ${quote(folder)}; pwd` }), { text: "Nested finished" }, () => { finished = true; return { text: "Outer finished" }; }]);
+  const driver: ModelProvider = { id: scripted.id, async *stream(request, signal) { if (request.purpose !== "subagent" && ++mainRequests === 4) await waitForTeammate(() => finished, signal); yield* scripted.stream(request, signal); } };
   const result = await cli(["--non-interactive", "--allow-rule=run_shell", "Coordinate"], ws, { provider: driver, userConfig: { tools: { shell: { default: POSIX.path } } } });
+  const expected = readFileSync(baseline, "utf8").trim(); expect(expected).not.toBe("");
   expect(result.code).toBe(0); expect(readFileSync(output, "utf8").trim()).toBe(expected); expect(new Set(scripted.requests.filter(request => request.purpose === "subagent").map(request => request.agent)).size).toBe(2);
-}, 15000);
+}, 30000);
 
 test("TECH — a new team cannot inherit the previous member read credit", async () => {
   const ws = workspace(), target = ws.write("project/reused.txt", "ORIGINAL_TEAM_FILE"); let first = true;

@@ -9,9 +9,10 @@ import { bench } from "./helpers/engine";
 const sdkServers = [{ name: "app", tools: [{ name: "lookup", description: "Look up a local application record.", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false }, annotations: { readOnlyHint: true } }] }];
 test("SPEC-MCP-005/CA-01 — a host-declared lookup is relayed as MCP tools/call and returned to the model", async () => {
   const p = new ScriptedProvider([{ toolCalls: [{ name: "cnx_app_lookup", input: { id: "42" } }] }, { text: "vu" }]); let received: unknown;
-  const host = new Host(workspace(), { provider: p, argv: ["--allow-rule", "cnx_app_lookup"], init: { sdkServers, demands: ["sdk_mcp_request"] }, answers: { sdk_mcp_request: params => { received = params; return { content: [{ type: "text", text: "local record 42" }] }; } } });
+  const host = new Host(workspace(), { provider: p, argv: ["--allow-rule", "cnx_app_lookup"], init: { sdkServers, decisionAuthority: true, demands: ["sdk_mcp_request", "confirm_escalation"] }, userConfig: { engine: { control: { allowEscalation: true } } }, answers: { confirm_escalation: params => ({ decision: "confirm", escalationId: params["escalationId"] }), sdk_mcp_request: params => { received = params; return { content: [{ type: "text", text: "local record 42" }] }; } } });
   const state = await host.request("get_state"); expect(JSON.stringify(state)).toContain("cnx_app_lookup");
   const listed = await host.request("invoke_command", { command: "/connectors" }); expect(JSON.stringify(listed)).toContain("application");
+  expect(host.demands("confirm_escalation")).toHaveLength(1);
   host.user("cherche"); await host.waitFor(message => message.type === "turn_completed"); host.feed.end(); const result = await host.finish();
   expect(result.code).toBe(0); expect(received).toMatchObject({ server: "app", method: "tools/call", params: { name: "lookup", arguments: { id: "42" } } }); expect(JSON.stringify(p.requests[1]?.history)).toContain("local record 42");
 });

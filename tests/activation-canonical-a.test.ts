@@ -20,7 +20,7 @@ bodyMarkers.push("this.options.analyze()","Relit, applique ou écarte une propos
 test("TECH — canonical A options guard direct entry points, restored plans and real body removal while ordinary features survive",()=>{
  const included=probe("internal",{},true),removed=probe("internal",off,true),p=included.data,r=removed.data;
  for(const command of ["configure-remote","deep-plan","merge-request-subscribe","generate-skills","skill-improvements","cache-reset","explain-context"]){expect(p.commands).toContain(command);expect(r.commands).not.toContain(command);}
- for(const name of ["deep-review","cloud-environment","session","configure-terminal","create-instructions","editor-link"]){expect(p.commands).toContain(name);expect(r.commands).toContain(name);}
+ for(const name of ["deep-review","cloud-environment","session-link","configure-terminal","create-instructions","create-verifiers","editor-link"]){expect(p.commands).toContain(name);expect(r.commands).toContain(name);}
  for(const option of ["remote-session","reopen-remote","connect-editor"]){expect(p.options).toContain(option);expect(r.options).toContain(option);}
  for(const skill of ["ai-api-guide","defect-scan"]){expect(p.skills).toContain(skill);expect(r.skills).not.toContain(skill);}
  for(const result of [r.configure,r.plan,r.subscription,r.tool]){expect(result.error).toBeDefined();expect(result.effects).toEqual([]);}

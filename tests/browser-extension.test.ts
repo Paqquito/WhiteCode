@@ -36,7 +36,9 @@ test.skipIf(!nativeBrowserAvailable)("TECH — an installed real extension publi
     expect((await call({ action: "click", tab, ref: button })).isError).toBe(false);
     expect(text(await call({ action: "read", tab }))).toContain("Changed through native messaging");
     expect(text(await call({ action: "console", tab }))).toContain("NATIVE_CONSOLE_MARKER");
-    const screenshot = await call({ action: "screenshot", tab }); expect(screenshot.isError, text(screenshot)).toBe(false); const image = screenshot.content.find(part => part.type === "image"); expect(image?.type).toBe("image"); if (image?.type === "image") expect(Buffer.from(image.dataBase64, "base64").subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    const preparation = await fixture.prepareCapture(tab), screenshot = await call({ action: "screenshot", tab });
+    const captureDiagnostic = screenshot.isError ? JSON.stringify({ preparation, current: await fixture.captureState(tab).catch(error => ({ unavailable: String(error) })) }) : "";
+    expect(screenshot.isError, text(screenshot) + captureDiagnostic).toBe(false); const image = screenshot.content.find(part => part.type === "image"); expect(image?.type).toBe("image"); if (image?.type === "image") expect(Buffer.from(image.dataBase64, "base64").subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
     expect(await fixture.evaluate(`chrome.tabs.get(${tab}).then(t=>t.groupId>=0)`)).toBe(true);
     allowed = false; expect((await call({ action: "read", tab })).isError).toBe(true); expect(await bridge.tool()).toBeUndefined();
   } finally { await bridge.close(); await fixture.close(); site.stop(true); }
@@ -88,15 +90,21 @@ test.skipIf(!nativeBrowserAvailable)("SPEC-INT-011/CA-01 — /browser exposes na
   const fixture = await nativeBrowserFixture(), controller = new AbortController();
   const site = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("<h1>REAL_CLI_BROWSER_PAGE</h1>", { headers: { "content-type": "text/html" } }) }), origin = `http://127.0.0.1:${site.port}`;
   const lastResult = (request: ModelRequest) => request.history.flatMap(message => message.role === "user" ? message.parts : []).filter(part => part.type === "tool_result").at(-1)!;
-  let tab = 0;
+  let tab = 0, captureDiagnostic: unknown;
   const provider = new ScriptedProvider([
     request => { expect(request.tools.map(tool => tool.name)).toContain("cnx_browser_control"); return { toolCalls: [{ name: "use_skill", input: { name: "browser-control" } }] }; },
     () => ({ toolCalls: [{ name: "cnx_browser_control", input: { action: "navigate", url: origin } }] }),
     request => { const previous = lastResult(request); expect(previous.isError).toBe(false); tab = data(previous).id; return { toolCalls: [{ name: "cnx_browser_control", input: { action: "read", tab } }] }; },
     request => { expect(text(lastResult(request))).toContain("REAL_CLI_BROWSER_PAGE"); return { toolCalls: [{ name: "cnx_browser_control", input: { action: "screenshot", tab } }] }; },
-    request => { expect(lastResult(request).content.some(part => part.type === "image")).toBe(true); return { text: "Native browser CLI verified." }; },
+    request => { expect(lastResult(request).content.some(part => part.type === "image"), JSON.stringify(captureDiagnostic)).toBe(true); return { text: "Native browser CLI verified." }; },
     request => { expect(request.tools.map(tool => tool.name)).not.toContain("cnx_browser_control"); return { text: "Browser disconnected verified." }; },
   ]);
+  const stream = provider.stream.bind(provider);
+  provider.stream = async function* (request, signal) {
+    if (provider.requests.length === 3) captureDiagnostic = { preparation: await fixture.prepareCapture(tab) };
+    if (provider.requests.length === 4) captureDiagnostic = { preparation: captureDiagnostic, current: await fixture.captureState(tab).catch(error => ({ unavailable: String(error) })) };
+    yield* stream(request, signal);
+  };
   let run: ReturnType<typeof interactive> | undefined;
   try {
     await fixture.allow(origin);

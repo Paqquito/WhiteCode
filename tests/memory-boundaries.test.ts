@@ -97,7 +97,7 @@ test("TECH — memory commands obey read refusals without exposing or forgetting
   const ws = workspace(), root = join(ws.root, "memory"); mkdirSync(root); const file = join(root, "fact.md"); writeFileSync(file, fact());
   const permissions = { denyRules: [`read_file(//${file.replace(/\\/g, "/").replace(/^\//, "")})`] };
   const config = { permissions, memory: { directory: root, automatic: { enabled: true }, recall: { enabled: false }, autoExtraction: { enabled: false }, session: { enabled: false } } };
-  for (const command of ["/memory list", "/memory show fact.md", "/memory forget fact.md"]) {
+  for (const command of ["/edit-memory-files list", "/edit-memory-files show fact.md", "/edit-memory-files forget fact.md"]) {
     const provider = new ScriptedProvider([]); const result = await cli(["--non-interactive", command], ws, { provider, userConfig: config });
     expect(JSON.stringify(result)).not.toContain("MEMORY_BOUNDARY_WITNESS"); expect(provider.requests).toHaveLength(0); expect(existsSync(file)).toBe(true);
   }

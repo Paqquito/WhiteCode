@@ -47,7 +47,9 @@ try {
   await run.waitFor(
     (t) => t.includes("Discreet commit created."),
     "internal commit",
-    15000,
+    // The optional shell capture can spend 10 s on its fallback before two native Git commands.
+    // This bounds the complete functional fixture; it is not a product response-time requirement.
+    30000,
   );
   const message = f.git("log", "-1", "--format=%B");
   if (

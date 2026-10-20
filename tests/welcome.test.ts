@@ -27,7 +27,7 @@ test("SPEC-IHM-025/CA-02 — changed versions show actual installed notes once p
 test("SPEC-CMD-053/CA-01 — offline release notes read the local cache without any provider call", async () => {
   const ws = workspace(), provider = new ScriptedProvider([]);
   writeFileSync(join(ws.configHome, "release-notes.json"), JSON.stringify({ text: "Cached release witness\n<script>alert(1)</script>" }));
-  const result = await cli(["--non-interactive", "/release-notes"], ws, { provider });
+  const result = await cli(["--non-interactive", "/changelog"], ws, { provider });
   expect(result.code).toBe(0); expect(result.stdout).toContain("Cached release witness"); expect(result.stdout).toContain("Version installée : 0.1.0"); expect(provider.requests).toHaveLength(0);
 });
 

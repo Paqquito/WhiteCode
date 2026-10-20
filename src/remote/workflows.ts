@@ -187,7 +187,7 @@ export class CloudWorkflows {
     signal.throwIfAborted();
     if (name === "share") {
       if (!buildFlag("session_publish") || buildProfile() !== "internal") throw Error("Publication de session indisponible dans cette construction.");
-      if (args.trim()) throw Error("Usage : /share.");
+      if (args.trim()) throw Error("Usage : /publish-session.");
       const serialized = this.options.redact(
         JSON.stringify(this.options.history()),
       );
@@ -213,7 +213,7 @@ export class CloudWorkflows {
       return "Lien de partage : " + serviceLink(raw.url, this.options.webUrl);
     }
     if (name === "session") {
-      if (args.trim()) throw Error("Usage : /session.");
+      if (args.trim()) throw Error("Usage : /session-link.");
       const task = [...this.#tasks.values()].at(-1);
       if (!task) throw Error("Aucune session distante associée.");
       await this.#assertOwner(task);

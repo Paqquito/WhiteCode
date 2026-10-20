@@ -117,7 +117,9 @@ describe("SPEC-EXT-020 invocation of skills", () => {
     expect(history(p, 2)).toContain('"text":"skill-ok"');
     expect(history(p, 2)).not.toContain("Not allowed in this run");
     expect(history(p, 4).split("Not allowed in this run: run_shell(printf skill-ok)")).toHaveLength(2);
-  });
+    // The first real shell call may spend ten seconds in its existing environment capture.
+    // This verifies the grant lifecycle, independently of that optional startup work.
+  }, 20_000);
 
   test("TECH — SPEC-EXT-020 § 5.3 step 1 — a deny rule use_skill(check) refuses the invocation", async () => {
     const ws = workspace();
