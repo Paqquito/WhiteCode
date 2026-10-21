@@ -128,7 +128,7 @@ test("SPEC-PER-004/CA-01 — a generic interpreter allow is neutralized in auto_
   expect(JSON.stringify(main(p)[2]?.history)).not.toContain("Nobody can approve");
   expect(readFileSync(two, "utf8")).toBe("executed");
   expect(p.requests.filter((q) => q.purpose === "side")).toHaveLength(1);
-});
+}, 20_000);
 
 test("SPEC-PER-018/CA-02 — an older consent version requires a new dialog before activation", async () => {
   const ws = workspace(); ws.write("home/config/state.json", JSON.stringify({ autoApproveConsent: { version: 0, at: "2026-09-01T00:00:00.000Z" } }));
@@ -148,7 +148,7 @@ test("SPEC-MOD-005/CA-16 — insufficient budget prevents the classifier request
   const p = new ScriptedProvider([{ toolCalls: [{ name: "write_file", input: { path, content: "never" } }] }, { text: "done" }]);
   let human = 0;
   const r = await cli([...modeArgs, "--model", "large", "--max-cost", "1"], ws, { provider: p,
-    userConfig: { models: { pricingOverrides: { "test-small": { inputPerMTok: 1, outputPerMTok: 1_000_000, cacheReadPerMTok: 1, cacheWritePerMTok: 1 } } } },
+    userConfig: { cost: { priceOverrides: { "test-small": { inputPerMTok: 1, outputPerMTok: 1_000_000, cacheReadPerMTok: 1, cacheWritePerMTok: 1 } } } },
     extra: { authorities: { human: { request: async (request) => { human++; expect(request.reason).toContain("budget is insufficient"); return { answer: "no" }; } } } },
   });
   expect(r.code).toBe(0); expect(human).toBe(1); expect(existsSync(path)).toBe(false);

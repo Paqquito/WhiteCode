@@ -129,7 +129,7 @@ test("SPEC-OBS-021/CA-02 — with a one-unit budget, the third half-unit request
   const provider = new ScriptedProvider([1, 2, 3].map((n) => ({ text: `step ${n}`, usage: { input: 0, output: 1000 }, toolCalls: [{ name: "read_file", input: { path: `/nowhere/${n}.txt` } }] })));
   const result = await cli(["--non-interactive", "--model", "large", "--max-cost", "1", "--result-format", "json", "go"], workspace(), {
     provider, env: { [`${loadIdentity().get("ENV_PREFIX")}RESPONSE_TOKEN_LIMIT`]: "1000" },
-    userConfig: { models: { pricingOverrides: { "test-large": { inputPerMTok: 0, outputPerMTok: 500, cacheReadPerMTok: 0, cacheWritePerMTok: 0 } } } },
+    userConfig: { cost: { priceOverrides: { "test-large": { inputPerMTok: 0, outputPerMTok: 500, cacheReadPerMTok: 0, cacheWritePerMTok: 0 } } } },
   });
   expect(result.code).toBe(3);
   expect(provider.requests).toHaveLength(2);

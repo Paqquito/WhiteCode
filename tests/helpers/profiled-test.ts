@@ -1,4 +1,5 @@
 // Re-executes the unchanged scenario in a real isolated build profile; no environment can override a macro.
+// Supports: SPEC-BLD-007 (profile validation preserves the unchanged inner scenario timeout), gap E-326.
 import { beforeAll, test as bunTest } from "bun:test";
 import { cpSync, mkdirSync, realpathSync, symlinkSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
@@ -31,6 +32,8 @@ export function compileProfileProbe(profile: "public" | "internal" | "test", fil
 export function profiledTest(file: string, profile: "public" | "internal" | "test" = "test") {
   let compiled: ReturnType<typeof compileProfileProbe> | undefined, setup = false;
   const register = (name: string, body: () => unknown | Promise<unknown>, timeout?: number) => {
+    const inProfile = buildProfile() === profile;
+    const outerTimeout = inProfile ? timeout : (timeout ?? 5000) + 5000;
     if (!setup && file.endsWith(".ts") && buildProfile() !== profile) {
       setup = true;
       // Building the fixture is setup; every scenario keeps its original execution timeout below.
@@ -40,12 +43,12 @@ export function profiledTest(file: string, profile: "public" | "internal" | "tes
     if (buildProfile() === profile) { await body(); return; }
     if (!compiled) throw Error("Profiled fixture was not compiled.");
     const pattern = "^" + name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$";
-    const result = runToCompletion(BUN, ["--no-env-file", "test", compiled.output, "--test-name-pattern", pattern], { cwd: compiled.root, env: compiled.environment, timeoutMs: timeout ?? 5000 });
+    const result = runToCompletion(BUN, ["--no-env-file", "test", compiled.output, "--test-name-pattern", pattern], { cwd: compiled.root, env: compiled.environment, timeoutMs: outerTimeout! });
     const proof = { profile, file: relative(ROOT, file), name, code: result.code, stdout: result.stdout, stderr: result.stderr };
     writeFileSync(join(dirname(compiled.output), "verdict-" + crypto.randomUUID() + ".json"), JSON.stringify(proof, null, 2));
     const output = result.stderr + result.stdout;
     if (result.code !== 0 || !/^\s*1 pass\s*$/m.test(output) || !/^\s*0 fail\s*$/m.test(output) || !output.includes("(pass) " + name)) throw Error("Profiled scenario failed: " + JSON.stringify(proof));
-  }, timeout);
+  }, outerTimeout);
   };
   register.skipIf = (condition: boolean) => condition ? bunTest.skip : register;
   return register;

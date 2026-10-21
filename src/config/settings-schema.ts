@@ -5,6 +5,7 @@
 // Supports: SPEC-CFG-003 (policy.requiredKeys), SPEC-PER-001 (detachedWaitTimeout catalogue), gap E-120.
 // Supports: SPEC-PER-004/014/018 (approval instructions, denial thresholds, managed consent), gap E-138.
 // Supports: SPEC-IHM-020 (user theme and immediate application), gap E-142.
+// Supports: SPEC-OBS-021 (RG-02, canonical cost.priceOverrides setting), gap E-313.
 // Single source of truth for setting keys: type, default, allowed scopes, owner sheet, merge rule, widening flags.
 
 import { Type, type TSchema } from "@sinclair/typebox";
@@ -202,7 +203,7 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "models.allowList", schema: strList(), scopes: [U, G], owner: "SPEC-API-007" },
   { key: "models.extraCatalog", schema: Type.Array(Type.Unknown()), default: [], scopes: [U, G], owner: "SPEC-API-006", merge: "concat" },
   // Price overrides by model id, in the reference currency (gap E-055); a user override is ignored under a managed cap (SPEC-MOD-005 CA-14).
-  { key: "models.pricingOverrides", schema: Type.Record(Type.String(), Type.Record(Type.String(), Type.Unknown())), default: {}, scopes: [U, G], owner: "SPEC-MOD-005" },
+  { key: "cost.priceOverrides", schema: Type.Record(Type.String(), Type.Record(Type.String(), Type.Unknown())), default: {}, scopes: [U, G], owner: "SPEC-OBS-021" },
   // SPEC-API-005: backup model after consecutive overloads.
   { key: "models.fallback", schema: str(), scopes: [U, P, G, C], owner: "SPEC-API-005" },
   { key: "models.fallbackAfterOverloads", schema: int(1), default: 3, scopes: [U, G], owner: "SPEC-API-005" },

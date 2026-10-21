@@ -120,7 +120,7 @@ describe("SPEC-MOD-005 limits", () => {
   test("SPEC-MOD-005/CA-14 — a user's zero price cannot override the administrator's pricing base under a managed cap", async () => {
     const ws = workspace(); ws.write("managed/policy.json", JSON.stringify({ engine: { limits: { maxCost: 0.001 } } }));
     const provider = new ScriptedProvider([{ text: "must not be sent" }]);
-    const r = await cli(["--non-interactive", "--model", "large", "--result-format", "json", "go"], ws, { provider, userConfig: { models: { pricingOverrides: { "test-large": { inputPerMTok: 0, outputPerMTok: 0, cacheReadPerMTok: 0, cacheWritePerMTok: 0 } } } } });
+    const r = await cli(["--non-interactive", "--model", "large", "--result-format", "json", "go"], ws, { provider, userConfig: { cost: { priceOverrides: { "test-large": { inputPerMTok: 0, outputPerMTok: 0, cacheReadPerMTok: 0, cacheWritePerMTok: 0 } } } } });
     expect(r.code).toBe(3);
     expect(provider.requests).toHaveLength(0);
     expect(json(r.stdout)).toMatchObject({ haltReason: "budget_limit", cost: { cap: 0.001, confirmed: 0 } });
@@ -172,7 +172,7 @@ describe("SPEC-MOD-005 limits", () => {
   });
 
   test("TECH — fallback admission uses the managed price even when the catalogue has no backup price", async () => {
-    const ws = workspace(); ws.write("managed/policy.json", JSON.stringify({ engine: { limits: { maxCost: 10 } }, models: { pricingOverrides: { "test-small": { inputPerMTok: 1_000_000, outputPerMTok: 1_000_000, cacheReadPerMTok: 1_000_000, cacheWritePerMTok: 1_000_000 } } } }));
+    const ws = workspace(); ws.write("managed/policy.json", JSON.stringify({ engine: { limits: { maxCost: 10 } }, cost: { priceOverrides: { "test-small": { inputPerMTok: 1_000_000, outputPerMTok: 1_000_000, cacheReadPerMTok: 1_000_000, cacheWritePerMTok: 1_000_000 } } } }));
     const provider = new ScriptedProvider([{ error: { kind: "overloaded", retryAfterMs: 0 } }, { text: "must not evade managed price" }]);
     const r = await cli(["--non-interactive", "--model", "large", "--backup-model", "small", "--result-format", "json", "go"], ws, { provider, userConfig: { models: { fallbackAfterOverloads: 1 } } });
     expect(r.code).toBe(3); expect(provider.requests).toHaveLength(1);
@@ -236,13 +236,13 @@ describe("SPEC-MOD-005 limits", () => {
   test("SPEC-MOD-005/CA-08 — a price override in another currency under a cap: rejected with a warning; without other price, ERR-05", async () => {
     const provider = new ScriptedProvider([{ text: "never" }]);
     const override = { "test-medium": { currency: "EUR", inputPerMTok: 1, outputPerMTok: 2, cacheReadPerMTok: 0.1, cacheWritePerMTok: 1.25 } };
-    const r = await cli(["--non-interactive", "--model", "medium", "--max-cost", "5", "go"], workspace(), { provider, userConfig: { models: { pricingOverrides: override } } });
+    const r = await cli(["--non-interactive", "--model", "medium", "--max-cost", "5", "go"], workspace(), { provider, userConfig: { cost: { priceOverrides: override } } });
     expect(r.stderr).toContain("devise EUR différente de la devise de référence USD");
     expect(r.stderr).toContain("Le plafond de coût ne peut pas être garanti");
     expect(r.code).toBe(2);
     expect(provider.requests).toHaveLength(0);
     // In the reference currency, the override is used and the cap holds.
-    const ok = await cli(["--non-interactive", "--model", "medium", "--max-cost", "5", "go"], workspace(), { provider: new ScriptedProvider([{ text: "fine" }]), userConfig: { models: { pricingOverrides: { "test-medium": { ...override["test-medium"], currency: "USD" } } } } });
+    const ok = await cli(["--non-interactive", "--model", "medium", "--max-cost", "5", "go"], workspace(), { provider: new ScriptedProvider([{ text: "fine" }]), userConfig: { cost: { priceOverrides: { "test-medium": { ...override["test-medium"], currency: "USD" } } } } });
     expect(ok.code).toBe(0);
   });
 

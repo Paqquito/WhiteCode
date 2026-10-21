@@ -115,7 +115,8 @@ test("TECH — cloud command timeout and policy revocation stop before export; a
   let revoked=false;
   const denied=new CloudCredentials({...base,service:"cloud-revoked",refreshTimeoutMs:2000,report:()=>{revoked=true;},assertCurrent:()=>{if(revoked)throw new Error("revoked");}});
   try{await expect(denied.get(new AbortController().signal)).rejects.toThrow();}finally{await denied.close();}
-  const immediate=ws.write("ready.ts","console.log('ready');"), unlocked=new CloudCredentials({...base,service:"cloud-dead-owner",commands:{refresh:`"${BUN}" "${immediate}"`,export:base.commands.export}});
+  // Supports: SPEC-API-015 (positive lock recovery does not inherit the negative timeout scenario), gap E-325.
+  const immediate=ws.write("ready.ts","console.log('ready');"), unlocked=new CloudCredentials({...base,service:"cloud-dead-owner",refreshTimeoutMs:2000,commands:{refresh:`"${BUN}" "${immediate}"`,export:base.commands.export}});
   const directory=join(tmpdir(),"cloud-auth-"+createHash("sha256").update("cloud-dead-owner\n"+comparablePath(realPathOrSelf(ws.home))).digest("hex")), lock=join(directory,"refresh.lock");
   const owner=ws.write("owner.ts",`import {tryFileLock} from ${JSON.stringify(join(ROOT,"src/platform/file-lock.ts"))}; const release=tryFileLock(${JSON.stringify(lock)});if(!release)process.exit(1);console.log('locked');setInterval(()=>{},1000);`);
   const child=Bun.spawn([process.execPath,"--no-env-file",owner],{env:productEnv(ws),stdout:"pipe",stderr:"pipe"}),reader=child.stdout.getReader(),timer=setTimeout(()=>child.kill(),3000);

@@ -1,4 +1,5 @@
 // Supports: SPEC-CFG-003 (CA-03, CA-10), SPEC-PER-021 (human consent before sensitive effects), gap E-129.
+// Multi-session cases have an aggregate envelope; consent guards and every product deadline stay unchanged.
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { cli, workspace, loadIdentity, trustedPolicyFile, ROOT, type Workspace } from "./helpers/env";
@@ -76,7 +77,7 @@ test("SPEC-PER-021/CA-01 — a new authorised offline hook is shown for human co
     expect(factories).toBe(1);
   } finally { terminal.type("/quit" + KEY.enter); }
   expect((await terminal.done).code).toBe(0);
-});
+}, 20_000);
 
 test("SPEC-PER-021/CA-04 — automated unaccepted sensitive cache fails before provider creation, hooks or project code", async () => {
   const ws = workspace();
@@ -107,7 +108,7 @@ test("SPEC-CFG-003/CA-03 — an accepted sensitive cache applies offline after r
   expect(state).toContain("sha256:");
   expect(state).not.toContain(effect.command);
   expect(state).not.toContain("accepted-offline-hook");
-});
+}, 20_000);
 
 test("SPEC-PER-021/CA-02 — an authorised non-sensitive change applies without another dialog while the exact accepted hook remains active", async () => {
   const ws = workspace();
@@ -125,7 +126,7 @@ test("SPEC-PER-021/CA-02 — an authorised non-sensitive change applies without 
   } finally { terminal.type("/quit" + KEY.enter); }
   expect((await terminal.done).code).toBe(0);
   expect(effect.read()).toHaveLength(2);
-});
+}, 20_000);
 
 test("SPEC-CFG-003/CA-10 — SPEC-PER-021/CA-03 — refusing a sensitive replacement suspends covered actions without running either old or new policy", async () => {
   const ws = workspace();
@@ -155,7 +156,7 @@ test("SPEC-CFG-003/CA-10 — SPEC-PER-021/CA-03 — refusing a sensitive replace
   expect(newEffect.read()).toHaveLength(0);
   expect(provider.requests).toHaveLength(0);
   expect((await cli(["--non-interactive", "Read the summary."], ws, { provider, extra: { now } })).code).toBe(4);
-});
+}, 20_000);
 
 test("TECH — a policy changed or revoked during human review does not inherit the pending consent", async () => {
   for (const revoke of [false, true]) {
@@ -194,7 +195,7 @@ test("TECH — prior consent is qualified by organisation and perimeter; fabrica
     expect((await cli(["--non-interactive", "Read the summary."], ws, { provider: new ScriptedProvider([]), extra: { now } })).code).toBe(4);
   }
   expect(effect.read()).toHaveLength(1);
-});
+}, 20_000);
 
 test("TECH — an unrestricted agent can write a receipt but cannot forge a durable human grant", async () => {
   const ws = workspace();

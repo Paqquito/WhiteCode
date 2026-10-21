@@ -17,7 +17,7 @@ import { ROOT } from "./helpers/env";
 const text = (value: ToolOutcome) => value.content.filter(part => part.type === "text").map(part => part.text).join("\n");
 const data = (value: ToolOutcome): any => { expect(value.isError).toBe(false); return JSON.parse(text(value).split("\n").slice(1).join("\n")); };
 const ref = (page: { text: string }, label: string) => { const line = page.text.split("\n").find(line => line.includes(label)); expect(line).toBeDefined(); return /^\[([^\]]+)\]/.exec(line!)![1]!; };
-async function waitFor(predicate: () => boolean, message: string) { const deadline = Date.now() + 6000; while (!predicate()) { if (Date.now() > deadline) throw Error(message); await sleep(30); } }
+async function waitFor(predicate: () => boolean, message: string, timeoutMs = 6000) { const deadline = Date.now() + timeoutMs; while (!predicate()) { if (Date.now() > deadline) throw Error(message); await sleep(30); } }
 
 test.skipIf(!nativeBrowserAvailable)("TECH — an installed real extension publishes MCP navigation, reads its actual page and captures its controlled tab", async () => {
   const fixture = await nativeBrowserFixture();
@@ -67,7 +67,8 @@ test.skipIf(!nativeBrowserAvailable)("TECH — two actual browser profiles requi
   try {
     await bridge.start(); await first.reconnect(); await waitFor(() => bridge.connected, "First real browser did not connect."); const firstClient = bridge.clients[0]!.id;
     second = await nativeBrowserFixture(first); expect(second.id).toBe(first.id); await second.reconnect(); await waitFor(() => bridge.clients.length === 2, "Second real browser did not connect."); expect(bridge.connected).toBe(false); expect(await bridge.tool()).toBeUndefined();
-    bridge.select(firstClient); expect(bridge.connected).toBe(true); expect((await bridge.tool())?.name).toBe("cnx_browser_control"); await first.close(); await waitFor(() => bridge.clients.length === 1, "Selected real browser did not detach."); expect(bridge.connected).toBe(false); expect(await bridge.tool()).toBeUndefined();
+    // Supports: SPEC-INT-011 (forced host exit needs the existing 5 s lease plus its 2 s sweep), gap E-324.
+    bridge.select(firstClient); expect(bridge.connected).toBe(true); expect((await bridge.tool())?.name).toBe("cnx_browser_control"); await first.close(); await waitFor(() => bridge.clients.length === 1, "Selected real browser did not detach.", 8000); expect(bridge.connected).toBe(false); expect(await bridge.tool()).toBeUndefined();
     bridge.select(bridge.clients[0]!.id); expect(bridge.connected).toBe(true);
     const child = Bun.spawn([process.execPath, "--no-env-file", join(ROOT, "tests/fixtures/browser-bridge-child.ts"), first.ws.configHome, first.slug, first.id], { cwd: first.ws.root, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]); expect(err).toBe(""); expect(code).toBe(0); expect(out.trim()).toBe("Native profile ownership refused."); expect(bridge.connected).toBe(true);

@@ -33,6 +33,7 @@ import { usageReport, FACET_PROMPT, REPORT_PROMPT, temporaryReportPage } from ".
 // Supports: SPEC-CFG-010 (CA-01, CA-02: concurrent choices and corrupt-state recovery), gap E-134.
 // Supports: SPEC-PER-004/018 (approval model and versioned consent), SPEC-PER-014 (session denials), SPEC-MOD-005 (CA-16), gap E-138.
 // Supports: SPEC-OBS-012 (CA-01/02, destinations and announcement), SPEC-OBS-015 (CA-05), SPEC-OBS-021 (CA-01/02), gap E-141.
+// Supports: SPEC-OBS-021 (RG-02, canonical cost.priceOverrides setting), gap E-313.
 // Supports: SPEC-IHM-019 (CA-01/02), SPEC-IHM-020 (CA-02), SPEC-CMD-072 (CA-01), SPEC-MOD-001 (CA-06), gap E-142.
 // Composition root of a session: options → identity and settings → provider → engine → automated output, or the
 // Supports: SPEC-CAD-002 (CA-13), SPEC-API-006 (CA-02, unknown identifiers with minimal capabilities), gap E-145.
@@ -2110,7 +2111,7 @@ async function run(argv: readonly string[], deps: RunDependencies, err: (text: s
   // Price of the model: catalogue, or an authorised override in the reference currency (gaps E-055; CA-08, CA-14).
   const managedCap = settings.valuesByScope("engine.limits.maxCost").some((s) => s.origin === "managed");
   const overrides = settings
-    .valuesByScope("models.pricingOverrides")
+    .valuesByScope("cost.priceOverrides")
     .filter((s) => s.origin !== "default" && (s.origin === "managed" || !managedCap))
     .map((s) => ({ scope: String(s.origin), value: s.value as Record<string, unknown> }));
   const pricing = effectivePricing(resolvedModel, overrides, referenceCurrency, (m) => err(`avertissement : ${m}`));

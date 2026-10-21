@@ -102,9 +102,9 @@ test("SPEC-IHM-039/CA-01 — a public interactive session records a slow operati
 
 test("SPEC-OBS-021/CA-03 — reopening with changed prices retains the previous tariff and its fingerprint", async () => {
   const ws = workspace(), old = { inputPerMTok: 1, outputPerMTok: 2, cacheReadPerMTok: 1, cacheWritePerMTok: 1, effectiveDate: "2026-01-01", source: "fixture-old", currency: "USD" };
-  const initial = await cli(["--non-interactive", "--model", "large", "--result-format", "json", "first"], ws, { provider: new ScriptedProvider([{ text: "done", usage: { input: 1000, output: 100 } }]), userConfig: { models: { pricingOverrides: { "test-large": old } } } });
+  const initial = await cli(["--non-interactive", "--model", "large", "--result-format", "json", "first"], ws, { provider: new ScriptedProvider([{ text: "done", usage: { input: 1000, output: 100 } }]), userConfig: { cost: { priceOverrides: { "test-large": old } } } });
   expect(initial.code).toBe(0); const first = JSON.parse(initial.stdout);
-  const resumed = await cli(["--non-interactive", `--reopen=${first.sessionId}`, "--result-format", "json", "next"], ws, { identity: new Identity({ ...loadIdentity().resolved, version: "0.2.0" }), provider: new ScriptedProvider([{ text: "done", usage: { input: 1000, output: 100 } }]), userConfig: { models: { pricingOverrides: { "test-large": { ...old, inputPerMTok: 10, source: "fixture-new", effectiveDate: "2026-10-01" } } } } });
+  const resumed = await cli(["--non-interactive", `--reopen=${first.sessionId}`, "--result-format", "json", "next"], ws, { identity: new Identity({ ...loadIdentity().resolved, version: "0.2.0" }), provider: new ScriptedProvider([{ text: "done", usage: { input: 1000, output: 100 } }]), userConfig: { cost: { priceOverrides: { "test-large": { ...old, inputPerMTok: 10, source: "fixture-new", effectiveDate: "2026-10-01" } } } } });
   expect(resumed.code).toBe(0); expect(JSON.parse(resumed.stdout).cost.confirmed).toBeCloseTo(0.0114);
   const files = readdirSync(join(ws.configHome, "sessions"), { recursive: true }).filter(file => String(file).endsWith(".jsonl"));
   const records = files.flatMap(file => readFileSync(join(ws.configHome, "sessions", String(file)), "utf8").trim().split("\n").map(line => JSON.parse(line)));

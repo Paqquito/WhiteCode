@@ -1,4 +1,5 @@
 // Implements: SPEC-SES-014 (internal repository snapshots, owner-pinned background upload, exclusions, CA-01 to CA-03), gap E-213.
+// Supports: SPEC-SES-014 (ENF-01 bounded calculation after remote ownership activation checks), gap E-323.
 import { createHash } from "node:crypto";
 import {
   closeSync,
@@ -235,42 +236,18 @@ export class StateCapture {
     const binding = await o.account.sessionBinding(),
       profile = await o.account.profile();
     if (!profile || binding !== (await o.account.sessionBinding())) return;
-    const cwd = realPathOrSelf(o.cwd()),
-      deadline = Date.now() + 500,
+    const cwd = realPathOrSelf(o.cwd());
+    // Ownership belongs to activation checks, before snapshot calculation; both phases are bounded separately.
+    const remote = (await gitRun(o, cwd, ["remote", "get-url", "origin"], Date.now() + 500, signal)).toString().trim();
+    const owner = forgeOwner(remote);
+    if (!owner || !o.organizations().map(value => value.toLowerCase()).includes(owner)) return;
+    const deadline = Date.now() + 500,
       run = (
         args: string[],
         input?: string | Promise<string>,
         allowOne = false,
       ) => gitRun(o, cwd, args, deadline, signal, input, allowOne);
-    const metadata = await Promise.allSettled([
-      run(["remote", "get-url", "origin"]),
-      run(["rev-parse", "--show-toplevel", "HEAD"]),
-    ]);
-    for (const result of metadata)
-      if (result.status === "rejected") throw result.reason;
-    const remote = (metadata[0] as PromiseFulfilledResult<Buffer>).value
-        .toString()
-        .trim(),
-      owner = forgeOwner(remote);
-    if (
-      !owner ||
-      !o
-        .organizations()
-        .map((v) => v.toLowerCase())
-        .includes(owner)
-    )
-      return;
-    const [root, base] = (metadata[1] as PromiseFulfilledResult<Buffer>).value
-      .toString()
-      .trim()
-      .split(/\r?\n/);
-    if (
-      !root ||
-      !base ||
-      realPathOrSelf(root) !== cwd ||
-      !/^[a-f0-9]{40,64}$/.test(base)
-    )
-      return;
+    // Status can read working files or invoke configured filters; ownership is already validated.
     const namesTask = run([
       "status",
       "--porcelain=v1",
@@ -296,7 +273,22 @@ export class StateCapture {
       namesTask.then((names) => (names.length ? names.join("\0") + "\0" : "")),
       true,
     );
-    const selections = await Promise.allSettled([namesTask, ignoredTask]);
+    // All snapshot readers for the validated repository share the same 500 ms calculation deadline.
+    const collected = await Promise.allSettled([run(["rev-parse", "--show-toplevel", "HEAD"]), namesTask, ignoredTask]);
+    const rootResult = collected[0]!;
+    if (rootResult.status === "rejected") throw rootResult.reason;
+    const [root, base] = rootResult.value
+      .toString()
+      .trim()
+      .split(/\r?\n/);
+    if (
+      !root ||
+      !base ||
+      realPathOrSelf(root) !== cwd ||
+      !/^[a-f0-9]{40,64}$/.test(base)
+    )
+      return;
+    const selections = collected.slice(1);
     for (const result of selections)
       if (result.status === "rejected") throw result.reason;
     const names = (selections[0] as PromiseFulfilledResult<string[]>).value,

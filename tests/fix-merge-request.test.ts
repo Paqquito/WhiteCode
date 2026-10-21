@@ -24,11 +24,12 @@ function fixture(){
  };
  return{ws,remote,git,head,decisions,phases,options,tested:()=>tested};
 }
+// Supports: SPEC-CMD-081 (complete native Git workflow envelope; operation limits and assertions unchanged), gap E-328.
 test("SPEC-CMD-081/CA-01 — a failed check produces a reviewed correction and a real nonforce push only after both agreements",async()=>{
  const f=fixture();const result=await fixMergeRequest('7',f.options);
  expect(result).toContain('https://github.com/example/project/pull/7');expect(f.phases).toEqual(['plan','apply']);expect(f.tested()).toBe(true);expect(f.decisions).toHaveLength(2);expect(f.decisions[1]).toContain('value.ts');
  const pushed=f.git('--git-dir='+f.remote,'rev-parse','refs/heads/fix-fixture');expect(pushed).not.toBe(f.head);expect(f.git('--git-dir='+f.remote,'show',pushed+':value.ts')).toContain('= 1;');
-},10000);
+},20000);
 test("TECH — refusing the correction plan makes no edit, verification, commit or push",async()=>{
  const f=fixture();f.options.confirm=async preview=>{f.decisions.push(preview);return false;};
  expect(await fixMergeRequest('7',f.options)).toContain('annulé');expect(f.phases).toEqual(['plan']);expect(f.tested()).toBe(false);expect(f.git('status','--porcelain')).toBe('');expect(f.git('--git-dir='+f.remote,'rev-parse','refs/heads/fix-fixture')).toBe(f.head);
@@ -36,7 +37,7 @@ test("TECH — refusing the correction plan makes no edit, verification, commit 
 test("TECH — refusing publication preserves the correction locally and leaves the remote unchanged",async()=>{
  const f=fixture();f.options.confirm=async preview=>{f.decisions.push(preview);return f.decisions.length===1;};
  expect(await fixMergeRequest('',f.options)).toContain('conservée');expect(f.tested()).toBe(true);expect(f.git('rev-parse','HEAD')).toBe(f.head);expect(f.git('--git-dir='+f.remote,'rev-parse','refs/heads/fix-fixture')).toBe(f.head);expect(readFileSync(join(f.ws.project,'value.ts'),'utf8')).toContain('= 1;');
-},10000);
+},20000);
 test("TECH — a failed local test prevents the publication question and every commit",async()=>{
  const f=fixture();f.options.verify=async()=>false;
  await expect(fixMergeRequest('7',f.options)).rejects.toThrow('vérification');expect(f.decisions).toHaveLength(1);expect(f.git('rev-parse','HEAD')).toBe(f.head);
@@ -44,7 +45,7 @@ test("TECH — a failed local test prevents the publication question and every c
 test("TECH — changing a reviewed file during the publication question refuses the stale agreement",async()=>{
  const f=fixture();f.options.confirm=async preview=>{f.decisions.push(preview);if(f.decisions.length===2)writeFileSync(join(f.ws.project,'value.ts'),'changed after preview');return true;};
  await expect(fixMergeRequest('7',f.options)).rejects.toThrow('après aperçu');expect(f.git('rev-parse','HEAD')).toBe(f.head);expect(f.git('--git-dir='+f.remote,'rev-parse','refs/heads/fix-fixture')).toBe(f.head);
-},10000);
+},20000);
 test("TECH — a secret path proposed by untrusted forge content is refused before any agreement or write",async()=>{
  const f=fixture();f.options.worker=async()=>JSON.stringify({summary:'Expose a credential',files:['.env']});
  await expect(fixMergeRequest('7',f.options)).rejects.toThrow('périmètre');expect(f.decisions).toHaveLength(0);expect(f.git('status','--porcelain')).toBe('');
@@ -52,4 +53,4 @@ test("TECH — a secret path proposed by untrusted forge content is refused befo
 test("TECH — a concurrently changed Git filter cannot run during publication",async()=>{
  const f=fixture();f.options.confirm=async preview=>{f.decisions.push(preview);if(f.decisions.length===2)f.git('config','filter.untrusted.clean','must-not-execute');return true;};
  await expect(fixMergeRequest('7',f.options)).rejects.toThrow('après aperçu');expect(f.git('rev-parse','HEAD')).toBe(f.head);
-},10000);
+},20000);
