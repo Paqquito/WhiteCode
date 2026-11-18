@@ -1,3 +1,4 @@
+// Supports: SPEC-CAD-002 (build-time desktop modules and extension catalogues).
 export interface DesktopIdentity {
   readonly extensionCatalogs: readonly { readonly repository: string; readonly ref: string }[];
   readonly modules: readonly string[];

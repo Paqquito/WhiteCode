@@ -33,6 +33,9 @@
   "visual": {
     "BRAND_COLOR_PRIMARY": "#000000"
   },
+  "desktop": {
+    "modules": ["gitlab"]
+  },
   "compatibility": {
     "forbiddenTerms": []
   }
