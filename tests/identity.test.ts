@@ -21,6 +21,18 @@ const value = (r: ReturnType<typeof resolveIdentity>, name: string) => {
 };
 
 describe("SPEC-CAD-002 identity", () => {
+  test("desktop catalogues and native modules contribute to the validated identity", () => {
+    const catalog = { repository: "https://git.example/team/catalog.git", ref: "v1.0" };
+    const desktop = { modules: ["sample"], extensionCatalogs: [catalog] };
+    const resolve = (options: unknown) => resolveIdentity({ ...MINIMAL, desktop: options }, { version: "1" });
+    expect(resolve(desktop).identity?.desktop).toEqual(desktop);
+    expect(resolve(desktop).identity?.hash).not.toBe(resolve({}).identity?.hash);
+    for (const invalid of [{ modules: ["../sample"] }, { modules: ["x", "x"] }, { extra: true },
+      { extensionCatalogs: [{ ...catalog, repository: "file:///tmp/project" }] },
+      { extensionCatalogs: [{ ...catalog, ref: "-x" }] }]) {
+      expect(resolve(invalid).issues).toContainEqual(expect.objectContaining({ path: "$.desktop", severity: "error" }));
+    }
+  });
   test("SPEC-CAD-002/CA-01 — a file with only the primary variables validates and every derived variable is set", () => {
     const r = resolveIdentity(clone(MINIMAL), { version: "1.0.0" });
     expect(r.issues.filter((i) => i.severity === "error")).toEqual([]);

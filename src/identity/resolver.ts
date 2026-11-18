@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import { MODEL_TIERS, VARIABLES, VARIABLE_BY_NAME, type ModelTier, type Section, type VariableDef } from "./catalog";
 import { PROTECTED_COMMANDS } from "./protected-commands";
+import { readDesktopIdentity, type DesktopIdentity } from "./desktop";
 import { applyTransform, isTransform, parseTemplate } from "./template";
 import { suggest } from "../shared/suggest";
 import { isSecureIdentityUrl } from "./identity";
@@ -42,6 +43,7 @@ export interface ResolvedIdentity {
     readonly allowLegacyReads: boolean;
     readonly previousConfigDirs?: readonly string[];
   };
+  readonly desktop?: DesktopIdentity;
   readonly policyAnchor?: PolicyAnchor;
   /** SHA-256 of the canonical form of everything above (EF-15, ENF-04). */
   readonly hash: string;
@@ -69,7 +71,7 @@ export interface ResolveOptions {
 }
 
 const SECTIONS: readonly Section[] = ["identity", "locations", "identifiers", "profiles", "models", "services", "git", "visual", "texts"];
-const TOP_LEVEL_KEYS = new Set(["$schema", "schemaVersion", "defaultLanguage", ...SECTIONS, "compatibility", "policyAnchor"]);
+const TOP_LEVEL_KEYS = new Set(["$schema", "schemaVersion", "defaultLanguage", ...SECTIONS, "compatibility", "policyAnchor", "desktop"]);
 const SECRET_MARKERS = ["apikey", "secret", "token", "password", "passwd", "privatekey", "credential"];
 /** RG-05: prefixes of public API providers and common system prefixes. */
 const RESERVED_ENV_PREFIXES = ["ANTHROPIC_", "OPENAI_", "AWS_", "GOOGLE_", "AZURE_", "OTEL_", "XDG_", "LC_", "NODE_", "BUN_", "NPM_", "GIT_", "SSH_", "HTTP_", "HTTPS_", "NO_", "PATH_", "SYSTEM_", "WINDOWS_", "PS_"];
@@ -177,6 +179,10 @@ export function resolveIdentity(data: unknown, options: ResolveOptions): Resolve
     if (!TOP_LEVEL_KEYS.has(key)) warn("ERR-06", `Section inconnue \`${key}\`.`, `$.${key}`);
   }
 
+  const desktop = readDesktopIdentity(data.desktop);
+  if (Object.hasOwn(data, "desktop") && !desktop) {
+    error("ERR-05", "Section desktop invalide. Vérifiez les identifiants des modules et les catalogues Git HTTPS avec une référence explicite.", "$.desktop");
+  }
   let policyAnchor: PolicyAnchor | undefined;
   if (Object.hasOwn(data, "policyAnchor")) {
     const anchor = data["policyAnchor"];
@@ -428,6 +434,7 @@ export function resolveIdentity(data: unknown, options: ResolveOptions): Resolve
     modelBackground,
     compatibility: { forbiddenTerms, allowLegacyReads, ...(scanExceptions.length ? { scanExceptions } : {}), ...(Array.isArray(previousConfigDirs) ? { previousConfigDirs: previousConfigDirs as string[] } : {}) },
     ...(policyAnchor ? { policyAnchor } : {}),
+    ...(desktop ? { desktop } : {}),
   };
   const hash = createHash("sha256").update(canonicalJson(body)).digest("hex");
   return { identity: { ...body, hash }, issues };
