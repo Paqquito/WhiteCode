@@ -2,6 +2,7 @@
 // Supports: SPEC-PER-015 (confined execution and ordinary approval for exits), SPEC-OUT-008 (FA-01, CA-05 `detached`), SPEC-AGT-017 (§ 5.3, EF-01), SPEC-PER-007 to SPEC-PER-009 (tool check, gap E-109)
 // Supports: SPEC-AGT-017 (CA-02: transfer the authorized process without restarting it), gap E-147.
 
+import { resolve } from "node:path";
 import descriptionPosix from "../../prompts/tools/run_shell.md" with { type: "text" };
 import descriptionPowerShell from "../../prompts/tools/run_powershell.md" with { type: "text" };
 import descriptionPowerShellLegacy from "../../prompts/tools/run_powershell_5_1.md" with { type: "text" };
@@ -15,6 +16,7 @@ import { textOutcome, type Tool, type ToolContext, type ToolOutcome } from "./ty
 
 export interface ShellInput {
   readonly command: string;
+  readonly attach_files?: readonly string[];
   readonly description?: string;
   readonly timeout?: number;
   readonly detached?: boolean;
@@ -27,6 +29,7 @@ const BACKGROUND_LIMIT_MS = 24 * 3_600_000;
 const schema = (what: string) => ({
   type: "object",
   properties: {
+    attach_files: { type: "array", minItems: 1, maxItems: 10, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 4096 }, description: "Final output files to attach on successful foreground exit, through deliver_file with its ordinary read permissions. Relative paths use the command's starting working directory. Use for document generation." },
     command: { type: "string", minLength: 1, description: `${what} to run.` },
     description: { type: "string", maxLength: 120, description: "Short description of what the command does, shown to the user." },
     timeout: { type: "integer", minimum: 1, description: "Time limit in milliseconds." },
@@ -40,6 +43,7 @@ const schema = (what: string) => ({
 const timeoutOf = (input: ShellInput, ctx: ToolContext) => input.timeout ?? ctx.shell?.options.settings.defaultTimeoutMs ?? 180_000;
 
 function validate(input: ShellInput, ctx: ToolContext): string | undefined {
+  if (input.detached && input.attach_files) return "Attachments require a foreground command.";
   const refusal = ctx.shell?.sandboxRefusal(input.command, input.unsandboxed === true); if (refusal) return refusal;
   if (input.command.trim() === "") return "The command is empty.";
   const max = ctx.shell?.options.settings.maxTimeoutMs;
@@ -105,9 +109,14 @@ async function foregroundShell(ctx: ToolContext, input: ShellInput, timeout: num
   const run = (signal: AbortSignal, output?: (chunk: string) => void) => powershell
     ? ctx.shell!.runPowerShell(input.command, timeout, signal, output, input.unsandboxed === true)
     : ctx.shell!.runPosix(input.command, timeout, signal, output, input.unsandboxed === true);
-  const outcome = (r: ShellResult) => textOutcome(formatShellResult(r, timeout), r.timedOut || r.interrupted || !!r.violations?.length, r.timedOut ? "timeout" : r.interrupted ? "interrupted" : r.violations?.length ? "permission_denied" : undefined);
+  const startDir = ctx.shell!.cwd;
+  const outcome = (r: ShellResult): ToolOutcome => {
+    const failed = r.timedOut || r.interrupted || !!r.violations?.length || (!!input.attach_files && r.exitCode !== 0);
+    const result = textOutcome(formatShellResult(r, timeout), failed, r.timedOut ? "timeout" : r.interrupted ? "interrupted" : r.violations?.length ? "permission_denied" : undefined);
+    return !failed && input.attach_files ? { ...result, attachments: input.attach_files.map(path => resolve(startDir, path)) } : result;
+  };
   const background = ctx.background;
-  if (!background || ctx.agentName) return outcome(await run(ctx.signal));
+  if (!background || ctx.agentName || input.attach_files) return outcome(await run(ctx.signal));
   const controller = new AbortController();
   const abort = () => controller.abort(ctx.signal.reason);
   if (ctx.signal.aborted) abort(); else ctx.signal.addEventListener("abort", abort, { once: true });

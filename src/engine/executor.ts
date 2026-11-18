@@ -123,6 +123,7 @@ export class ResponseExecution {
   readonly #calls: Array<{ call: ToolCall; done: Promise<ToolResultPart>; safe: boolean }> = [];
   #gateResolve!: (g: Gate) => void;
   readonly #gate: Promise<Gate> = new Promise((r) => (this.#gateResolve = r));
+  readonly attachments = new Set<string>();
   #stopTurnRequested = false;
   #unproductiveLoop = false;
 
@@ -155,6 +156,7 @@ export class ResponseExecution {
     // SPEC-MOT-046: compared on arrival, in call order, before the hook and the permission decision.
     const verdict = tool && schemaErrors.length === 0 ? this.#deps.loopGuard?.check(call.name, input) : undefined;
     const done = this.#run(call, tool, schemaErrors, safe, previous, lastBarrier, verdict).then((outcome) => {
+      if (!outcome.isError) for (const path of outcome.attachments ?? []) this.attachments.add(path);
       const part: ToolResultPart = { type: "tool_result", callId: call.callId, isError: outcome.isError, content: outcome.content };
       return part;
     });
@@ -223,6 +225,9 @@ export class ResponseExecution {
       else await Promise.allSettled(previous);
       if (signal.aborted) return finish(textOutcome("Not executed: the turn was interrupted.", true, "interrupted"));
       const ctx = this.#deps.toolContext(signal);
+      if ((call.name === "run_shell" || call.name === "run_powershell") && (call.input as { attach_files?: unknown }).attach_files && !this.#deps.registry.get("deliver_file")) {
+        return finish(textOutcome("File delivery is unavailable in this session.", true, "unavailable"), false);
+      }
       await this.#deps.waitConnected?.(signal);
       const businessError = tool.validate?.(call.input as never, ctx);
       if (businessError) return finish(textOutcome(businessError, true, "invalid_input"));

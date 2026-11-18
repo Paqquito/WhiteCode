@@ -99,6 +99,8 @@ export type ToolPreview = { readonly diff: string; readonly change?: FileChange;
 export type ToolErrorKind = "invalid_input" | "permission_denied" | "unavailable" | "timeout" | "execution" | "interrupted" | "not_executed";
 
 export interface ToolOutcome {
+  /** Output paths explicitly requested by the caller after a successful foreground command. */
+  readonly attachments?: readonly string[];
   readonly isError: boolean;
   readonly errorKind?: ToolErrorKind;
   readonly content: readonly ContentPart[];

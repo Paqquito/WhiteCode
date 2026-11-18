@@ -462,6 +462,34 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
       deps.emit({ type: "user_message", content: results });
       for (const r of results) persist("tool_result", { callId: r.callId, isError: r.isError, content: r.content });
     }
+    // A shell result carries only output paths declared in its reviewed input. Execute
+    // delivery as an ordinary tool call, with its own validation, grants and client receipts.
+    const pending = [...execution.attachments];
+    if (pending.length && !turnSignal.aborted && !execution.stopTurnRequested && !execution.unproductiveLoop) {
+      const delivery = new ResponseExecution({ ...deps.executor, emit: deps.emit }, turnSignal);
+      const calls: ToolCall[] = [];
+      for (let start = 0; start < pending.length; start += 10) {
+        calls.push({ callId: "file_" + crypto.randomUUID().replaceAll("-", ""), name: "deliver_file",
+          input: { files: pending.slice(start, start + 10), status: "normal", mode: "attach" } });
+      }
+      const blocks = calls.map(call => ({ type: "tool_use", id: call.callId, name: call.name, input: call.input }));
+      const message = { role: "assistant" as const, text: "", toolCalls: calls, native: { provider: "host-file-delivery", content: blocks } };
+      conv.appendAssistant(message);
+      persist("assistant", { content: blocks, provider: message.native.provider, text: "", toolCalls: calls, stopReason: "tool_use", synthetic: true });
+      deps.emit({ type: "assistant_message", text: "", toolCalls: calls });
+      for (const call of calls) {
+        deps.emit({ type: "tool_call", callId: call.callId, name: call.name, input: call.input });
+        delivery.submit(call);
+      }
+      delivery.responseComplete("tool_use");
+      const receipts = await delivery.results();
+      conv.appendToolResults(receipts);
+      deps.afterToolResults?.(calls, receipts);
+      deps.emit({ type: "user_message", content: receipts });
+      for (const r of receipts) persist("tool_result", { callId: r.callId, isError: r.isError, content: r.content });
+      if (delivery.stopTurnRequested) return finish("interrupted", "Tour arrêté par l'utilisateur.");
+      if (delivery.unproductiveLoop) return finish("unproductive_loop", "Livraison interrompue après des appels répétés.");
+    }
     // A response that continues a truncated one completes its text (FA-02, CA-05).
     finalText = continuing ? finalText + assistant.text : assistant.text;
     continuing = false;
