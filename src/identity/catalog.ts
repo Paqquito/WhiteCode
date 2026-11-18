@@ -12,6 +12,7 @@ export type VariableType =
   | "url"
   | "color"
   | "email"
+  | "resource" // binary resource referenced by a path relative to the identity file (EF-04)
   | "modelTier" // { label, ids }
   | "tierRef"; // reference to a model tier variable
 
@@ -156,6 +157,7 @@ export const VARIABLES: readonly VariableDef[] = [
   // 6.3.8 Visual identity
   { name: "BRAND_COLOR_PRIMARY", section: "visual", kind: "primary", type: "color", pattern: /^#[0-9A-Fa-f]{6}$/, constraint: "#RRGGBB" },
   { name: "BRAND_COLOR_ACCENT", section: "visual", kind: "derived", type: "color", derive: "{{BRAND_COLOR_PRIMARY}}", pattern: /^#[0-9A-Fa-f]{6}$/, constraint: "#RRGGBB" },
+  { name: "ICON", section: "visual", kind: "optional", type: "resource", pattern: /^(?![\\/]|[A-Za-z]:)(?!(?:.*[\\/])?\.\.(?:[\\/]|$))[^\u0000-\u001f]+\.(?:svg|png)$/i, constraint: "un chemin relatif au fichier d'identité, sans `..`, vers un fichier .svg ou .png" },
   { name: "LOGO_TEXT", section: "visual", kind: "optional", type: "text", derive: "{{PRODUCT|upper}}" },
   { name: "COMPANION_NAME", section: "visual", kind: "optional", type: "text", localizable: true },
 

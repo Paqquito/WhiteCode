@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "defaultLanguage": "fr",
+  "identity": {
+    "SOCIETY": "WhiteCode",
+    "SOCIETY_DOMAIN": "whitecode.invalid",
+    "PRODUCT": "WhiteCode"
+  },
+  "models": {
+    "MODEL_LARGE": {
+      "label": {
+        "fr": "Étendu",
+        "en": "Extended"
+      }
+    },
+    "MODEL_MEDIUM": {
+      "label": {
+        "fr": "Standard",
+        "en": "Standard"
+      }
+    },
+    "MODEL_SMALL": {
+      "label": {
+        "fr": "Rapide",
+        "en": "Fast"
+      }
+    }
+  },
+  "services": {
+    "SERVICE_DOCS": "https://docs.whitecode.invalid",
+    "SERVICE_DOWNLOADS": "https://downloads.whitecode.invalid"
+  },
+  "visual": {
+    "BRAND_COLOR_PRIMARY": "#000000"
+  },
+  "compatibility": {
+    "forbiddenTerms": []
+  }
+}

@@ -371,9 +371,11 @@ export class ResponseExecution {
         const execution = tool.execute(call.input as never, { ...ctx, signal: callController.signal }).catch(
           (error: unknown) => textOutcome(`The tool failed: ${(error as Error)?.message ?? String(error)}`, true, "execution"), // ERR-02
         );
-        // EF-05: the own limit of the tool (plus the grace period of its own stop), bounded by `engine.toolTimeout`.
+        // EF-05: ordinary calls are bounded by engine.toolTimeout.
         const own = tool.timeoutMs?.(call.input as never, ctx);
-        const limit = tool.idleWait && own !== undefined ? Math.min(3606000, own + TOOL_STOP_MARGIN_MS) : own === undefined ? this.#deps.toolTimeoutMs : Math.min(own + TOOL_STOP_MARGIN_MS, this.#deps.toolTimeoutMs);
+        const limit = own === undefined ? this.#deps.toolTimeoutMs
+          : tool.hostTimeout ? own + TOOL_STOP_MARGIN_MS
+          : Math.min(own + TOOL_STOP_MARGIN_MS, tool.idleWait ? 3_606_000 : this.#deps.toolTimeoutMs);
         const outcome = await withTimeout(execution, limit, () => callController.abort());
         signal.removeEventListener("abort", onAbort);
         if (writes.length > 0) this.#deps.fileHistory?.afterWrite(writes);

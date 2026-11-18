@@ -208,7 +208,7 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "models.fallback", schema: str(), scopes: [U, P, G, C], owner: "SPEC-API-005" },
   { key: "models.fallbackAfterOverloads", schema: int(1), default: 3, scopes: [U, G], owner: "SPEC-API-005" },
   { key: "models.fallbackCooldown", schema: durationSchema(), kind: "duration", default: 600_000, scopes: [U, G], owner: "SPEC-API-005" },
-  { key: "models.effort", schema: enumOf(["low", "medium", "high"]), default: "high", scopes: [U, P], owner: "SPEC-MOT-025" },
+  { key: "models.effort", schema: enumOf(["low", "medium", "high"]), default: "high", scopes: [U, P, C], owner: "SPEC-MOT-025" },
   { key: "thinking.enabled", schema: bool(), default: true, scopes: [U], owner: "SPEC-MOT-023" },
   { key: "thinking.mode", schema: enumOf(["adaptive", "budget"]), default: "adaptive", scopes: [U], owner: "SPEC-MOT-023" },
   { key: "thinking.budgetTokens", schema: int(1024), default: 16_000, scopes: [U], owner: "SPEC-MOT-023" },

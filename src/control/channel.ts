@@ -151,7 +151,7 @@ export class ControlChannel {
    * A demand of the engine, correlated with its response (EF-01). It never waits beyond the delay (EF-03, FA-02); an
    * interruption settles it at once and a later answer is without effect (RG-06).
    */
-  demand(name: EngineDemand, params: Record<string, unknown>, signal?: AbortSignal): Promise<DemandOutcome> {
+  demand(name: EngineDemand, params: Record<string, unknown>, signal?: AbortSignal, timeoutMs = this.#host?.timeoutMs): Promise<DemandOutcome> {
     if (this.#closing && name !== "notify") return Promise.resolve({ kind: "closed" });
     if (!this.#host?.demands.has(name)) return Promise.resolve({ kind: "unsupported" }); // EF-04
     if (signal?.aborted) return Promise.resolve({ kind: "aborted" });
@@ -170,7 +170,7 @@ export class ControlChannel {
         resolve(outcome);
       };
       this.#pending.set(id, { demand: name, started, settle });
-      timer = setTimeout(() => settle({ kind: "timeout" }), this.#host!.timeoutMs);
+      timer = setTimeout(() => settle({ kind: "timeout" }), timeoutMs);
       signal?.addEventListener("abort", onAbort, { once: true });
       this.#o.trace("demand", { id, demand: name });
       this.#o.send({ type: "control_request", id, request: name, params });

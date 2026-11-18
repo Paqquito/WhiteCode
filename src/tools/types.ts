@@ -115,6 +115,8 @@ export interface Tool<I = Record<string, unknown>> {
   readonly permissionName?: string;
   /** Trusted timer-only waits may outlast the ordinary tool timeout; the run signal still governs them. */
   readonly idleWait?: boolean;
+  /** Bounded SDK connector deadline negotiated with the application host. */
+  readonly hostTimeout?: boolean;
   readonly inputSchema: Record<string, unknown>;
   /** Description for the model, from the text referential (stable within a session, EF-08). */
   description(env: ToolEnvironment): string;

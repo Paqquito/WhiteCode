@@ -4,6 +4,8 @@
 import Ajv, { type ErrorObject, type ValidateFunction } from "ajv";
 
 const ajv = new Ajv({ allErrors: true, strict: false, allowUnionTypes: true });
+// MCP schemas use UUID identifiers; validate them instead of ignoring the format.
+ajv.addFormat("uuid", /^(?:urn:uuid:)?[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i);
 
 export type Validation<T> = { ok: true; value: T } | { ok: false; errors: string[] };
 
@@ -16,6 +18,7 @@ export function describeErrors(errors: readonly ErrorObject[] | null | undefined
     if (e.keyword === "required") return fr ? `${where} : champ obligatoire manquant \`${String(e.params["missingProperty"])}\`` : `${where}: missing required field \`${String(e.params["missingProperty"])}\``;
     if (e.keyword === "additionalProperties") return fr ? `${where} : champ inattendu \`${String(e.params["additionalProperty"])}\`` : `${where}: unexpected field \`${String(e.params["additionalProperty"])}\``;
     if (e.keyword === "enum") return fr ? `${where} : valeur attendue parmi ${JSON.stringify(e.params["allowedValues"])}` : `${where}: expected one of ${JSON.stringify(e.params["allowedValues"])}`;
+    if (e.keyword === "const") return fr ? `${where} : valeur attendue ${JSON.stringify(e.params["allowedValue"])}` : `${where}: expected ${JSON.stringify(e.params["allowedValue"])}`;
     return `${where}${fr ? " : " : ": "}${e.message ?? e.keyword}`;
   });
 }

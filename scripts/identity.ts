@@ -1,10 +1,11 @@
-// Implements: SPEC-CAD-002 (§ 5.2 brand tool: validate, resolve, render, scan, show; CA-08, CA-09, CA-19; § 10 exit codes)
+// Implements: SPEC-CAD-002 (§ 5.2 brand tool: validate, resolve, render, scan, show; CA-08, CA-09, CA-19; § 10 exit codes; EF-04/ERR-10 resources)
 // Usage: bun scripts/identity.ts <validate|resolve|show|scan|render> <identity.json> [source] [output] [--language code] [--strict] [--version x.y.z]
 
 import { readFileSync } from "node:fs";
 import { resolveIdentityText } from "../src/identity/resolver";
 import { Identity } from "../src/identity/identity";
 import { renderDirectory, scanDirectory } from "../src/identity/files";
+import { loadIcon } from "../src/identity/resources";
 
 const [operation, file, ...rest] = process.argv.slice(2);
 const strict = rest.includes("--strict") || process.env["CI"] === "true";
@@ -29,6 +30,10 @@ try {
   for (const issue of result.issues) console.error(`[${issue.code}] ${issue.severity === "error" ? "erreur" : "avertissement"} : ${issue.message}`);
   if (!result.identity) process.exit(2);
   const id = result.identity;
+  // EF-04 / ERR-10: resources are checked against the identity file's own folder.
+  const resources = loadIcon(id, file);
+  for (const issue of resources.issues) console.error(`[${issue.code}] erreur : ${issue.message}`);
+  if (resources.issues.length) process.exit(2);
   if (operation === "scan" || operation === "render") {
     const source = rest[0];
     if (!source || source.startsWith("--")) { console.error("Dossier source requis."); process.exit(2); }

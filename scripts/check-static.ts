@@ -53,7 +53,7 @@ for (const file of sources) {
 
 // RG-02: no value of the build identities may appear in the code or in the model texts.
 const brandFiles = [...sources, ...walk(join(root, "prompts"))];
-for (const idFile of ["identity/dev.identity.json", "identity/test-omega.identity.json"]) {
+for (const idFile of ["identity/dev.identity.json", "identity/test-omega.identity.json", "identity/whitecode.identity.json"]) {
   const identity = resolveIdentityText(readFileSync(join(root, idFile), "utf8"), { version: "0.0.0" }).identity;
   if (!identity) {
     problems.push(`${idFile}: invalid identity`);

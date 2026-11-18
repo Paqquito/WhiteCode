@@ -32,7 +32,7 @@ test("SPEC-CAD-002/CA-07 — the actual specification corpus renders strictly wi
   const ws = workspace(), input = JSON.parse(readFileSync(join(ROOT, "identity/dev.identity.json"), "utf8"));
   const base = loadIdentity();
   for (const variable of VARIABLES) if (variable.kind === "optional" && !base.has(variable.name)) {
-    (input[variable.section] ??= {})[variable.name] = variable.type === "modelTier" ? { label: "Documentation " + variable.name } : variable.type === "url" ? "https://documentation.example.test/" + variable.name.toLowerCase() : variable.type === "color" ? "#336699" : variable.type === "email" ? "documentation@example.test" : variable.type === "path" ? "/documentation" : variable.type === "filename" ? "documentation.svg" : variable.type === "tierRef" ? "MODEL_MEDIUM" : "documentation";
+    (input[variable.section] ??= {})[variable.name] = variable.type === "modelTier" ? { label: "Documentation " + variable.name } : variable.type === "url" ? "https://documentation.example.test/" + variable.name.toLowerCase() : variable.type === "color" ? "#336699" : variable.type === "email" ? "documentation@example.test" : variable.type === "path" ? "/documentation" : variable.type === "filename" || variable.type === "resource" ? "documentation.svg" : variable.type === "tierRef" ? "MODEL_MEDIUM" : "documentation";
   }
   const resolved = resolveIdentityText(JSON.stringify(input), { version: base.version, strict: true });
   expect(resolved.issues.filter(issue => issue.severity === "error")).toEqual([]);

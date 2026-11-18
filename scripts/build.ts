@@ -1,7 +1,7 @@
 // Supports: SPEC-BLD-008 (CA-01, versioned extension documentation in the manifest), gap E-161.
 // Supports: SPEC-BLD-006 (identity-specific package manifest), gap E-160.
 // Implements: SPEC-BLD-001 (ordered gates, reproducibility, fingerprints), SPEC-BLD-002 (macro constants and inventory),
-//             SPEC-BLD-003 (mandatory deliverable scan), SPEC-CAD-002 (strict unresolved-variable control).
+//             SPEC-BLD-003 (mandatory deliverable scan), SPEC-CAD-002 (strict unresolved-variable control, EF-04/ERR-10 brand icon).
 // Supports: gap E-144. Usage: bun scripts/build.ts [--target <target> | --all] [--identity <file>] [--models <file>]
 //           [--profile public|internal|development|test] [--build-options <file>] [--forbidden-terms <private external file>]
 import { createHash } from "node:crypto";
@@ -10,6 +10,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Identity } from "../src/identity/identity";
 import { resolveIdentityText, runtimeIdentity } from "../src/identity/resolver";
 import { scanDirectory, type ScanCache } from "../src/identity/files";
+import { loadIcon } from "../src/identity/resources";
 import { VARIABLE_BY_NAME } from "../src/identity/catalog";
 import { suggest } from "../src/shared/suggest";
 import { BUILD_OPTIONS, resolveBuildOptions } from "../src/extension-points/build-options";
@@ -84,8 +85,12 @@ await step("contrôles statiques", [process.execPath, "scripts/check-static.ts"]
 const { RESOLVED_IDENTITY, SOURCE_IDENTITY_HASH } = await import("../src/identity/generated/build-data");
 const { BUILD_PROFILE, BUILD_TARGET, BUILD_VALUES } = await import("../src/identity/generated/build-flags");
 if (BUILD_PROFILE !== profile || BUILD_TARGET !== primaryTarget || Object.entries(values).some(([name, value]) => BUILD_VALUES[name as keyof typeof BUILD_VALUES] !== value)) throw new Error("Options de build changées pendant la génération.");
-const original = resolveIdentityText(readFileSync(resolve(root, options.get("--identity") ?? "identity/dev.identity.json"), "utf8"), { version: RESOLVED_IDENTITY.version, strict: true }).identity;
+const identityFile = resolve(root, options.get("--identity") ?? "identity/dev.identity.json");
+const original = resolveIdentityText(readFileSync(identityFile, "utf8"), { version: RESOLVED_IDENTITY.version, strict: true }).identity;
 if (!original || original.hash !== SOURCE_IDENTITY_HASH || runtimeIdentity(original).hash !== RESOLVED_IDENTITY.hash) throw new Error("Identité changée pendant la construction.");
+// SPEC-CAD-002 EF-04 / ERR-10: the brand icon (or the neutral default) is checked before any deliverable is written.
+const brandIcon = loadIcon(original, identityFile);
+if (!brandIcon.icon) throw new Error(`[ERR-10] ${brandIcon.issues.map((issue) => issue.message).join(" ")}`);
 const cli = RESOLVED_IDENTITY.values["PRODUCT_CLI"]!.value as string;
 checkOutput();
 rmSync(outDir, { recursive: true, force: true }); mkdirSync(outDir, { recursive: true });
@@ -142,6 +147,8 @@ const inventory = Object.fromEntries(Object.entries(BUILD_OPTIONS).map(([name, d
 // Supports: SPEC-CAD-002 (CA-11, FA-04); the official catalogue remains unavailable in this version.
 const disabledFeatures = [{ service: "SERVICE_MARKETPLACE", feature: "Catalogue officiel d'extensions", reason: RESOLVED_IDENTITY.values["SERVICE_MARKETPLACE"] ? "fonction non livrée" : "service non configuré" }];
 writeFileSync(join(outDir, "build-options.json"), JSON.stringify({ profile, options: inventory, disabledFeatures }, null, 2) + "\n"); record("build-options", "build-options.json"); control();
+const iconName = `icon.${brandIcon.icon.format}`;
+writeFileSync(join(outDir, iconName), brandIcon.icon.data); record("brand-icon", iconName); control();
 const git = Bun.spawn(["git", "rev-parse", "HEAD"], { cwd: root, stdout: "pipe", stderr: "ignore" });
 const commitText = (await new Response(git.stdout).text()).trim(), commit = await git.exited === 0 && /^[a-f0-9]{40}$/.test(commitText) ? commitText : null;
 const receipt = join(outDir, "manifest.json");
