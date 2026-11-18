@@ -2,6 +2,8 @@
 import json, os, pathlib, signal, subprocess, sys, tempfile, time
 
 bun, source = sys.argv[1:3]
+scenario = sys.argv[3] if len(sys.argv) > 3 else "all"
+if scenario not in ("panes", "lifecycle", "all"): raise ValueError("Unknown native team scenario")
 bench = pathlib.Path(tempfile.mkdtemp(prefix="tp51-", dir="/var/tmp"))
 os.environ["TMPDIR"] = str(bench)
 os.environ["OPENAI_API_KEY"] = "fixture-server-key-never-real"
@@ -52,40 +54,42 @@ try:
     assert len(child) == 4 and "ALLOWED_TEAM_WITNESS" in json.dumps(child[-1])
     assert "DENIED_TEAM_SECRET" not in json.dumps(child)
     assert "Denied by the rule" in json.dumps(child[-1])
-    os.kill(leader_pid, signal.SIGKILL)
-    wait(lambda: not pathlib.Path("/proc/" + str(leader_pid)).exists())
-    os.kill(worker_pid, 0)
-    assert worker_pane in tmux("list-panes", "-a", "-F", "#{pane_id}").splitlines()
-    new_leader = tmux("split-window", "-d", "-P", "-F", "#{pane_id}", "-t", worker_pane, command("resume"))
-    wait(lambda: (root / "reattached").exists())
-    os.kill(worker_pid, 0)
-    wait(lambda: json.loads(state_file.read_text())["panels"][0]["delivered"] == 1)
-    resumed = json.loads(state_file.read_text())
-    assert len(resumed["panels"]) == 1 and resumed["panels"][0]["peer"] == member["peer"]
-    assert resumed["panels"][0]["delivered"] == 1
-    assert len(tmux("list-panes", "-a", "-F", "#{pane_id}").splitlines()) == 2
-    transcript = "\n".join(p.read_text() for p in pathlib.Path(ws["configHome"]).glob("sessions/**/*.jsonl"))
-    assert "team_reconnected" in transcript and "UNREAD_TEAM_REPORT_51" in transcript
-    assert "UNREAD_TEAM_MESSAGE_51" in transcript
-    def resumed_request():
-        requests = [json.loads(line) for line in (root / "model-requests.jsonl").read_text().splitlines()]
-        return any(r.get("mode") == "resume" and "UNREAD_TEAM_MESSAGE_51" in json.dumps(r["history"]) and "UNREAD_TEAM_REPORT_51" in json.dumps(r["history"]) for r in requests)
-    wait(resumed_request)
-    cancel_descriptor = str(bench / "cancel-workspace.json")
-    subprocess.run([bun, "--no-env-file", fixture, "init", cancel_descriptor], cwd=source, check=True, capture_output=True)
-    cancel_ws = json.loads(pathlib.Path(cancel_descriptor).read_text()); cancel_root = pathlib.Path(cancel_ws["root"])
-    import shlex
-    cancel_command = "exec " + " ".join(map(shlex.quote, [bun, "--no-env-file", fixture, "cancel", cancel_descriptor]))
-    tmux("new-session", "-d", "-s", "owned-cancel-bench", "-x", "200", "-y", "60", cancel_command)
-    wait(lambda: (cancel_root / "tool-started").exists())
-    cancel_state = json.loads(next(pathlib.Path(cancel_ws["configHome"]).glob("teams/leader-*.json")).read_text())
-    cancel_member = cancel_state["panels"][0]
-    cancel_registration = json.loads((pathlib.Path(cancel_state["folder"]) / (cancel_member["peer"] + ".json")).read_text())
-    os.kill(cancel_registration["pid"], signal.SIGKILL)
-    time.sleep(9)
-    assert not (pathlib.Path(cancel_ws["project"]) / "late.txt").exists()
-    cancel_events = (cancel_root / "cancel-events.jsonl").read_text()
-    assert '"type":"tool_result"' in cancel_events and ('interrupted' in cancel_events.lower() or 'aborted' in cancel_events.lower())
+    if scenario in ("lifecycle", "all"):
+        os.kill(leader_pid, signal.SIGKILL)
+        wait(lambda: not pathlib.Path("/proc/" + str(leader_pid)).exists())
+        os.kill(worker_pid, 0)
+        assert worker_pane in tmux("list-panes", "-a", "-F", "#{pane_id}").splitlines()
+        new_leader = tmux("split-window", "-d", "-P", "-F", "#{pane_id}", "-t", worker_pane, command("resume"))
+        wait(lambda: (root / "reattached").exists())
+        os.kill(worker_pid, 0)
+        wait(lambda: json.loads(state_file.read_text())["panels"][0]["delivered"] == 1)
+        resumed = json.loads(state_file.read_text())
+        assert len(resumed["panels"]) == 1 and resumed["panels"][0]["peer"] == member["peer"]
+        assert resumed["panels"][0]["delivered"] == 1
+        assert len(tmux("list-panes", "-a", "-F", "#{pane_id}").splitlines()) == 2
+        transcript = "\n".join(p.read_text() for p in pathlib.Path(ws["configHome"]).glob("sessions/**/*.jsonl"))
+        assert "team_reconnected" in transcript and "UNREAD_TEAM_REPORT_51" in transcript
+        assert "UNREAD_TEAM_MESSAGE_51" in transcript
+        def resumed_request():
+            requests = [json.loads(line) for line in (root / "model-requests.jsonl").read_text().splitlines()]
+            return any(r.get("mode") == "resume" and "UNREAD_TEAM_MESSAGE_51" in json.dumps(r["history"]) and "UNREAD_TEAM_REPORT_51" in json.dumps(r["history"]) for r in requests)
+        wait(resumed_request)
+    if scenario in ("panes", "all"):
+        cancel_descriptor = str(bench / "cancel-workspace.json")
+        subprocess.run([bun, "--no-env-file", fixture, "init", cancel_descriptor], cwd=source, check=True, capture_output=True)
+        cancel_ws = json.loads(pathlib.Path(cancel_descriptor).read_text()); cancel_root = pathlib.Path(cancel_ws["root"])
+        import shlex
+        cancel_command = "exec " + " ".join(map(shlex.quote, [bun, "--no-env-file", fixture, "cancel", cancel_descriptor]))
+        tmux("new-session", "-d", "-s", "owned-cancel-bench", "-x", "200", "-y", "60", cancel_command)
+        wait(lambda: (cancel_root / "tool-started").exists())
+        cancel_state = json.loads(next(pathlib.Path(cancel_ws["configHome"]).glob("teams/leader-*.json")).read_text())
+        cancel_member = cancel_state["panels"][0]
+        cancel_registration = json.loads((pathlib.Path(cancel_state["folder"]) / (cancel_member["peer"] + ".json")).read_text())
+        os.kill(cancel_registration["pid"], signal.SIGKILL)
+        time.sleep(9)
+        assert not (pathlib.Path(cancel_ws["project"]) / "late.txt").exists()
+        cancel_events = (cancel_root / "cancel-events.jsonl").read_text()
+        assert '"type":"tool_result"' in cancel_events and ('interrupted' in cancel_events.lower() or 'aborted' in cancel_events.lower())
     import secrets, uuid
     orphan = bench / "orphan"; orphan.mkdir(mode=0o700)
     orphan_boot = orphan / "bootstrap.json"
@@ -103,7 +107,9 @@ try:
     orphan_result = subprocess.run(["/usr/bin/env", "-i", "TERM=xterm-256color", "LANG=C.UTF-8", str(pathlib.Path(source) / "build/team-worker-linux"), "__team-worker", str(orphan_boot)], cwd=ws["project"], text=True, capture_output=True, timeout=5)
     assert orphan_result.returncode == 0 and time.monotonic() - started < 4
     assert not preload_marker.exists()
-    output = {"passed": True, "leaderPid": leader_pid, "workerPid": worker_pid, "newLeaderPane": new_leader, "workerPane": worker_pane, "sameWorker": True, "unreadMessageAndReportDelivered": True, "deniedReadPreserved": True, "workerDeathRevokesSuspendedTool": True, "serverAndDotenvSecretsAbsent": True, "compiledDotenvAndBunfigDisabled": True, "orphanSelfStops": True, "model": "scripted", "bench": str(bench), "workspace": str(root)}
+    output = {"scenario": scenario, "passed": True, "leaderPid": leader_pid, "workerPid": worker_pid, "workerPane": worker_pane, "deniedReadPreserved": True, "serverAndDotenvSecretsAbsent": True, "compiledDotenvAndBunfigDisabled": True, "orphanSelfStops": True, "model": "scripted", "bench": str(bench), "workspace": str(root)}
+    if scenario in ("lifecycle", "all"): output.update(newLeaderPane=new_leader, sameWorker=True, unreadMessageAndReportDelivered=True)
+    if scenario in ("panes", "all"): output.update(workerDeathRevokesSuspendedTool=True)
     (bench / "result.json").write_text(json.dumps(output, indent=2)); print(json.dumps(output))
 except Exception:
     for p in root.glob("*-exit.json"): print(p.name, p.read_text(), file=sys.stderr)

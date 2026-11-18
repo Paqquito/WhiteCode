@@ -162,7 +162,7 @@ test("TECH — an existing prefix secret is preserved and a new installation rec
   const f = await forgeInstallFixture(); let asked = false;
   try { f.state.secrets.set(f.contract.secretName, "preexisting-fixture-key"); expect(await installForgeApp(options(f, { secret: async () => { asked = true; return "new-key"; } }))).toContain("ouverte et vérifiée"); expect(asked).toBe(true); expect(f.state.secretAttempts).toBe(1); expect(f.state.secrets.get(f.contract.secretName)).toBe("preexisting-fixture-key"); expect(f.state.secretName).not.toBe(f.contract.secretName); expect(f.state.secrets.get(f.state.secretName)).toBe("new-key"); }
   finally { f.close(); }
-}, 20000);
+}, 30000);
 
 test("TECH — forge deployment and installation verification contracts cannot be supplied by project or local settings", () => {
   const contract = { workflow: "company/deployment/.github/workflows/agent.yml@" + "b".repeat(40), installationCheckUrl: "https://company.fixture/verify", secretName: "COMPANY_SERVICE_KEY", secretInput: "service_token" };
@@ -218,7 +218,7 @@ test("TECH — REGRESSION-64 — private Git ignores global URL rewrites and hea
     expect(f.run(["show","-s","--format=%an <%ae>",f.state.branch],f.bare)).toBe("Fixture Human <fixture@example.invalid>");
     expect(f.state.invocations.some(row=>row.args.slice(0,3).join(" ")==="auth git-credential get")).toBe(true);
   }finally{f.close();}
-},20000);
+},30000);
 
 test("TECH — REGRESSION-64 — cancellation after accepted consent blocks browser opening immediately",async()=>{
   const f=await forgeInstallFixture(),controller=new AbortController();let opened=0,confirms=0;

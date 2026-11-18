@@ -1,12 +1,12 @@
 // Supports: SPEC-AGT-012/015 (real process panes, leader death and reattachment, not metadata alone).
 // Supports: SPEC-AGT-012/015 (native compilation precedes the unchanged timed behavioral bench), gap E-321.
+// Supports: SPEC-AGT-012/015 (independent native scenarios retain their original assertions and deadlines), gap E-335.
 import {beforeAll,expect,test} from "bun:test";
 import {mkdirSync,writeFileSync} from "node:fs";
 import {join} from "node:path";
 import {ROOT} from "./helpers/env";
 const runtime=process.env["WC_TEAM_NATIVE_BUN"];
 const available=process.platform==="win32"&&!!runtime;
-let evidence:Promise<Record<string,unknown>>|undefined;
 let preparation:Promise<{project:string;compilationMs:number}>|undefined;
 async function command(args:string[]):Promise<string>{
  const child=Bun.spawn(args,{cwd:ROOT,stdout:"pipe",stderr:"pipe"});
@@ -21,15 +21,15 @@ function prepare(){return preparation??=(async()=>{
  return {project,compilationMs:performance.now()-compilationStarted};
 })();}
 beforeAll(async()=>{if(available)await prepare();},60000);
-function proof(){return evidence??=(async()=>{
+async function proof(scenario:"panes"|"lifecycle"){
  const {project,compilationMs}=await prepare(),benchStarted=performance.now();
- const output=await command(wsl("/usr/bin/python3",project+"/tests/fixtures/team-panel-native.py",runtime!,project)),result=JSON.parse(output) as Record<string,unknown>;
+ const output=await command(wsl("/usr/bin/python3",project+"/tests/fixtures/team-panel-native.py",runtime!,project,scenario)),result=JSON.parse(output) as Record<string,unknown>;
  const measured:Record<string,unknown>={...result,compilationMs,benchMs:performance.now()-benchStarted};
- mkdirSync(join(ROOT,"build"),{recursive:true});writeFileSync(join(ROOT,"build/lot9-increment63-team-native-evidence.json"),JSON.stringify(measured,null,2)+"\n");return measured;
-})();}
+ mkdirSync(join(ROOT,"build"),{recursive:true});writeFileSync(join(ROOT,`build/team-native-${scenario}-evidence.json`),JSON.stringify(measured,null,2)+"\n");return measured;
+}
 test.skipIf(!available)("SPEC-AGT-012/CA-01 — the real product runs in a separate tmux pane with isolated environment and ordinary file permissions",async()=>{
- const result=await proof();expect(result.passed).toBe(true);expect(result.deniedReadPreserved).toBe(true);expect(result.serverAndDotenvSecretsAbsent).toBe(true);expect(result.compiledDotenvAndBunfigDisabled).toBe(true);expect(result.workerDeathRevokesSuspendedTool).toBe(true);
+ const result=await proof("panes");expect(result.passed).toBe(true);expect(result.deniedReadPreserved).toBe(true);expect(result.serverAndDotenvSecretsAbsent).toBe(true);expect(result.compiledDotenvAndBunfigDisabled).toBe(true);expect(result.workerDeathRevokesSuspendedTool).toBe(true);
 },60000);
 test.skipIf(!available)("SPEC-AGT-015/CA-01 — after real leader death the same worker and pane reattach and deliver unread messages and report",async()=>{
- const result=await proof();expect(result.sameWorker).toBe(true);expect(result.unreadMessageAndReportDelivered).toBe(true);expect(result.workerPid).not.toBe(result.leaderPid);expect(result.orphanSelfStops).toBe(true);
+ const result=await proof("lifecycle");expect(result.sameWorker).toBe(true);expect(result.unreadMessageAndReportDelivered).toBe(true);expect(result.workerPid).not.toBe(result.leaderPid);expect(result.orphanSelfStops).toBe(true);
 },60000);

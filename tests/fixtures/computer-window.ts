@@ -9,6 +9,7 @@ const api = dlopen("user32.dll", {
   SetWindowTextW: { args: ["u64", "buffer"], returns: "i32" }, SendInput: { args: ["u32", "buffer", "i32"], returns: "u32" },
   RegisterHotKey: { args: ["u64", "i32", "u32", "u32"], returns: "i32" }, UnregisterHotKey: { args: ["u64", "i32"], returns: "i32" },
 });
+const pause = dlopen("kernel32.dll", { Sleep: { args: ["u32"], returns: "void" } });
 const wide = (text: string) => Buffer.from(text + "\0", "utf16le"), title = "Owned Native Control Fixture " + process.pid;
 const root = api.symbols.CreateWindowExW(0, wide("STATIC"), wide(title), 0x10cf0000, 50, 50, 340, 220, 0n, 0n, 0n, null);
 if (!root) throw Error("Native fixture window creation failed.");
@@ -19,9 +20,10 @@ console.log(JSON.stringify({ ready: true, window: String(root), button: String(b
 const message = Buffer.alloc(48), timer = setInterval(() => { while (api.symbols.PeekMessageW(message, 0n, 0, 0, 1)) { api.symbols.TranslateMessage(message); api.symbols.DispatchMessageW(message); } }, 5);
 let input = "";
 process.stdin.setEncoding("utf8"); process.stdin.on("data", part => { input += part; for (;;) { const end = input.indexOf("\n"); if (end < 0) break; const request = JSON.parse(input.slice(0, end)); input = input.slice(end + 1);
-  if (request.action === "hotkey") { const keys = [[0x11, 0], [0x12, 0], [0x13, 0], [0x13, 2], [0x12, 2], [0x11, 2]], events = Buffer.alloc(keys.length * 40); keys.forEach(([key, flags], i) => { events.writeUInt32LE(1, i * 40); events.writeUInt16LE(key!, i * 40 + 8); events.writeUInt32LE(flags!, i * 40 + 12); }); console.log(JSON.stringify({ id: request.id, sent: api.symbols.SendInput(keys.length, events, 40) })); }
+  if (request.action === "block") { console.log(JSON.stringify({ id: request.id, blocking: 1500 })); setTimeout(() => pause.symbols.Sleep(1500), 20); }
+  else if (request.action === "hotkey") { const keys = [[0x11, 0], [0x12, 0], [0x13, 0], [0x13, 2], [0x12, 2], [0x11, 2]], events = Buffer.alloc(keys.length * 40); keys.forEach(([key, flags], i) => { events.writeUInt32LE(1, i * 40); events.writeUInt16LE(key!, i * 40 + 8); events.writeUInt32LE(flags!, i * 40 + 12); }); console.log(JSON.stringify({ id: request.id, sent: api.symbols.SendInput(keys.length, events, 40) })); }
   else if (request.action === "reserve_hotkey") console.log(JSON.stringify({ id: request.id, registered: api.symbols.RegisterHotKey(0n, 0x5a32, 0x4003, 0x13) }));
   else if (request.action === "rename") { api.symbols.SetWindowTextW(root, wide(request.title)); console.log(JSON.stringify({ id: request.id, renamed: true })); }
   else { const text = Buffer.alloc(4096), count = api.symbols.GetWindowTextW(edit, text, 2048); console.log(JSON.stringify({ id: request.id, checked: Number(api.symbols.SendMessageW(button, 0xf0, 0n, 0n)), text: text.subarray(0, count * 2).toString("utf16le") })); }
 } });
-const close = () => { clearInterval(timer); api.symbols.UnregisterHotKey(0n, 0x5a32); api.symbols.DestroyWindow(root); api.close(); process.exit(0); }; process.stdin.on("end", close); process.on("SIGTERM", close);
+const close = () => { clearInterval(timer); api.symbols.UnregisterHotKey(0n, 0x5a32); api.symbols.DestroyWindow(root); api.close(); pause.close(); process.exit(0); }; process.stdin.on("end", close); process.on("SIGTERM", close);

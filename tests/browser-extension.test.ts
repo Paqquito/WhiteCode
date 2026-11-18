@@ -15,7 +15,7 @@ import { endianness } from "node:os";
 import { ROOT } from "./helpers/env";
 
 const text = (value: ToolOutcome) => value.content.filter(part => part.type === "text").map(part => part.text).join("\n");
-const data = (value: ToolOutcome): any => { expect(value.isError).toBe(false); return JSON.parse(text(value).split("\n").slice(1).join("\n")); };
+const data = (value: ToolOutcome): any => { expect(value.isError, text(value)).toBe(false); return JSON.parse(text(value).split("\n").slice(1).join("\n")); };
 const ref = (page: { text: string }, label: string) => { const line = page.text.split("\n").find(line => line.includes(label)); expect(line).toBeDefined(); return /^\[([^\]]+)\]/.exec(line!)![1]!; };
 async function waitFor(predicate: () => boolean, message: string, timeoutMs = 6000) { const deadline = Date.now() + timeoutMs; while (!predicate()) { if (Date.now() > deadline) throw Error(message); await sleep(30); } }
 
