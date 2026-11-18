@@ -1,4 +1,7 @@
 // Implements: SPEC-INT-008 (bounded asynchronous forge status), SPEC-INT-009 (links scoped to the current repository).
+// Supports: SPEC-INT-008 (only Git worktrees are eligible for status polling), gap E-337.
+import { stat } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { startChild } from "../platform/process";
 import { findExecutable } from "../platform/system";
 import {
@@ -54,6 +57,13 @@ const states: Record<string, string> = {
   MERGED: "fusionnée",
   CLOSED: "fermée",
 };
+async function hasGitMarker(cwd: string, signal: AbortSignal): Promise<boolean> {
+  for (let folder = resolve(cwd); ; folder = dirname(folder)) {
+    if (signal.aborted) return false;
+    try { const marker = await stat(join(folder, ".git")); if (marker.isFile() || marker.isDirectory()) return true; } catch { /* No accessible Git marker here. */ }
+    if (dirname(folder) === folder) return false;
+  }
+}
 export function mergeRequestLabel(raw: unknown): string | undefined {
   if (!raw || typeof raw !== "object") return;
   const row = raw as Record<string, unknown>;
@@ -109,6 +119,11 @@ export class MergeRequestStatus {
     this.#pending = true;
     const cwd = this.options.cwd();
     try {
+      if (!await hasGitMarker(cwd, this.#abort.signal)) {
+        if (!this.#closed && cwd === this.options.cwd() && this.label !== undefined) { this.label = undefined; this.options.changed(); }
+        return;
+      }
+      if (this.#closed || cwd !== this.options.cwd()) return;
       const raw = await forgeJson(
         ["pr", "view", "--json", "number,url,state,reviewDecision,isDraft"],
         { ...this.options, cwd, signal: this.#abort.signal },
