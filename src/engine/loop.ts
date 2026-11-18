@@ -472,11 +472,13 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
         calls.push({ callId: "file_" + crypto.randomUUID().replaceAll("-", ""), name: "deliver_file",
           input: { files: pending.slice(start, start + 10), status: "normal", mode: "attach" } });
       }
-      const blocks = calls.map(call => ({ type: "tool_use", id: call.callId, name: call.name, input: call.input }));
-      const message = { role: "assistant" as const, text: "", toolCalls: calls, native: { provider: "host-file-delivery", content: blocks } };
+      // Gateways that translate tool-only messages can drop the content field (E-073).
+      const text = "Transmission des fichiers demandés.";
+      const blocks = [{ type: "text", text }, ...calls.map(call => ({ type: "tool_use", id: call.callId, name: call.name, input: call.input }))];
+      const message = { role: "assistant" as const, text, toolCalls: calls, native: { provider: "host-file-delivery", content: blocks } };
       conv.appendAssistant(message);
-      persist("assistant", { content: blocks, provider: message.native.provider, text: "", toolCalls: calls, stopReason: "tool_use", synthetic: true });
-      deps.emit({ type: "assistant_message", text: "", toolCalls: calls });
+      persist("assistant", { content: blocks, provider: message.native.provider, text, toolCalls: calls, stopReason: "tool_use", synthetic: true });
+      deps.emit({ type: "assistant_message", text, toolCalls: calls });
       for (const call of calls) {
         deps.emit({ type: "tool_call", callId: call.callId, name: call.name, input: call.input });
         delivery.submit(call);

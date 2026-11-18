@@ -50,7 +50,7 @@ export function toChatMessages(system: readonly SystemBlock[], history: readonly
     const label = m.contextId ? `[${m.contextId}]\n` : "";
     if (m.role === "assistant") {
       const native: OpenAI.Chat.ChatCompletionAssistantMessageParam = m.native.provider === "host-file-delivery"
-        ? { role: "assistant", content: null, tool_calls: m.toolCalls.map(c => ({ type: "function", id: c.callId, function: { name: c.name, arguments: JSON.stringify(c.input) } })) }
+        ? { role: "assistant", content: m.text, tool_calls: m.toolCalls.map(c => ({ type: "function", id: c.callId, function: { name: c.name, arguments: JSON.stringify(c.input) } })) }
         : m.native.content as OpenAI.Chat.ChatCompletionAssistantMessageParam;
       // Native assistant messages remain verbatim (D-12); only tool results can be pruned.
       if (native && typeof native === "object" && "connector_text_blocks" in native && (!connectorText || m.native.provider !== provider)) {
