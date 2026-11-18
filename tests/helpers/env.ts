@@ -70,6 +70,8 @@ export function workspace(): Workspace {
     },
   };
   for (const d of [ws.home, ws.configHome, ws.managed, ws.project]) mkdirSync(d, { recursive: true });
+  // Edge needs AppData/Local under the temporary USERPROFILE before its debugging pipe will answer.
+  if (process.platform === "win32") mkdirSync(join(ws.home, "AppData", "Local"), { recursive: true });
   // Isolation: the project folder of the workspace stops the upward search of the project root (SPEC-CFG-001,
   // nested projects), so that a product folder of the real home above the temporary folder is never taken as a project.
   mkdirSync(join(ws.project, DEV_PROJECT_DIR), { recursive: true });
