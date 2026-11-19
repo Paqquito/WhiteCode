@@ -11,6 +11,7 @@ import { insideAllowed } from "../permissions/paths";
 import { resolveAsk, type Authorities } from "../permissions/resolver";
 import type { StopReason, ToolCall, ToolResultPart } from "../providers/types";
 import type { ToolLookup } from "../tools/registry";
+import type { ChoiceReply } from "../tools/planning";
 import { textOutcome, type RuleSubject, type Tool, type ToolContext, type ToolOutcome } from "../tools/types";
 import type { EventSink } from "./events";
 import type { FileChange } from "../shared/diff";
@@ -376,7 +377,9 @@ export class ResponseExecution {
         const callController = new AbortController();
         const onAbort = () => callController.abort();
         signal.addEventListener("abort", onAbort, { once: true });
-        const execution = tool.execute(call.input as never, { ...ctx, signal: callController.signal }).catch(
+        const execution = tool.execute(call.input as never, { ...ctx, signal: callController.signal,
+          ...(call.name === "run_powershell" ? { askCommandChoice: (question: Record<string, unknown>, s: AbortSignal) => this.#askCommandChoice(question, s) } : {}),
+        }).catch(
           (error: unknown) => textOutcome(`The tool failed: ${(error as Error)?.message ?? String(error)}`, true, "execution"), // ERR-02
         );
         // EF-05: ordinary calls are bounded by engine.toolTimeout.
@@ -384,12 +387,11 @@ export class ResponseExecution {
         const limit = own === undefined ? this.#deps.toolTimeoutMs
           : tool.hostTimeout ? own + TOOL_STOP_MARGIN_MS
           : Math.min(own + TOOL_STOP_MARGIN_MS, tool.idleWait ? 3_606_000 : this.#deps.toolTimeoutMs);
-        let outcome = await withTimeout(execution, limit, () => callController.abort());
+        const outcome = await withTimeout(execution, limit, () => callController.abort());
         signal.removeEventListener("abort", onAbort);
         if (writes.length > 0) this.#deps.fileHistory?.afterWrite(writes);
         if (outcome === "timeout") return finish(textOutcome(`Timed out after ${Math.round(limit / 1000)} s.`, true, "timeout")); // ERR-03, CA-05
         if (signal.aborted) return finish(textOutcome("Interrupted by the user.", true, "interrupted"));
-        if (outcome.pendingChoice) outcome = await this.#resolveCommandChoice(outcome.pendingChoice, signal);
         if (outcome.stopTurn) this.#stopTurnRequested = true;
         const afterExecution = this.#deps.policyRefusal?.();
         if (afterExecution) return finish({ ...outcome, content: [...outcome.content, { type: "text", text: `This tool completed before the policy check failed. No subsequent hook was run. ${afterExecution}` }] });
@@ -408,9 +410,9 @@ export class ResponseExecution {
     }
   }
 
-  /** Resolve the command's question through the ordinary tool policy before exposing its selected receipt. */
-  async #resolveCommandChoice(choice: NonNullable<ToolOutcome["pendingChoice"]>, signal: AbortSignal): Promise<ToolOutcome> {
-    const question = { ...choice.question, require_answer: true, allow_multiple: false };
+  /** Route a suspended command's question through the same policy and UI as an explicit question. */
+  async #askCommandChoice(input: Record<string, unknown>, signal: AbortSignal): Promise<ChoiceReply> {
+    const question = { ...input, require_answer: true, allow_multiple: false };
     const ask = new ResponseExecution(this.#deps, signal);
     const call = { name: "request_user_choice", callId: crypto.randomUUID(), input: { questions: [question] } };
     this.#deps.emit({ type: "tool_call", ...call });
@@ -418,13 +420,11 @@ export class ResponseExecution {
     ask.responseComplete("tool_use");
     const [result] = await ask.results();
     const reply = ask.#choiceReplies?.[0];
-    if (result?.isError || ask.stopTurnRequested || !reply || "none" in reply)
-      return { ...textOutcome("No decision received. The requested action is pending."), stopTurn: true };
-    if ("other" in reply) return textOutcome("The user supplied an alternative: " + reply.other);
-    const options = choice.question.options as { label: string }[];
-    const index = options.findIndex(option => option.label === reply.labels[0]);
-    if (index < 0) return { ...textOutcome("The selected option is no longer available."), stopTurn: true };
-    return textOutcome("The user selected " + JSON.stringify(reply.labels[0]) + ". Command receipt:\n" + choice.receipts[index]);
+    if (result?.isError || ask.stopTurnRequested || !reply || "none" in reply) {
+      this.#stopTurnRequested = true;
+      return { none: true };
+    }
+    return reply;
   }
 
   #redacted(outcome: ToolOutcome): ToolOutcome {

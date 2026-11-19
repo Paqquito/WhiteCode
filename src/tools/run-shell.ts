@@ -11,6 +11,7 @@ import { normalizePowerShellPart, opaquePowerShell } from "../permissions/powers
 import { buildFlag } from "../extension-points/build-flags" with { type: "macro" };
 import { formatShellResult, type ShellResult } from "./shell-runtime";
 import { startShellTask } from "./background-tools";
+import { withChoicePipe } from "./powershell-choice";
 import { analyseShellCommand, type ShellVerdict } from "../permissions/command-analysis";
 import { textOutcome, type Tool, type ToolContext, type ToolOutcome } from "./types";
 
@@ -106,23 +107,20 @@ function shellTool(name: "run_shell" | "run_powershell", run: (ctx: ToolContext,
 }
 
 async function foregroundShell(ctx: ToolContext, input: ShellInput, timeout: number, powershell: boolean): Promise<ToolOutcome> {
-  const choiceNonce = powershell && !ctx.agentName ? crypto.randomUUID() : undefined;
-  const run = (signal: AbortSignal, output?: (chunk: string) => void) => powershell
-    ? ctx.shell!.runPowerShell(input.command, timeout, signal, output, input.unsandboxed === true, choiceNonce)
-    : ctx.shell!.runPosix(input.command, timeout, signal, output, input.unsandboxed === true);
+  let transferred = false, asking = false;
+  const run = (signal: AbortSignal, output?: (chunk: string) => void) => {
+    if (!powershell) return ctx.shell!.runPosix(input.command, timeout, signal, output, input.unsandboxed === true);
+    const execute = (pipe?: string) => ctx.shell!.runPowerShell(input.command, timeout, signal, output, input.unsandboxed === true, pipe);
+    const ask = ctx.askCommandChoice;
+    if (ctx.platform !== "windows" || !ask || ctx.agentName || !/\.ps1\b/i.test(input.command)) return execute();
+    return withChoicePipe(async (question, active) => {
+      if (transferred) return { none: true };
+      asking = true;
+      try { return await ask(question, active); } finally { asking = false; }
+    }, signal, execute);
+  };
   const startDir = ctx.shell!.cwd;
   const outcome = (r: ShellResult): ToolOutcome => {
-    if (choiceNonce && r.output.includes(choiceNonce) && /\bchoiceNonce\b/i.test(r.output)) {
-      // Only a live command can sign a receipt. Previously read documents and stored output cannot prompt.
-      const stopped = { ...textOutcome("The command requires a decision but returned an incomplete question.", true, "invalid_input"), stopTurn: true };
-      if (r.exitCode !== 0 || r.truncated || r.interrupted || r.timedOut || r.violations?.length) return stopped;
-      try {
-        const data = JSON.parse(r.output.trim());
-        if (data.choiceNonce !== choiceNonce || !Array.isArray(data.question?.options) || !Array.isArray(data.receipts) ||
-          data.receipts.length !== data.question.options.length || !data.receipts.every((s: unknown) => typeof s === "string")) return stopped;
-        return { ...textOutcome("A user decision is required."), pendingChoice: { question: data.question, receipts: data.receipts } };
-      } catch { return stopped; }
-    }
     const failed = r.timedOut || r.interrupted || !!r.violations?.length || (!!input.attach_files && r.exitCode !== 0);
     const result = textOutcome(formatShellResult(r, timeout), failed, r.timedOut ? "timeout" : r.interrupted ? "interrupted" : r.violations?.length ? "permission_denied" : undefined);
     return !failed && input.attach_files ? { ...result, attachments: input.attach_files.map(path => resolve(startDir, path)) } : result;
@@ -133,7 +131,7 @@ async function foregroundShell(ctx: ToolContext, input: ShellInput, timeout: num
   const abort = () => controller.abort(ctx.signal.reason);
   if (ctx.signal.aborted) abort(); else ctx.signal.addEventListener("abort", abort, { once: true });
   const buffered: string[] = [];
-  let bytes = 0, capped = false, transferred = false, finished = false;
+  let bytes = 0, capped = false, finished = false;
   let output = (chunk: string) => {
     if (capped) return;
     bytes += Buffer.byteLength(chunk, "utf8");
@@ -144,7 +142,7 @@ async function foregroundShell(ctx: ToolContext, input: ShellInput, timeout: num
   let resolveTransfer!: (result: ToolOutcome) => void;
   const transfer = new Promise<ToolOutcome>((resolve) => { resolveTransfer = resolve; });
   const withdraw = background.offerForeground(() => {
-    if (finished || controller.signal.aborted) return undefined;
+    if (finished || asking || controller.signal.aborted) return undefined;
     const task = background.start("shell", input.description ?? input.command.slice(0, 80), async (signal, write) => {
       const stop = () => controller.abort(signal.reason);
       if (signal.aborted) stop(); else signal.addEventListener("abort", stop, { once: true });

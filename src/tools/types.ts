@@ -62,6 +62,7 @@ export interface ToolEnvironment {
 }
 
 export interface ToolContext extends ToolEnvironment {
+  readonly askCommandChoice?: (question: Record<string, unknown>, signal: AbortSignal) => Promise<ChoiceReply>;
   readonly editAnchorAllowed?: boolean;
   readonly cwd: string;
   readonly allowedDirectories: readonly string[];
@@ -100,8 +101,6 @@ export type ToolPreview = { readonly diff: string; readonly change?: FileChange;
 export type ToolErrorKind = "invalid_input" | "permission_denied" | "unavailable" | "timeout" | "execution" | "interrupted" | "not_executed";
 
 export interface ToolOutcome {
-  /** An interactive command returns one question and a text receipt per option, in display order. */
-  readonly pendingChoice?: { question: Record<string, unknown>; receipts: readonly string[] };
   readonly choiceReplies?: readonly ChoiceReply[];
   /** A required human decision was skipped. End this turn before any dependent calls. */
   readonly stopTurn?: boolean;

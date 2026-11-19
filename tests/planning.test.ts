@@ -1,7 +1,7 @@
 // Planning mode and plan approval (SPEC-OUT-024, SPEC-PER-003 CA-04, SPEC-MOT-007 CA-03), questions to the user
 // (SPEC-OUT-033), in the interface and through a control host.
 import { describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelRequest } from "../src/providers/types";
 import { cli, workspace } from "./helpers/env";
@@ -120,10 +120,21 @@ describe("SPEC-OUT-033 request_user_choice", () => {
   });
 
   test.skipIf(process.platform !== "win32")("an interactive PowerShell command waits for a choice and releases only its selected receipt", async () => {
-    const command = "@{choiceNonce=$env:TOOL_CHOICE_NONCE; question=@{question='Which slot?';options=@(@{label='Earlier'},@{label='Later'})}; receipts=@('earlier-receipt','later-receipt')} | ConvertTo-Json -Compress -Depth 5";
+    const ws = workspace();
+    const script = join(ws.project, "choice.ps1");
+    writeFileSync(script, `$pipe=[IO.Pipes.NamedPipeClientStream]::new('.', $env:TOOL_CHOICE_PIPE, [IO.Pipes.PipeDirection]::InOut)
+try {
+  $pipe.Connect(3000)
+  $writer=[IO.StreamWriter]::new($pipe,[Text.UTF8Encoding]::new($false))
+  $writer.WriteLine('{"question":"Which slot?","options":[{"label":"Earlier"},{"label":"Later"}]}')
+  $writer.Flush()
+  $answer=([IO.StreamReader]::new($pipe)).ReadLine() | ConvertFrom-Json
+  if ($answer.labels[0] -eq 'Later') { 'later-receipt' } else { 'earlier-receipt' }
+} finally { $pipe.Dispose() }`);
+    const command = "& '" + script.replaceAll("'", "''") + "'";
     const provider = new ScriptedProvider([call("run_powershell", { command }), { text: "done" }]);
     let asked = 0;
-    const host = new Host(workspace(), { provider, init: { decisionAuthority: true, demands: ["approval_request", "request_user_choice"] }, answers: {
+    const host = new Host(ws, { provider, init: { decisionAuthority: true, demands: ["approval_request", "request_user_choice"] }, answers: {
       approval_request: () => ({ decision: "allow" }),
       request_user_choice: () => { asked++; return { answers: [{ labels: ["Later"] }] }; },
     } });

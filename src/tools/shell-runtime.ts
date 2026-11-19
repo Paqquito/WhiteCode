@@ -339,7 +339,7 @@ export class ShellRuntime {
   }
 
   /** Runs `command` in PowerShell (§ 5.3 of SPEC-OUT-009): no profile unless configured, UTF-8 output, syntax errors reported. */
-  async runPowerShell(command: string, timeoutMs: number, signal: AbortSignal, onOutput?: (chunk: string) => void, outside = false, choiceNonce?: string): Promise<ShellResult> {
+  async runPowerShell(command: string, timeoutMs: number, signal: AbortSignal, onOutput?: (chunk: string) => void, outside = false, choicePipe?: string): Promise<ShellResult> {
     const ps = this.options.powershell!;
     const confined = this.options.sandbox?.mode(command, this.#cwd, this.options.allowedDirectories, outside) === "confined";
     const cwdFile = join(this.options.workDir, `cwd-${process.pid}-${++this.#counter}`);
@@ -352,7 +352,7 @@ export class ShellRuntime {
       "$ProgressPreference = 'SilentlyContinue'",
       "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false",
       "$OutputEncoding = [Console]::OutputEncoding",
-      ...(choiceNonce ? [`$env:TOOL_CHOICE_NONCE = ${quotePs(choiceNonce)}`] : []),
+      ...(choicePipe ? [`$env:TOOL_CHOICE_PIPE = ${quotePs(choicePipe)}`] : []),
       `Set-Location -LiteralPath ${quotePs(this.#cwd)}`,
       this.options.repositoryCeiling?.() ? `$env:GIT_CEILING_DIRECTORIES = ${quotePs(this.options.repositoryCeiling()!)}` : "",
       `$__source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))`,
