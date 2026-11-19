@@ -248,9 +248,13 @@ describe("SPEC-OUT-001 registry", () => {
     const all = new ScriptedProvider([{ text: "ok" }]);
     await cli(["--non-interactive", "x"], workspace(), { provider: all });
     const names = all.requests[0]!.tools.map((t) => t.name);
-    expect(names).toEqual(expect.arrayContaining(["background_output", "background_stop", "configure", "disband_team", "discover_skills", "edit_file", "fetch_url", "find_files", "form_team", "message_agent", "prune_history", "read_file", "run_defect_scan", "run_workflow", "search_content", "spawn_agent", "update_notebook_cell", "update_todo_list", "use_skill", "work_item_create", "work_item_get", "work_item_list", "work_item_update", "write_file"]));
-    // Shell and browser tools depend on the programs detected on the machine.
-    expect(names.filter((n) => !["background_output", "background_stop", "browse_web", "configure", "disband_team", "discover_skills", "edit_file", "fetch_url", "find_files", "form_team", "message_agent", "notify_device", "prune_history", "read_file", "run_defect_scan", "run_workflow", "search_content", "spawn_agent", "update_notebook_cell", "update_todo_list", "use_skill", "work_item_create", "work_item_get", "work_item_list", "work_item_update", "write_file"].includes(n)).every((n) => n === "run_shell" || n === "run_powershell" || n === "monitor_process")).toBe(true);
+    const optional = new Set(["browse_web", "monitor_process", "notify_device", "run_powershell", "run_shell"]);
+    expect(names.filter(name => !optional.has(name)).sort()).toEqual([
+      "background_output", "background_stop", "configure", "disband_team", "discover_skills", "edit_file",
+      "fetch_url", "find_files", "form_team", "message_agent", "prune_history", "read_file", "run_defect_scan",
+      "run_workflow", "search_content", "search_web", "spawn_agent", "update_notebook_cell", "update_todo_list",
+      "use_skill", "work_item_create", "work_item_get", "work_item_list", "work_item_update", "write_file",
+    ]);
   });
 
   test("SPEC-OUT-001/CA-05 — a connector exposing read_file: the built-in tool is kept, the connector tool gets its prefix", () => {
