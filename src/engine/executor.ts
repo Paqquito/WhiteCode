@@ -223,6 +223,7 @@ export class ResponseExecution {
       // Context, validation and permission contributions follow earlier barriers, including a working-folder switch.
       if (safe) await lastBarrier;
       else await Promise.allSettled(previous);
+      if (this.#stopTurnRequested) return finish(textOutcome("Not executed: the turn was stopped.", true, "not_executed"), false);
       if (signal.aborted) return finish(textOutcome("Not executed: the turn was interrupted.", true, "interrupted"));
       const ctx = this.#deps.toolContext(signal);
       if ((call.name === "run_shell" || call.name === "run_powershell") && (call.input as { attach_files?: unknown }).attach_files && !this.#deps.registry.get("deliver_file")) {
@@ -386,6 +387,7 @@ export class ResponseExecution {
         if (writes.length > 0) this.#deps.fileHistory?.afterWrite(writes);
         if (outcome === "timeout") return finish(textOutcome(`Timed out after ${Math.round(limit / 1000)} s.`, true, "timeout")); // ERR-03, CA-05
         if (signal.aborted) return finish(textOutcome("Interrupted by the user.", true, "interrupted"));
+        if (outcome.stopTurn) this.#stopTurnRequested = true;
         const afterExecution = this.#deps.policyRefusal?.();
         if (afterExecution) return finish({ ...outcome, content: [...outcome.content, { type: "text", text: `This tool completed before the policy check failed. No subsequent hook was run. ${afterExecution}` }] });
         const safeOutcome = this.#redacted(outcome);

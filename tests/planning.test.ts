@@ -102,6 +102,23 @@ describe("SPEC-OUT-033 request_user_choice", () => {
     { question: "Quels formats ?", header: "Formats", options: [{ label: "JSON" }, { label: "CSV" }, { label: "XML" }], allow_multiple: true },
   ];
 
+  test("skipping a required decision stops queued actions and the next model round", async () => {
+    const ws = workspace();
+    const path = join(ws.project, "dependent.txt");
+    const provider = new ScriptedProvider([{ toolCalls: [
+      { name: "request_user_choice", input: { questions: [{ ...questions[0], require_answer: true }] } },
+      { name: "write_file", input: { path, content: "unexpected" } },
+    ] }, { text: "unexpected continuation" }]);
+    const host = new Host(ws, { provider, init: { demands: ["request_user_choice"] }, answers: { request_user_choice: () => ({ answers: [] }) } });
+    host.user("choisis");
+    await host.waitFor(m => m.type === "turn_completed");
+    host.feed.end();
+    await host.finish();
+    expect(provider.requests).toHaveLength(1);
+    expect(JSON.stringify(host.messages)).toContain("Not executed: the turn was stopped.");
+    expect(existsSync(path)).toBe(false);
+  });
+
   test("SPEC-OUT-033/CA-01 — two questions, one with several answers: the model gets both, the second as a list", async () => {
     const ws = workspace();
     const p = new ScriptedProvider([call("request_user_choice", { questions }), { text: "noté" }]);

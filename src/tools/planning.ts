@@ -70,6 +70,7 @@ export interface ChoiceQuestion {
   readonly header?: string;
   readonly options: ReadonlyArray<{ readonly label: string; readonly description?: string; readonly preview?: string }>;
   readonly allow_multiple?: boolean;
+  readonly require_answer?: boolean;
 }
 
 /** An answer: the labels chosen, a free text, or nothing (FA-01). */
@@ -102,6 +103,7 @@ export function createUserChoiceTool(ask: (questions: readonly ChoiceQuestion[],
                 },
               },
               allow_multiple: { type: "boolean" },
+              require_answer: { type: "boolean", description: "End the turn if the user skips this decision. Use when an action depends on the answer." },
             },
             required: ["question", "options"],
             additionalProperties: false,
@@ -129,6 +131,15 @@ export function createUserChoiceTool(ask: (questions: readonly ChoiceQuestion[],
     summary: (input) => `Ask the user: ${input.questions[0]?.question ?? ""}`,
     async execute(input, ctx) {
       const replies = await ask(input.questions, ctx.signal);
+      const missingRequired = input.questions.some((q, i) => {
+        if (!q.require_answer) return false;
+        const reply = replies[i];
+        if (!reply || "none" in reply) return true;
+        if ("other" in reply) return !reply.other.trim();
+        const options = q.options.map(option => option.label);
+        return !reply.labels.length || (!q.allow_multiple && reply.labels.length !== 1) || reply.labels.some(label => !options.includes(label));
+      });
+      if (missingRequired) return { ...textOutcome("The required decision was left unanswered. The action is pending."), stopTurn: true };
       // Step 4: the answers, by question.
       const lines = input.questions.map((q, i) => {
         const r = replies[i] ?? { none: true };
@@ -136,7 +147,7 @@ export function createUserChoiceTool(ask: (questions: readonly ChoiceQuestion[],
         return `- ${q.question}: ${answer}`;
       });
       const none = replies.every((r) => "none" in r);
-      return textOutcome(`${none ? "The user gave no answer: go on with what you know, or ask differently." : "The user answered:"}\n${lines.join("\n")}`);
+      return textOutcome(`${none ? "The user gave no answer. Leave dependent actions pending; continue only independent work." : "The user answered:"}\n${lines.join("\n")}`);
     },
   };
 }
