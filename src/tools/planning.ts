@@ -147,7 +147,7 @@ export function createUserChoiceTool(ask: (questions: readonly ChoiceQuestion[],
         return `- ${q.question}: ${answer}`;
       });
       const none = replies.every((r) => "none" in r);
-      return textOutcome(`${none ? "The user gave no answer. Leave dependent actions pending; continue only independent work." : "The user answered:"}\n${lines.join("\n")}`);
+      return { ...textOutcome(`${none ? "The user gave no answer. Leave dependent actions pending; continue only independent work." : "The user answered:"}\n${lines.join("\n")}`), choiceReplies: replies };
     },
   };
 }

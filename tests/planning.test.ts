@@ -119,6 +119,23 @@ describe("SPEC-OUT-033 request_user_choice", () => {
     expect(existsSync(path)).toBe(false);
   });
 
+  test.skipIf(process.platform !== "win32")("an interactive PowerShell command waits for a choice and releases only its selected receipt", async () => {
+    const command = "@{choiceNonce=$env:TOOL_CHOICE_NONCE; question=@{question='Which slot?';options=@(@{label='Earlier'},@{label='Later'})}; receipts=@('earlier-receipt','later-receipt')} | ConvertTo-Json -Compress -Depth 5";
+    const provider = new ScriptedProvider([call("run_powershell", { command }), { text: "done" }]);
+    let asked = 0;
+    const host = new Host(workspace(), { provider, init: { decisionAuthority: true, demands: ["approval_request", "request_user_choice"] }, answers: {
+      approval_request: () => ({ decision: "allow" }),
+      request_user_choice: () => { asked++; return { answers: [{ labels: ["Later"] }] }; },
+    } });
+    host.user("choose");
+    await host.waitFor(m => m.type === "turn_completed");
+    host.feed.end();
+    await host.finish();
+    expect(asked).toBe(1);
+    expect(results(provider.requests[1])).toContain("later-receipt");
+    expect(results(provider.requests[1])).not.toContain("earlier-receipt");
+  });
+
   test("SPEC-OUT-033/CA-01 — two questions, one with several answers: the model gets both, the second as a list", async () => {
     const ws = workspace();
     const p = new ScriptedProvider([call("request_user_choice", { questions }), { text: "noté" }]);

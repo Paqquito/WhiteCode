@@ -106,11 +106,23 @@ function shellTool(name: "run_shell" | "run_powershell", run: (ctx: ToolContext,
 }
 
 async function foregroundShell(ctx: ToolContext, input: ShellInput, timeout: number, powershell: boolean): Promise<ToolOutcome> {
+  const choiceNonce = powershell && !ctx.agentName ? crypto.randomUUID() : undefined;
   const run = (signal: AbortSignal, output?: (chunk: string) => void) => powershell
-    ? ctx.shell!.runPowerShell(input.command, timeout, signal, output, input.unsandboxed === true)
+    ? ctx.shell!.runPowerShell(input.command, timeout, signal, output, input.unsandboxed === true, choiceNonce)
     : ctx.shell!.runPosix(input.command, timeout, signal, output, input.unsandboxed === true);
   const startDir = ctx.shell!.cwd;
   const outcome = (r: ShellResult): ToolOutcome => {
+    if (choiceNonce && r.output.includes(choiceNonce) && /\bchoiceNonce\b/i.test(r.output)) {
+      // Only a live command can sign a receipt. Previously read documents and stored output cannot prompt.
+      const stopped = { ...textOutcome("The command requires a decision but returned an incomplete question.", true, "invalid_input"), stopTurn: true };
+      if (r.exitCode !== 0 || r.truncated || r.interrupted || r.timedOut || r.violations?.length) return stopped;
+      try {
+        const data = JSON.parse(r.output.trim());
+        if (data.choiceNonce !== choiceNonce || !Array.isArray(data.question?.options) || !Array.isArray(data.receipts) ||
+          data.receipts.length !== data.question.options.length || !data.receipts.every((s: unknown) => typeof s === "string")) return stopped;
+        return { ...textOutcome("A user decision is required."), pendingChoice: { question: data.question, receipts: data.receipts } };
+      } catch { return stopped; }
+    }
     const failed = r.timedOut || r.interrupted || !!r.violations?.length || (!!input.attach_files && r.exitCode !== 0);
     const result = textOutcome(formatShellResult(r, timeout), failed, r.timedOut ? "timeout" : r.interrupted ? "interrupted" : r.violations?.length ? "permission_denied" : undefined);
     return !failed && input.attach_files ? { ...result, attachments: input.attach_files.map(path => resolve(startDir, path)) } : result;

@@ -124,6 +124,7 @@ export class ResponseExecution {
   #gateResolve!: (g: Gate) => void;
   readonly #gate: Promise<Gate> = new Promise((r) => (this.#gateResolve = r));
   readonly attachments = new Set<string>();
+  #choiceReplies?: ToolOutcome["choiceReplies"];
   #stopTurnRequested = false;
   #unproductiveLoop = false;
 
@@ -156,6 +157,7 @@ export class ResponseExecution {
     // SPEC-MOT-046: compared on arrival, in call order, before the hook and the permission decision.
     const verdict = tool && schemaErrors.length === 0 ? this.#deps.loopGuard?.check(call.name, input) : undefined;
     const done = this.#run(call, tool, schemaErrors, safe, previous, lastBarrier, verdict).then((outcome) => {
+      if (call.name === "request_user_choice") this.#choiceReplies = outcome.choiceReplies;
       if (!outcome.isError) for (const path of outcome.attachments ?? []) this.attachments.add(path);
       const part: ToolResultPart = { type: "tool_result", callId: call.callId, isError: outcome.isError, content: outcome.content };
       return part;
@@ -382,11 +384,12 @@ export class ResponseExecution {
         const limit = own === undefined ? this.#deps.toolTimeoutMs
           : tool.hostTimeout ? own + TOOL_STOP_MARGIN_MS
           : Math.min(own + TOOL_STOP_MARGIN_MS, tool.idleWait ? 3_606_000 : this.#deps.toolTimeoutMs);
-        const outcome = await withTimeout(execution, limit, () => callController.abort());
+        let outcome = await withTimeout(execution, limit, () => callController.abort());
         signal.removeEventListener("abort", onAbort);
         if (writes.length > 0) this.#deps.fileHistory?.afterWrite(writes);
         if (outcome === "timeout") return finish(textOutcome(`Timed out after ${Math.round(limit / 1000)} s.`, true, "timeout")); // ERR-03, CA-05
         if (signal.aborted) return finish(textOutcome("Interrupted by the user.", true, "interrupted"));
+        if (outcome.pendingChoice) outcome = await this.#resolveCommandChoice(outcome.pendingChoice, signal);
         if (outcome.stopTurn) this.#stopTurnRequested = true;
         const afterExecution = this.#deps.policyRefusal?.();
         if (afterExecution) return finish({ ...outcome, content: [...outcome.content, { type: "text", text: `This tool completed before the policy check failed. No subsequent hook was run. ${afterExecution}` }] });
@@ -405,7 +408,25 @@ export class ResponseExecution {
     }
   }
 
-  /** FA-01 of SPEC-OUT-001: a result beyond the inline limit is written to the session folder; the model gets its start, its end and the path. */
+  /** Resolve the command's question through the ordinary tool policy before exposing its selected receipt. */
+  async #resolveCommandChoice(choice: NonNullable<ToolOutcome["pendingChoice"]>, signal: AbortSignal): Promise<ToolOutcome> {
+    const question = { ...choice.question, require_answer: true, allow_multiple: false };
+    const ask = new ResponseExecution(this.#deps, signal);
+    const call = { name: "request_user_choice", callId: crypto.randomUUID(), input: { questions: [question] } };
+    this.#deps.emit({ type: "tool_call", ...call });
+    ask.submit(call);
+    ask.responseComplete("tool_use");
+    const [result] = await ask.results();
+    const reply = ask.#choiceReplies?.[0];
+    if (result?.isError || ask.stopTurnRequested || !reply || "none" in reply)
+      return { ...textOutcome("No decision received. The requested action is pending."), stopTurn: true };
+    if ("other" in reply) return textOutcome("The user supplied an alternative: " + reply.other);
+    const options = choice.question.options as { label: string }[];
+    const index = options.findIndex(option => option.label === reply.labels[0]);
+    if (index < 0) return { ...textOutcome("The selected option is no longer available."), stopTurn: true };
+    return textOutcome("The user selected " + JSON.stringify(reply.labels[0]) + ". Command receipt:\n" + choice.receipts[index]);
+  }
+
   #redacted(outcome: ToolOutcome): ToolOutcome {
     const redact = this.#deps.redactOutput;
     return redact ? { ...outcome, ...(outcome.display !== undefined ? { display: redact(outcome.display) } : {}), ...(outcome.displayRaw !== undefined ? { displayRaw: redact(outcome.displayRaw) } : {}), content: outcome.content.map((part) => part.type === "text" ? { ...part, text: redact(part.text) } : part) } : outcome;
