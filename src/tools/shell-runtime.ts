@@ -352,7 +352,7 @@ export class ShellRuntime {
       "$ProgressPreference = 'SilentlyContinue'",
       "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false",
       "$OutputEncoding = [Console]::OutputEncoding",
-      ...(choicePipe ? [`$env:TOOL_CHOICE_PIPE = ${quotePs(choicePipe)}`] : []),
+      ...(choicePipe ? [`$env:TOOL_CHOICE_PIPE = ${quotePs(choicePipe)}`, "$env:TOOL_CHOICE_SLOTS = '1'"] : []),
       ...(choicePipe && turnId ? [`$env:TOOL_TURN_ID = ${quotePs(turnId)}`] : []),
       `Set-Location -LiteralPath ${quotePs(this.#cwd)}`,
       this.options.repositoryCeiling?.() ? `$env:GIT_CEILING_DIRECTORIES = ${quotePs(this.options.repositoryCeiling()!)}` : "",

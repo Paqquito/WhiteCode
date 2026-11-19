@@ -126,7 +126,8 @@ describe("SPEC-OUT-033 request_user_choice", () => {
 try {
   $pipe.Connect(3000)
   $writer=[IO.StreamWriter]::new($pipe,[Text.UTF8Encoding]::new($false))
-  $writer.WriteLine('{"question":"Which slot?","options":[{"label":"Earlier"},{"label":"Later"}]}')
+  if ($env:TOOL_CHOICE_SLOTS -ne '1') { throw 'Missing scheduling choices capability' }
+  $writer.WriteLine('{"question":"Which slot?","options":[{"label":"Earlier"},{"label":"Later","slot":{"day":"Monday","hours":"09:00 – 10:00","requested_day":false}}]}')
   $writer.Flush()
   $answer=([IO.StreamReader]::new($pipe)).ReadLine() | ConvertFrom-Json
   if ($answer.labels[0] -eq 'Later') { 'later-receipt' } else { 'earlier-receipt' }
@@ -143,6 +144,7 @@ try {
     host.feed.end();
     await host.finish();
     expect(asked).toBe(1);
+    expect(JSON.stringify(host.messages)).toContain('"requested_day":false');
     expect(results(provider.requests[1])).toContain("later-receipt");
     expect(results(provider.requests[1])).not.toContain("earlier-receipt");
   });

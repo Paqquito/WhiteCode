@@ -68,7 +68,10 @@ export function createPlanningTools(deps: PlanningDeps): [Tool<{ reason?: string
 export interface ChoiceQuestion {
   readonly question: string;
   readonly header?: string;
-  readonly options: ReadonlyArray<{ readonly label: string; readonly description?: string; readonly preview?: string }>;
+  readonly options: ReadonlyArray<{
+    readonly label: string; readonly description?: string; readonly preview?: string;
+    readonly slot?: { readonly day: string; readonly hours: string; readonly requested_day: boolean };
+  }>;
   readonly allow_multiple?: boolean;
   readonly require_answer?: boolean;
 }
@@ -97,7 +100,16 @@ export function createUserChoiceTool(ask: (questions: readonly ChoiceQuestion[],
                 maxItems: 4,
                 items: {
                   type: "object",
-                  properties: { label: { type: "string", minLength: 1 }, description: { type: "string" }, preview: { type: "string", maxLength: 4_000 } },
+                  properties: {
+                    label: { type: "string", minLength: 1 }, description: { type: "string" }, preview: { type: "string", maxLength: 4_000 },
+                    slot: {
+                      type: "object", description: "Optional display information for a proposed meeting time. Replies still use the original option label.",
+                      properties: {
+                        day: { type: "string", minLength: 1 }, hours: { type: "string", minLength: 1 }, requested_day: { type: "boolean" },
+                      },
+                      required: ["day", "hours", "requested_day"], additionalProperties: false,
+                    },
+                  },
                   required: ["label"],
                   additionalProperties: false,
                 },
