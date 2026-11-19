@@ -72,6 +72,7 @@ export class LiveContext {
 export class LiveSessions {
   readonly #contexts: Context[] = [];
   #foreground?: Context;
+  #stopInput?: () => void;
   readonly #close = new AbortController();
   readonly #pending = new Set<Promise<number>>();
   readonly #unsubscribers: Array<() => void> = [];
@@ -82,8 +83,6 @@ export class LiveSessions {
   #code = 0;
   #closing = false;
   constructor(readonly terminal: Terminal, readonly launch: (port: LiveContext, args: readonly string[], cwd: string, signal: AbortSignal) => Promise<number>) {
-    // A dialog may replace its listener while consuming a key. Only the original listeners receive this event.
-    this.#unsubscribers.push(terminal.onInput(data => { for (const f of [...(this.#foreground?.inputs ?? [])]) f(data); }));
     this.#unsubscribers.push(terminal.onResize(() => { for (const c of this.#contexts) for (const f of c.resizes) f(); }));
     this.#unsubscribers.push(terminal.onProcessExit(() => this.close()));
   }
@@ -99,21 +98,47 @@ export class LiveSessions {
     this.#ledger!.journal(state => { let ok = true; for (const f of this.#journals.values()) if (!f(state)) ok = false; return ok; });
     return () => { this.#journals.delete(port.context); };
   }
+  #syncInput(): void {
+    const inputs = this.#foreground?.inputs;
+    // A native client such as tmux must be the sole reader while the foreground UI is suspended.
+    if (this.#closing || !inputs?.size) {
+      this.#stopInput?.();
+      this.#stopInput = undefined;
+    } else {
+      // A dialog may replace its listener while consuming a key.
+      this.#stopInput ??= this.terminal.onInput(data => {
+        for (const listener of [...(this.#foreground?.inputs ?? [])]) listener(data);
+      });
+    }
+  }
+  #selectForeground(c: Context): void {
+    this.#foreground = c;
+    this.#syncInput();
+    this.terminal.setRawMode(c.raw);
+  }
   terminalFor(c: Context): Terminal {
     const terminal = this.terminal;
     return {
       get columns() { return terminal.columns; }, get rows() { return terminal.rows; },
       write: data => { if (this.#foreground === c) terminal.write(data); },
-      onInput: listener => { const bound = bindPrivateStorage(listener); c.inputs.add(bound); return () => { c.inputs.delete(bound); }; },
+      onInput: listener => {
+        const bound = bindPrivateStorage(listener);
+        c.inputs.add(bound);
+        this.#syncInput();
+        return () => {
+          c.inputs.delete(bound);
+          this.#syncInput();
+        };
+      },
       onResize: listener => { const bound = bindPrivateStorage(listener); c.resizes.add(bound); return () => { c.resizes.delete(bound); }; },
       onProcessExit: listener => { c.exits.add(listener); return () => { c.exits.delete(listener); }; },
-      setRawMode: on => { c.raw = on; terminal.setRawMode(this.#contexts.some(context => context.raw)); },
+      setRawMode: on => { c.raw = on; if (this.#foreground === c) terminal.setRawMode(on); },
     };
   }
   #start(args: readonly string[], cwd: string): Context {
     const c: Context = { id: `conversation ${this.#contexts.length + 1}`, inputs: new Set(), resizes: new Set(), exits: new Set(), output: "", redact: maskSecrets, raw: false, done: false };
     if (this.#contexts.length) this.terminal.write("\u001b[0m\u001b[2J\u001b[H");
-    this.#contexts.push(c); this.#foreground = c;
+    this.#contexts.push(c); this.#selectForeground(c);
     const done = this.launch(new LiveContext(this, c), args, cwd, this.signal).then(code => {
       c.done = true; this.#code = Math.max(this.#code, code);
       if (this.#foreground === c) {
@@ -137,7 +162,7 @@ export class LiveSessions {
     } finally { signal?.removeEventListener("abort", abort); this.close(); for (const f of this.#unsubscribers.splice(0)) f(); this.terminal.setRawMode(false); }
   }
   close(): void {
-    if (this.#closing) return; this.#closing = true; this.#close.abort();
+    if (this.#closing) return; this.#closing = true; this.#syncInput(); this.#close.abort();
     for (const c of this.#contexts) { c.app?.forceExit(); for (const exit of c.exits) exit(); }
   }
   refresh(): void { this.#foreground?.app?.refresh(); }
@@ -168,7 +193,7 @@ export class LiveSessions {
   }
   #focus(c: Context): void {
     if (this.#permission || c.done || !c.app) return;
-    this.#foreground = c; c.app.reclaimTerminal(); c.app.notice("info", `${c.id} reprise.`);
+    this.#selectForeground(c); c.app.reclaimTerminal(); c.app.notice("info", `${c.id} reprise.`);
   }
   async panel(): Promise<void> {
     const current = this.#foreground, app = current?.app;

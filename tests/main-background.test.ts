@@ -9,6 +9,26 @@ import type { EngineEvent } from "../src/engine/events";
 import {LiveSessions} from "../src/interactive/live-sessions";
 import {fakeTerminal} from "./helpers/vterm";
 
+test("TECH — handing the foreground keyboard to a native client releases the physical input subscription", async () => {
+  const terminal = fakeTerminal();
+  const readers: number[] = [];
+  const host = new LiveSessions(terminal, async port => {
+    const stop = port.terminal.onInput(() => {});
+    const stopDialog = port.terminal.onInput(() => {});
+    readers.push(terminal.inputListenerCount);
+    stopDialog();
+    readers.push(terminal.inputListenerCount);
+    stop();
+    readers.push(terminal.inputListenerCount);
+    port.terminal.onInput(() => {});
+    readers.push(terminal.inputListenerCount);
+    return 0;
+  });
+  expect(await host.run([], ".")).toBe(0);
+  expect(readers).toEqual([1, 1, 0, 1]);
+  expect(terminal.inputListenerCount).toBe(0);
+});
+
 test("TECH — a terminal listener installed during consent receives only the following input, never the consumed agreement",async()=>{
   const terminal=fakeTerminal(),first:string[]=[],later:string[]=[];
   const host=new LiveSessions(terminal,async(port)=>{

@@ -250,6 +250,7 @@ export function fakeTerminal(columns = 80, rows = 24) {
   const exitListeners = new Set<() => void>();
   return {
     vt,
+    get inputListenerCount() { return inputListeners.size; },
     write: (data: string) => vt.write(data),
     get columns() {
       return vt.columns;
