@@ -108,21 +108,28 @@ function shellTool(name: "run_shell" | "run_powershell", run: (ctx: ToolContext,
 
 async function foregroundShell(ctx: ToolContext, input: ShellInput, timeout: number, powershell: boolean): Promise<ToolOutcome> {
   let transferred = false, asking = false;
+  const decisions: string[] = [];
   const run = (signal: AbortSignal, output?: (chunk: string) => void) => {
     if (!powershell) return ctx.shell!.runPosix(input.command, timeout, signal, output, input.unsandboxed === true);
-    const execute = (pipe?: string) => ctx.shell!.runPowerShell(input.command, timeout, signal, output, input.unsandboxed === true, pipe);
+    const execute = (pipe?: string) => ctx.shell!.runPowerShell(input.command, timeout, signal, output, input.unsandboxed === true, pipe, ctx.turnId);
     const ask = ctx.askCommandChoice;
     if (ctx.platform !== "windows" || !ask || ctx.agentName || !/\.ps1\b/i.test(input.command)) return execute();
     return withChoicePipe(async (question, active) => {
       if (transferred) return { none: true };
       asking = true;
-      try { return await ask(question, active); } finally { asking = false; }
+      try {
+        const reply = await ask(question, active);
+        if ("labels" in reply) decisions.push(JSON.stringify(reply.labels));
+        if ("other" in reply) decisions.push(JSON.stringify(reply.other));
+        return reply;
+      } finally { asking = false; }
     }, signal, execute);
   };
   const startDir = ctx.shell!.cwd;
   const outcome = (r: ShellResult): ToolOutcome => {
     const failed = r.timedOut || r.interrupted || !!r.violations?.length || (!!input.attach_files && r.exitCode !== 0);
-    const result = textOutcome(formatShellResult(r, timeout), failed, r.timedOut ? "timeout" : r.interrupted ? "interrupted" : r.violations?.length ? "permission_denied" : undefined);
+    const selected = decisions.length ? "The user answered during this command: " + decisions.join(", ") + ". The command continued with that selection.\n" : "";
+    const result = textOutcome(selected + formatShellResult(r, timeout), failed, r.timedOut ? "timeout" : r.interrupted ? "interrupted" : r.violations?.length ? "permission_denied" : undefined);
     return !failed && input.attach_files ? { ...result, attachments: input.attach_files.map(path => resolve(startDir, path)) } : result;
   };
   const background = ctx.background;

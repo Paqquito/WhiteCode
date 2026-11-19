@@ -20,6 +20,7 @@ import type { ResultStore } from "../session/result-store";
 import { boundText } from "../tools/output-bounds";
 
 export interface ExecutorDeps {
+  readonly turnId?: string;
   /** Authenticated remote reconnection gate, before previews and immediately before an effect. */
   readonly waitConnected?: (signal: AbortSignal) => Promise<void>;
   /** Supports: SPEC-MOT-029. A speculative turn stops before consulting any approval authority. */
@@ -378,6 +379,7 @@ export class ResponseExecution {
         const onAbort = () => callController.abort();
         signal.addEventListener("abort", onAbort, { once: true });
         const execution = tool.execute(call.input as never, { ...ctx, signal: callController.signal,
+          turnId: this.#deps.turnId,
           ...(call.name === "run_powershell" ? { askCommandChoice: (question: Record<string, unknown>, s: AbortSignal) => this.#askCommandChoice(question, s) } : {}),
         }).catch(
           (error: unknown) => textOutcome(`The tool failed: ${(error as Error)?.message ?? String(error)}`, true, "execution"), // ERR-02

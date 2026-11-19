@@ -62,6 +62,7 @@ export interface ToolEnvironment {
 }
 
 export interface ToolContext extends ToolEnvironment {
+  readonly turnId?: string;
   readonly askCommandChoice?: (question: Record<string, unknown>, signal: AbortSignal) => Promise<ChoiceReply>;
   readonly editAnchorAllowed?: boolean;
   readonly cwd: string;

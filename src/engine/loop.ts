@@ -240,6 +240,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
   deps.onUserMessage?.(userRecord); // SPEC-SES-006 EF-02: a checkpoint per user message
   deps.emit({ type: "user_message", content, ...(userRecord ? { recordId: userRecord } : {}) });
   deps.executor.loopGuard?.newTurn(); // a user message resets the series (SPEC-MOT-046 § 5.1)
+  const turnId = crypto.randomUUID();
 
   for (;;) {
     if (turnSignal.aborted) return interrupted();
@@ -308,7 +309,7 @@ export async function runTurn(deps: LoopDeps, request: string | readonly Content
         if (!admission.admitted) return finish(admission.reason, admission.message); // FA-02, FA-08: not sent
         reservation = admission.reservation;
       }
-      execution = new ResponseExecution({ ...deps.executor, emit: deps.emit }, turnSignal);
+      execution = new ResponseExecution({ ...deps.executor, turnId, emit: deps.emit }, turnSignal);
       let text = "";
       let receivedTool = false;
       try {
