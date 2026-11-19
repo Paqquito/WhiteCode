@@ -113,9 +113,14 @@ describe("SPEC-AGT-002 the usage guide", () => {
 });
 
 describe("SPEC-OUT-013 search_web", () => {
-  test("SPEC-OUT-013/CA-01 — a provider without a search service: the tool is not offered", async () => {
+  test("SPEC-OUT-013/CA-01 — a fresh installation offers web search independently of the model provider", async () => {
     const p = new ScriptedProvider([{ text: "fini" }]);
     await run(p);
+    expect(p.requests[0]!.tools.map((t) => t.name)).toContain("search_web");
+  });
+  test.each([{ enabled: false }, { endpoint: "" }])("explicit web search opt-out is respected: %j", async webSearch => {
+    const p = new ScriptedProvider([{ text: "fini" }]);
+    await cli(["--non-interactive", "go"], workspace(), { provider: p, userConfig: { tools: { webSearch } } });
     expect(p.requests[0]!.tools.map((t) => t.name)).not.toContain("search_web");
   });
 });

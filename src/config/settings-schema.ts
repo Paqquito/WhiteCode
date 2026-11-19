@@ -13,6 +13,7 @@ import { OVERRIDABLE_SERVICE_URLS } from "../identity/runtime-catalog";
 import { CONFIGURE_KEYS } from "./tool-preferences";
 
 export const SCOPES = ["managed", "cli", "local", "project", "user"] as const;
+export const DEFAULT_WEB_SEARCH_ENDPOINT = "https://mcp.exa.ai/mcp";
 export type Scope = (typeof SCOPES)[number];
 export type Origin = Scope | "env" | "default";
 
@@ -191,7 +192,7 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "tools.browser.allowedDomains", schema: strList(), default: [], scopes: [U, G], owner: "SPEC-OUT-014" },
   { key: "tools.browser.allowDownloads", schema: bool(), default: false, scopes: [G], owner: "SPEC-OUT-014" },
   { key: "tools.webSearch.enabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-OUT-013" },
-  { key: "tools.webSearch.endpoint", schema: str(), default: "", scopes: [U, G], owner: "SPEC-OUT-013" },
+  { key: "tools.webSearch.endpoint", schema: str(), default: DEFAULT_WEB_SEARCH_ENDPOINT, scopes: [U, G], owner: "SPEC-OUT-013" },
   { key: "tools.webSearch.maxUsesPerTurn", schema: int(1, 100), default: 8, scopes: [G], owner: "SPEC-OUT-013" },
   { key: "skills.discovery.enabled", schema: bool(), default: true, scopes: [U, G], owner: "SPEC-OUT-038" },
   { key: "skills.discovery.perTurn", schema: int(1, 10), default: 5, scopes: [U], owner: "SPEC-OUT-038" },
