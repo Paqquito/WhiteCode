@@ -118,7 +118,7 @@ describe("SPEC-OUT-013 search_web", () => {
     await run(p);
     expect(p.requests[0]!.tools.map((t) => t.name)).toContain("search_web");
   });
-  test.each([{ enabled: false }, { endpoint: "" }])("explicit web search opt-out is respected: %j", async webSearch => {
+  test.each([{ enabled: false }, { endpoint: "" }])("SPEC-OUT-013/CA-01 — explicit web search opt-out is respected: %j", async webSearch => {
     const p = new ScriptedProvider([{ text: "fini" }]);
     await cli(["--non-interactive", "go"], workspace(), { provider: p, userConfig: { tools: { webSearch } } });
     expect(p.requests[0]!.tools.map((t) => t.name)).not.toContain("search_web");

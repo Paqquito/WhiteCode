@@ -20,8 +20,8 @@ const testFiles = readdirSync(join(root, "tests")).filter((f) => f.endsWith(".te
 let testCount = 0;
 for (const f of testFiles) {
   const text = readFileSync(join(root, "tests", f), "utf8");
-  // Conditional tests (`test.skipIf(cond)("…")`) run only where their tool exists; they still name their criterion.
-  for (const m of text.matchAll(/\btest(?:\.(?:skipIf|if)\([^()]*(?:\([^()]*\)[^()]*)*\))?\(\s*"((?:[^"\\]|\\.)*)"/g)) {
+  // Conditional and parameterized tests name their criterion after the condition or the case table.
+  for (const m of text.matchAll(/\btest(?:\.(?:skipIf|if|each)\([^()]*(?:\([^()]*\)[^()]*)*\))?\(\s*"((?:[^"\\]|\\.)*)"/g)) {
     testCount++;
     const name = m[1]!;
     if (!/^(SPEC-[A-Z]{3}-\d{3}\/CA-\d{2}|TECH|D-\d{2}|E-\d{3})/.test(name)) problems.push(`${f}: test name without criterion, decision or TECH prefix: "${name}"`);

@@ -102,7 +102,7 @@ describe("SPEC-OUT-033 request_user_choice", () => {
     { question: "Quels formats ?", header: "Formats", options: [{ label: "JSON" }, { label: "CSV" }, { label: "XML" }], allow_multiple: true },
   ];
 
-  test("skipping a required decision stops queued actions and the next model round", async () => {
+  test("TECH — skipping a required decision stops queued actions and the next model round", async () => {
     const ws = workspace();
     const path = join(ws.project, "dependent.txt");
     const provider = new ScriptedProvider([{ toolCalls: [
@@ -119,7 +119,7 @@ describe("SPEC-OUT-033 request_user_choice", () => {
     expect(existsSync(path)).toBe(false);
   });
 
-  test.skipIf(process.platform !== "win32")("an interactive PowerShell command waits for a choice and releases only its selected receipt", async () => {
+  test.skipIf(process.platform !== "win32")("TECH — an interactive PowerShell command waits for a choice and releases only its selected receipt", async () => {
     const ws = workspace();
     const script = join(ws.project, "choice.ps1");
     writeFileSync(script, `$pipe=[IO.Pipes.NamedPipeClientStream]::new('.', $env:TOOL_CHOICE_PIPE, [IO.Pipes.PipeDirection]::InOut)
