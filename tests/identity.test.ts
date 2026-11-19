@@ -21,7 +21,7 @@ const value = (r: ReturnType<typeof resolveIdentity>, name: string) => {
 };
 
 describe("SPEC-CAD-002 identity", () => {
-  test("desktop catalogues and native modules contribute to the validated identity", () => {
+  test("TECH — desktop catalogues and native modules contribute to the validated identity", () => {
     const catalog = { repository: "https://git.example/team/catalog.git", ref: "v1.0" };
     const desktop = { modules: ["sample"], extensionCatalogs: [catalog] };
     const resolve = (options: unknown) => resolveIdentity({ ...MINIMAL, desktop: options }, { version: "1" });
