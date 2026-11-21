@@ -2,6 +2,7 @@
   "name": "agent-workspace",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Source workspace. Distribution metadata is generated from the identity file (SPEC-BLD-006).",
   "scripts": {

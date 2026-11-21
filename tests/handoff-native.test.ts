@@ -9,7 +9,7 @@ let pending:Promise<any>|undefined;
 function proof(){return pending??=(async()=>{
   const output=join(root,"build/cmd091"),compilation=join(output,"internal-"+crypto.randomUUID());mkdirSync(compilation,{recursive:true});
   for(const name of ["src","scripts","docs","prompts","identity"])cpSync(join(root,name),join(compilation,name),{recursive:true});
-  for(const name of ["package.json","bun.lock","tsconfig.json"])cpSync(join(root,name),join(compilation,name));
+  for(const name of ["package.json","bun.lock","tsconfig.json", "LICENSE", "THIRD_PARTY_NOTICES.txt"])cpSync(join(root,name),join(compilation,name));
   mkdirSync(join(compilation,"tests/fixtures"),{recursive:true});cpSync(join(root,"tests/fixtures/handoff-native-proof.ts"),join(compilation,"tests/fixtures/handoff-native-proof.ts"));
   symlinkSync(realpathSync(join(root,"node_modules")),join(compilation,"node_modules"),process.platform==="win32"?"junction":"dir");
   await command([process.execPath,"--no-env-file","scripts/generate.ts","--profile","internal"],compilation);

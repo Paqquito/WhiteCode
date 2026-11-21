@@ -9,7 +9,7 @@ export function activationProfile(profile: BuildProfile, overrides: Record<strin
   const parent = join(root, "build/activation-thirty-one63/profiles"); mkdirSync(parent, {recursive: true});
   const copy = mkdtempSync(join(parent, profile + "-"));
   for (const directory of ["src", "scripts", "docs", "prompts", "identity", "tests"]) cpSync(join(root, directory), join(copy, directory), {recursive: true});
-  for (const file of ["package.json", "tsconfig.json", "bun.lock"]) cpSync(join(root, file), join(copy, file));
+  for (const file of ["package.json", "tsconfig.json", "bun.lock", "LICENSE", "THIRD_PARTY_NOTICES.txt"]) cpSync(join(root, file), join(copy, file));
   symlinkSync(realpathSync(join(root, "node_modules")), join(copy, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   const environment = Object.fromEntries(["PATH", "Path", "SystemRoot", "TEMP", "TMP", "PATHEXT", "COMSPEC"].flatMap(name => process.env[name] === undefined ? [] : [[name, process.env[name]!]]));
   const options = join(copy, "build-options.json"); writeFileSync(options, JSON.stringify(overrides));

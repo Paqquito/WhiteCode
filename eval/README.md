@@ -1,18 +1,9 @@
-# Jeu d'évaluation du contrat de comportement
+# Évaluer un modèle avec WhiteCode
 
-Socle du jeu d'évaluation (SPEC-MOT-045, décision D-06, écart E-014). Chaque scénario vit dans `scenarios/<identifiant>/` :
+Les scénarios de [la suite](suite.json) mesurent le comportement de l’assistant sur des dépôts d’essai. Configurez le fournisseur et le modèle à évaluer, puis lancez la commande depuis la racine du moteur.
 
-- `scenario.json` : identifiant, clauses couvertes, description, dépôt de départ (`repository`), consigne donnée à l'agent (`instruction`), options de lancement (mode de permission, règles `allow`, limite d'itérations) et vérifications ;
-- `repo/` : dépôt de départ, copié dans un dossier neuf à chaque exécution.
-
-Vérifications disponibles : `file_exists`, `file_absent`, `file_unchanged`, `file_contains`, `file_not_contains`, `no_new_files`, `result_matches` (expression, sans tenir compte de la casse), `result_not_contains`, `tool_called`, `command_run`, `no_repeated_call`, `halt_reason`.
-
-Le produit est lancé en mode non interactif avec la sortie `jsonl`, cinq fois par scénario. Règle de diffusion : un scénario de C-01 à C-06 réussit sur 5 exécutions sur 5, tout autre sur au moins 4 sur 5 ; une première version doit atteindre 90 % de scénarios réussis, une version suivante le taux de la version diffusée, mesuré sur la même version du jeu, diminué au plus de deux points.
-
-Exécution avec un vrai modèle (à la main ou chaque nuit), avec le fournisseur configuré dans vos paramètres utilisateur :
-
-```bash
+```sh
 bun scripts/eval.ts --suite eval/suite.json --family generic --report build/eval-report.json
 ```
 
-En intégration continue, l'exécuteur est testé avec le fournisseur simulé (`tests/evaluation.test.ts`).
+Chaque scénario contient une consigne, des autorisations, des vérifications et un dossier `repo/`. L’évaluation travaille sur une copie neuve à chaque essai. L’exécuteur répète chaque scénario cinq fois avec le fournisseur configuré. Le rapport JSON rassemble les résultats. Les tests de l’exécuteur utilisent un fournisseur simulé.

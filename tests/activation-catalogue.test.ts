@@ -12,7 +12,7 @@ const removed={...Object.fromEntries(Object.values(commands).map(name=>[name,fal
 function probe(profile:BuildProfile,overrides:Record<string,boolean>={}){
  const copy=mkdtempSync(join(realpathSync.native(tmpdir()),"activation-catalogue-"));
  for(const dir of ["src","scripts","prompts","identity"])cpSync(join(root,dir),join(copy,dir),{recursive:true});
- for(const file of ["package.json","tsconfig.json","bun.lock"])cpSync(join(root,file),join(copy,file));
+ for(const file of ["package.json","tsconfig.json","bun.lock", "LICENSE", "THIRD_PARTY_NOTICES.txt"])cpSync(join(root,file),join(copy,file));
  symlinkSync(realpathSync(join(root,"node_modules")),join(copy,"node_modules"),process.platform==="win32"?"junction":"dir");
  mkdirSync(join(copy,"tests/fixtures"),{recursive:true});cpSync(join(root,"tests/fixtures/activation-catalogue-probe.ts"),join(copy,"tests/fixtures/activation-catalogue-probe.ts"));
  const source=join(copy,"options.json");writeFileSync(source,JSON.stringify(overrides));

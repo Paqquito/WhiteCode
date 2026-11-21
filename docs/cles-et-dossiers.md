@@ -1,0 +1,7 @@
+# Clés renouvelables et dossiers autorisés
+
+`auth.credentialHelper` est une commande définie en portée utilisateur ou gérée. Elle renvoie une seule ligne sur sa sortie standard. Sa valeur est conservée en mémoire, jamais enregistrée dans le coffre ni dans la configuration. Elle a priorité sur les autres méthodes ; un échec est explicite, sans repli. Les programmes du projet sont ignorés.
+
+`auth.credentialHelperTtl` vaut cinq minutes. À la prochaine requête après expiration, la valeur est renouvelée ; les demandes simultanées partagent cette exécution. Un refus d’authentification avant toute réponse déclenche un seul renouvellement et une seule nouvelle tentative. Une réponse déjà commencée n’est jamais rejouée. Exécution limitée à dix secondes et sortie à 8 Kio. Le journal ne conserve que le code de sortie et la taille de la sortie d’erreur. Les anciennes et nouvelles valeurs sont masquées dans les réponses, y compris les noms de champs JSON.
+
+`--allow-dir <dossier>` est répétable. Il complète les dossiers de travail pour cette session ; `permissions.extraDirectories` fournit les valeurs utilisateur et gérées. Les dossiers doivent exister et ne pas désigner un emplacement protégé. `/allow-dir` ajoute un dossier en cours de session. Le dossier personnel entier ou une racine exige un dialogue renforcé ; sans terminal humain, cet ajout est refusé. Les règles ordinaires restent applicables dans tous les dossiers ajoutés.

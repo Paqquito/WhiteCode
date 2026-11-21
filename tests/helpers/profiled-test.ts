@@ -14,7 +14,7 @@ export function profileFixture(profile: "public" | "internal" | "test", override
   if (previous) return { root: previous, environment };
   const root = join(ROOT, "build", "activation-probe-" + process.pid + "-" + crypto.randomUUID()); mkdirSync(root, { recursive: true });
   for (const name of ["src", "scripts", "docs", "prompts", "identity", "tests"]) cpSync(join(ROOT, name), join(root, name), { recursive: true });
-  for (const name of ["package.json", "tsconfig.json", "bun.lock"]) cpSync(join(ROOT, name), join(root, name));
+  for (const name of ["package.json", "tsconfig.json", "bun.lock", "LICENSE", "THIRD_PARTY_NOTICES.txt"]) cpSync(join(ROOT, name), join(root, name));
   symlinkSync(realpathSync(process.env["WC_BUILD_TEST_DEPENDENCIES"] ?? join(ROOT, "node_modules")), join(root, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   const options = join(root, "build-options.json"); writeFileSync(options, JSON.stringify(overrides));
   const generated = runToCompletion(BUN, ["--no-env-file", "scripts/generate.ts", "--profile", profile, "--build-options", options], { cwd: root, env: environment, timeoutMs: 15000 });

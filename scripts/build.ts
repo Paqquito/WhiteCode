@@ -137,6 +137,9 @@ for (const target of targets) {
   record(target ?? "current", file); control();
 }
 if (all) await generate(primaryTarget);
+for (const file of ["LICENSE", "THIRD_PARTY_NOTICES.txt"]) {
+  writeFileSync(join(outDir, file), readFileSync(join(root, file))); record("license", file);
+}
 publishSettingsSchema(root, outDir, { cli, version: RESOLVED_IDENTITY.version }); record("settings-schema", "config.schema.json");
 writeFileSync(join(outDir, "package.json"), readFileSync(join(root, "src/identity/generated/package.json"))); record("package-manifest", "package.json");
 writeFileSync(join(outDir, "extension-authors.html"), readFileSync(join(root, "src/identity/generated/extension-authors.html"))); record("extension-documentation", "extension-authors.html");

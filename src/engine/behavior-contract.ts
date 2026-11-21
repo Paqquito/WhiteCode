@@ -4,8 +4,7 @@
 import contractV4 from "../../prompts/contract/v4/contract.md" with { type: "text" };
 import contractFallback from "../../prompts/contract/fallback/contract.md" with { type: "text" };
 
-/** v4: exact project checks after the final change, explicit remaining work (gap E-247).
- * Earlier versions remain in `prompts/contract/` as measured references. */
+/** v4: exact project checks after the final change, explicit remaining work (gap E-247). */
 export const CONTRACT_VERSION = "v4";
 
 export type Variant = "main" | "subagent" | "minimal";

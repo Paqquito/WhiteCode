@@ -8,7 +8,7 @@ test("TECH — an options file changed before a secondary target generation refu
   const source = resolve(import.meta.dir, ".."), root = join(source, "build", `build-input-race-${randomUUID()}`);
   mkdirSync(root, { recursive: true });
   for (const name of ["src", "scripts", "identity", "prompts", "docs"]) cpSync(join(source, name), join(root, name), { recursive: true });
-  for (const name of ["package.json", "tsconfig.json", "bun.lock"]) cpSync(join(source, name), join(root, name));
+  for (const name of ["package.json", "tsconfig.json", "bun.lock", "LICENSE", "THIRD_PARTY_NOTICES.txt"]) cpSync(join(source, name), join(root, name));
   symlinkSync(realpathSync(join(source, "node_modules")), join(root, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   const options = join(root, "options.json"); writeFileSync(options, JSON.stringify({ project_init_v2: false }));
   const generator = join(root, "scripts/generate.ts"), original = readFileSync(generator, "utf8"), needle = "const options = resolveBuildOptions";

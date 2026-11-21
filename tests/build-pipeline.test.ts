@@ -18,7 +18,7 @@ function fixture() {
   if (!rel || rel === ".." || rel.startsWith(`..${sep}`)) throw new Error("Fixture path outside build");
   mkdirSync(root, { recursive: true });
   for (const name of ["src", "scripts", "docs", "prompts", "identity"]) cpSync(join(ROOT, name), join(root, name), { recursive: true });
-  for (const name of ["package.json", "tsconfig.json", "bun.lock"]) cpSync(join(ROOT, name), join(root, name));
+  for (const name of ["package.json", "tsconfig.json", "bun.lock", "LICENSE", "THIRD_PARTY_NOTICES.txt"]) cpSync(join(ROOT, name), join(root, name));
   // Cross-platform local probes can use dependencies installed from the same frozen lock in an isolated cache.
   symlinkSync(realpathSync(process.env["WC_BUILD_TEST_DEPENDENCIES"] ?? join(ROOT, "node_modules")), join(root, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   const ws = workspace();
@@ -91,6 +91,8 @@ test("SPEC-BLD-006/CA-01 — SPEC-BLD-008/CA-01 — two identities generate thei
     const result = await runToCompletion(BUN, [join(f.root, "scripts/generate.ts"), "--identity", file], { cwd: f.root, env: productEnv(f.ws), timeoutMs: 10_000 });
     expect(result.code).toBe(0); const expected = loadIdentity(file);
     const pkg = JSON.parse(readFileSync(join(f.root, "src/identity/generated/package.json"), "utf8"));
+    expect(pkg.license).toBe("MIT");
+    expect(pkg.files).toContain("THIRD_PARTY_NOTICES.txt");
     const documentation = readFileSync(join(f.root, "src/identity/generated/extension-authors.html"), "utf8");
     expect(documentation).toContain(expected.get("HINT_TAG")); expect(documentation).toContain(`${expected.get("ENV_PREFIX")}CHILD_PROCESS`); expect(documentation).not.toMatch(/\{\{[A-Z_]+\}\}/);
     expect(pkg.name).toBe(expected.get("PRODUCT_SLUG")); expect(pkg.author).toBe(expected.get("SOCIETY")); expect(pkg.bin).toEqual({ [expected.get("PRODUCT_SLUG")]: `${expected.get("PRODUCT_CLI")}.js` }); expect(pkg.engines.bun).toBe(">=1.4.2");
@@ -100,6 +102,10 @@ test("SPEC-BLD-006/CA-01 — SPEC-BLD-008/CA-01 — two identities generate thei
 test("SPEC-BLD-009/CA-01 — SPEC-BLD-009/CA-02 — SPEC-IHM-032/CA-04 — SPEC-SES-014/CA-04 — the public executable ignores profile overrides and excludes internal and companion resources", async () => {
   const f = fixture(); expect((await f.build()).code).toBe(0);
   const file = f.manifest().deliverables.find((d: { target: string }) => d.target === "current").file;
+  const licenses = await f.run(file, ["--licenses"]);
+  expect(licenses.code).toBe(0);
+  const expectedNotices = ["LICENSE", "THIRD_PARTY_NOTICES.txt"].map(name => readFileSync(join(f.root, "dist", name), "utf8").replace(/\r\n/g, "\n").trimEnd()).join("\n\n");
+  expect(licenses.stdout.trimEnd()).toBe(expectedNotices);
   const prefix = loadIdentity().get("ENV_PREFIX");
   const result = await runToCompletion(join(f.root, "dist", file), ["--strict-failure"], { cwd: f.ws.project, env: productEnv(f.ws, { [`${prefix}BUILD_PROFILE`]: "internal", [`${prefix}ORCHESTRATOR_ROLE`]: "relecteur", [`${prefix}FEATURE_OVERRIDES`]: '{"strict_failure":true}' }), timeoutMs: 10_000 });
   expect(result.code).not.toBe(0); expect(result.stderr).toContain("inconnue");

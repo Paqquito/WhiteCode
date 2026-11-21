@@ -21,7 +21,7 @@ test("TECH — fresh macro processes embed each target's actual libc constants a
   const source = resolve(import.meta.dir, ".."), root = join(source, "build", `libc-target-${randomUUID()}`);
   mkdirSync(root, { recursive: true });
   for (const name of ["src", "scripts", "identity", "prompts", "docs"]) cpSync(join(source, name), join(root, name), { recursive: true });
-  for (const name of ["package.json", "tsconfig.json", "bun.lock"]) cpSync(join(source, name), join(root, name));
+  for (const name of ["package.json", "tsconfig.json", "bun.lock", "LICENSE", "THIRD_PARTY_NOTICES.txt"]) cpSync(join(source, name), join(root, name));
   symlinkSync(realpathSync(join(source, "node_modules")), join(root, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   const env = Object.fromEntries(["PATH", "Path", "SystemRoot", "TEMP", "TMP", "HOME", "USERPROFILE"].filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]!])) as Record<string, string>;
   writeFileSync(join(root, "probe.ts"), 'import { buildInventory } from "./src/extension-points/build-flags" with { type: "macro" }; import { nativeTarget } from "./src/installation/runtime"; console.log(JSON.stringify({ flags: buildInventory(), linux: nativeTarget({platform:"linux",arch:"x64",release:"",home:"",tmp:""}) }));\n');

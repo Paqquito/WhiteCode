@@ -23,8 +23,7 @@ test("SPEC-CFG-002/CA-04 — an editor loads the published schema through $schem
   const doc = TextDocument.create("file:///settings.json", "jsonc", 1, source);
   const completion = await service.doComplete(doc, doc.positionAt(source.lastIndexOf('""') + 1), service.parseJSONDocument(doc));
   const keys = new Set(completion?.items.map((item) => item.label));
-  const normative = readFileSync(join(ROOT, "docs/parametres.md"), "utf8")
-    .split("### 6.1 Catalogue complet")[1]!.split("## 7.")[0]!;
+  const normative = readFileSync(join(ROOT, "docs/parametres.md"), "utf8");
   const catalogueKeys = [...normative.matchAll(/^\| `([^`]+)` \|/gm)].map((match) => match[1]!);
   expect(catalogueKeys).toHaveLength(492);
   for (const key of catalogueKeys) expect(keys.has(key)).toBe(true);

@@ -9,11 +9,9 @@ type Schema = Record<string, unknown> & { properties?: Record<string, Schema> };
 interface CatalogueEntry { key: string; type: string; defaultText: string; scopes: string[]; scopeText: string; owner: string; ambiguous: boolean }
 
 function catalogue(text: string): CatalogueEntry[] {
-  const section = text.split("### 6.1 Catalogue complet")[1]?.split("## 7.")[0];
-  if (!section) throw new Error("Catalogue normatif des paramètres absent.");
   const rows: CatalogueEntry[] = [];
   const keys = new Set<string>();
-  for (const line of section.split(/\r?\n/).filter((line) => /^\| `/.test(line))) {
+  for (const line of text.split(/\r?\n/).filter((line) => /^\| `/.test(line))) {
     const cells = line.split(/(?<!\\)\|/).slice(1, -1).map((cell) => cell.trim());
     const key = /^`([A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)*)`$/.exec(cells[0] ?? "")?.[1];
     const owner = /SPEC-[A-Z]{3}-\d{3}/.exec(cells[4] ?? "")?.[0];

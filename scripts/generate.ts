@@ -37,10 +37,12 @@ const catalogData: unknown = JSON.parse(readFileSync(modelsPath, "utf8"));
 new ModelCatalog(catalogData); // throws on an invalid catalogue
 
 mkdirSync(dirname(outPath), { recursive: true });
+const licenseText = ["LICENSE", "THIRD_PARTY_NOTICES.txt"].map(name => readFileSync(join(root, name), "utf8").replace(/\r\n/g, "\n").trimEnd()).join("\n\n") + "\n";
+writeFileSync(join(dirname(outPath), "license-text.ts"), "export default " + JSON.stringify(licenseText) + ";\n");
 const manifestIdentity = new Identity(runtimeIdentity(result.identity));
 const identityValue = (name: string) => manifestIdentity.get(name);
 writeFileSync(join(dirname(outPath), "extension-authors.html"), extensionAuthorDocumentation(manifestIdentity));
-writeFileSync(join(dirname(outPath), "package.json"), JSON.stringify({ name: identityValue("PRODUCT_SLUG"), version: result.identity.version, description: `${identityValue("PRODUCT")} — agent de programmation en ligne de commande`, author: identityValue("SOCIETY"), private: pkg.private ?? true, license: pkg.license ?? "UNLICENSED", type: "module", bin: { [identityValue("PRODUCT_SLUG")]: `${identityValue("PRODUCT_CLI")}.js` }, engines: { bun: ">=1.4.2" }, files: [`${identityValue("PRODUCT_CLI")}.js`, "config.schema.json", "install.ps1", "install.sh", "build-options.json"] }, null, 2) + "\n");
+writeFileSync(join(dirname(outPath), "package.json"), JSON.stringify({ name: identityValue("PRODUCT_SLUG"), version: result.identity.version, description: `${identityValue("PRODUCT")} — agent de programmation en ligne de commande`, author: identityValue("SOCIETY"), private: pkg.private ?? true, license: pkg.license ?? "UNLICENSED", type: "module", bin: { [identityValue("PRODUCT_SLUG")]: `${identityValue("PRODUCT_CLI")}.js` }, engines: { bun: ">=1.4.2" }, files: [`${identityValue("PRODUCT_CLI")}.js`, "config.schema.json", "install.ps1", "install.sh", "build-options.json", "LICENSE", "THIRD_PARTY_NOTICES.txt"] }, null, 2) + "\n");
 writeFileSync(join(dirname(outPath), "build-flags.ts"), `// Supports: SPEC-BLD-002 (generated constants; do not edit or commit).\nexport const BUILD_PROFILE = ${JSON.stringify(profile)};\nexport const BUILD_TARGET = ${JSON.stringify(target)};\nexport const BUILD_VALUES = ${JSON.stringify(options)} as const;\n`);
 writeFileSync(
   outPath,

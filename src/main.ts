@@ -20,6 +20,12 @@ if (process.argv[2] === "--browser-native-host") {
   catch { await terminate(1); }
 }
 
+import licenseText from "./identity/generated/license-text";
+if (process.argv.length === 3 && process.argv[2] === "--licenses") {
+  processStreams().writeOut(licenseText);
+  await terminate(0);
+}
+
 const controller = new AbortController();
 const unsubscribe = onTerminationSignal(() => controller.abort());
 const code = process.argv[2] === "__team-worker" && process.argv.length === 4

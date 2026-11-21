@@ -1,6 +1,12 @@
-### 6.1 Catalogue complet
+# Paramètres de WhiteCode
 
-| Clé | Type | Défaut | Portées | Fiche propriétaire |
+Le fichier utilisateur se trouve par défaut dans `~/.whitecode/config.json`. Sous Windows, `~` désigne le dossier personnel. Sous Linux et macOS, si `XDG_CONFIG_HOME` est défini, le chemin devient `$XDG_CONFIG_HOME/whitecode/config.json`. La variable `WHITECODE_CONFIG_HOME` permet de choisir un autre dossier.
+
+Pour partager des réglages avec un projet, utilisez `.whitecode/config.json` à sa racine. Les réglages propres à votre copie vont dans `.whitecode/config.local.json`. Pour bénéficier de l’autocomplétion, ajoutez à votre JSON une propriété `$schema` pointant vers le fichier `dist/config.schema.json` du moteur compilé.
+
+Les portées ci-dessous sont **U** (utilisateur), **P** (projet), **L** (copie locale), **G** (politique gérée) et **C** (ligne de commande). Le schéma précise pour chaque clé si la version installée la reconnaît. Vérifiez un fichier avec `bun dist/whitecode.js config validate chemin/vers/config.json`.
+
+| Clé | Type | Défaut | Portées | Référence |
 |---|---|---|---|---|
 | `agents.allowProjectAgents` | Booléen | Vrai | U G | SPEC-AGT-005 |
 | `agents.defaultModel` | Alias | Hérité | U P | SPEC-OUT-016 |

@@ -1,90 +1,62 @@
-# Agent de programmation en ligne de commande — dépôt de développement
+# WhiteCode
 
-Ce dépôt réalise, en salle blanche, le produit décrit par les fiches de `specs/` (seule source de vérité). Le produit est en marque blanche : son nom, sa commande, ses dossiers et ses variables d'environnement viennent du **fichier d'identité** (SPEC-CAD-002), jamais du code.
+WhiteCode est un assistant de programmation en ligne de commande. Il peut lire un dépôt, proposer des modifications et exécuter des outils avec les autorisations de l’utilisateur. Pour l’utiliser avec une interface graphique, suivez le [guide de WhiteCode Desktop](https://github.com/Paqquito/WhiteCode-Desktop#readme).
 
-- Identité de développement (fictive) : `identity/dev.identity.json` — commande `pilote-dev`, préfixe `PILOTE_DEV_`.
-- Seconde identité de test : `identity/test-omega.identity.json`.
-- Catalogue de modèles de développement : `identity/dev.models.json` — **vide** : le dépôt ne nomme aucun fournisseur ni modèle par défaut (D-09).
+## Construire et lancer le moteur
 
+Installez Git et Bun 1.4.2. Depuis le dossier où vous souhaitez cloner le projet, exécutez les commandes suivantes.
 
-
-## Prérequis
-
-Bun 1.4.2 ou plus récent.
-
-```bash
-bun install
+```sh
+git clone https://github.com/Paqquito/WhiteCode.git
+cd WhiteCode
+bun install --frozen-lockfile
+bun scripts/build.ts --identity identity/whitecode.identity.json --profile public
+bun dist/whitecode.js --help
 ```
 
-## Commandes
+Le même dossier `dist/` contient un exécutable autonome pour votre système, nommé `whitecode.exe` sous Windows et `whitecode` sous Linux et macOS.
 
-| Commande | Rôle |
-|---|---|
-| `bun run gen` | Résout l'identité et le catalogue et génère les constantes de build (`src/identity/generated/`, non versionné). |
-| `bun run typecheck` | Vérification stricte des types. |
-| `bun run check` | Contrôles statiques : en-têtes de traçabilité, confinement de l'environnement et des API propres à Bun, aucune valeur d'identité dans le code. |
-| `bun test` | Tests (sans réseau : fournisseur simulé et serveur local). |
-| `bun run trace` | Vérifie que chaque critère revendiqué (`tests/claims.json`) est couvert ; matrice dans `build/trace-matrix.md`. |
-| `bun scripts/build.ts` | Exécutable autonome pour la plateforme courante dans `dist/` (`--all` : les 8 cibles). |
-| `bun scripts/identity.ts validate <fichier>` | Outil de marque : `validate`, `resolve`, `show`. |
+## Configurer le premier modèle
 
-## Configurer un fournisseur (serveur local compatible OpenAI)
-
-Aucun fournisseur n'est configuré par défaut : sans configuration, le produit s'arrête (code 2) en expliquant quoi renseigner. Chaque développeur déclare son serveur et ses modèles dans **ses paramètres utilisateur** (`~/.pilote-dev/config.json`), jamais dans le dépôt :
+Pour un serveur compatible avec l’API OpenAI, créez le fichier `~/.whitecode/config.json` dans votre dossier personnel. Remplacez `mon-modele` par l’identifiant exact servi par votre serveur. Adaptez l’adresse et les limites de jetons à ce modèle. Il doit prendre en charge les appels d’outils.
 
 ```json
 {
   "api": { "provider": "openai_compatible", "baseUrl": "http://127.0.0.1:11434/v1" },
   "models": {
-    "identifierMap": { "large": "<modèle>", "medium": "<modèle>", "small": "<modèle>" },
+    "identifierMap": { "large": "mon-modele", "medium": "mon-modele", "small": "mon-modele" },
     "extraCatalog": [
-      { "id": "<modèle>", "provider": "openai_compatible", "family": "local", "label": "Local",
-        "contextWindow": 32768, "maxOutputTokens": 4096, "capabilities": { "toolCalling": true } }
+      {
+        "id": "mon-modele",
+        "provider": "openai_compatible",
+        "family": "local",
+        "label": "Mon modèle",
+        "contextWindow": 32768,
+        "maxOutputTokens": 4096,
+        "capabilities": { "toolCalling": true }
+      }
     ]
   }
 }
 ```
 
-Le modèle doit prendre en charge les **appels d'outils du protocole** (`toolCalling`) : un modèle qui écrit l'appel sous forme de texte ne convient pas. La clé est facultative (`OPENAI_API_KEY`) ; l'URL peut aussi venir de `OPENAI_BASE_URL`.
+Si votre serveur exige une clé, définissez `OPENAI_API_KEY` dans l’environnement du processus. Vérifiez les paramètres, puis lancez une première demande depuis le dépôt.
 
-```bash
-bun src/main.ts --non-interactive "Résume le fichier README.md"
+```sh
+bun dist/whitecode.js config validate
+bun dist/whitecode.js --non-interactive "Résume le fichier README.md"
 ```
 
-Test d'intégration facultatif sur ce serveur :
+## Configuration et vérifications
 
-```bash
-TEST_OPENAI_COMPATIBLE_BASE_URL=http://127.0.0.1:11434/v1 TEST_OPENAI_COMPATIBLE_MODEL=<modèle> bun test tests/openai-compatible.test.ts
-```
+- [Paramètres et emplacements des fichiers](docs/parametres.md) · [Variables d’environnement](docs/environnement.md)
+- [Connexion à un serveur MCP](docs/connecteurs-http.md) · [Autorisations des connecteurs](docs/connecteurs-autorisation.md)
+- [Clés et dossiers autorisés](docs/cles-et-dossiers.md) · [Stockage chiffré des sessions](docs/stockage-chiffre.md)
+- [Personnaliser une distribution](docs/marque-blanche.md) · [Options de compilation](docs/options-de-compilation.md) · [Installation native et mises à jour](docs/installation-native.md)
+- [Déployer une politique d’organisation](docs/administration/inscription.md) · [Services d’organisation](docs/administration/services.md) · [Configurer une application de forge](docs/installation-forge.md)
 
-Options utiles : `--result-format json|jsonl`, `--request-format jsonl` (un message par ligne : `{"type":"user","content":"…"}`), `--max-iterations 5`, `--approval-mode no_prompt|planning|auto_edit` (`no_prompt` par défaut en non interactif ; `unrestricted` avec `--allow-unrestricted-mode`), `--allow-rule "edit_file(src/**)"`, `--toolset read_file,find_files`, `--allow-project-trust` (lit les paramètres du projet pour cette seule exécution). La transcription est écrite sous `~/.pilote-dev/sessions/`.
+Après une modification, `bun run typecheck` vérifie les types, `bun run check` contrôle les sources, `bun run trace` vérifie la couverture des critères et `bun run test` lance les tests.
 
-Outils livrés : `read_file` (texte, notebooks, images), `write_file`, `edit_file`, `update_notebook_cell`, `find_files`, `search_content` (utilise ripgrep s'il est installé, sinon une recherche intégrée). `run_shell` (shell POSIX : `tools.shell.default`, sinon `SHELL`, sinon `bash` ; sous Windows, celui de Git pour Windows) et `run_powershell` (PowerShell 7 ou 5.1) ; sans règle `allow`, une commande est demandée, donc refusée en `no_prompt` : autorisez les commandes utiles, par exemple `--allow-rule "run_shell(npm test)"`.
+## Licence
 
-L'adaptateur `anthropic` est facultatif : `"api": { "provider": "anthropic" }` et la clé de l'utilisateur dans `ANTHROPIC_API_KEY`.
-
-## Sous-commandes d'administration
-
-```bash
-bun src/main.ts model list
-```
-
-`<famille> <opération>` : `model list`, `model show <nom>` et `config validate [<fichier>]` sont livrées, avec `--json` pour une sortie structurée ; une famille seule affiche son aide. Fournisseurs livrés : `openai_compatible` (référence), `openai` (`OPENAI_API_KEY`) et `anthropic` (facultatif). `bun run models-verify` vérifie le catalogue auprès de l'API Models des fournisseurs, avec les clés de votre environnement.
-
-## Jeu d'évaluation
-
-Le contrat de comportement (`prompts/contract/`) est évalué par les scénarios de `eval/` (voir `eval/README.md`) :
-
-```bash
-bun scripts/eval.ts --suite eval/suite.json --family generic --report build/eval-report.json
-```
-
-Le produit est lancé cinq fois par scénario avec le fournisseur de vos paramètres utilisateur ; le script indique si la version est diffusable (règle de SPEC-MOT-045) et écrit le rapport.
-
-Limites d'une exécution : `--max-iterations`, `--max-duration <secondes>`, `--max-cost 2.50` (plafond dans la devise du catalogue, admission de chaque requête sur une borne de coût).
-
-## Conventions
-
-- Chaque module commence par `// Implements: SPEC-…` ou `// Supports: SPEC-…`.
-- Chaque test commence par l'identifiant du critère vérifié (`SPEC-OUT-002/CA-01 — …`), d'une décision (`D-05 — …`), d'un écart (`E-022 — …`) ou par `TECH —`.
-- Identifiants de code et commentaires en anglais ; documentation en français ; textes destinés au modèle en anglais, rédigés à neuf (`prompts/`).
+WhiteCode est distribué sous [licence MIT](LICENSE). Les [notices des dépendances](THIRD_PARTY_NOTICES.txt) accompagnent la distribution. L’exécutable les affiche avec `--licenses`. Après une mise à jour des dépendances, régénérez-les avec `bun ../WhiteCode-Extensions/scripts/dependency-notices.ts .`.

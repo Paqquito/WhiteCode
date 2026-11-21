@@ -1,4 +1,4 @@
-// Supports: SPEC-CAD-002 (model-tier labels and strict rendering of the original corpus), gaps E-162, E-230.
+// Supports: SPEC-CAD-002 (model-tier labels and strict rendering of the configuration documentation), gaps E-162, E-230.
 import { expect, test } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -28,7 +28,7 @@ test("TECH — default and background tier references render their localized lab
   }
 });
 
-test("SPEC-CAD-002/CA-07 — the actual specification corpus renders strictly with a complete documentary identity and every source fingerprint stays unchanged", () => {
+test("SPEC-CAD-002/CA-07 — the public configuration documentation renders strictly with a complete documentary identity and every source fingerprint stays unchanged", () => {
   const ws = workspace(), input = JSON.parse(readFileSync(join(ROOT, "identity/dev.identity.json"), "utf8"));
   const base = loadIdentity();
   for (const variable of VARIABLES) if (variable.kind === "optional" && !base.has(variable.name)) {
@@ -38,10 +38,11 @@ test("SPEC-CAD-002/CA-07 — the actual specification corpus renders strictly wi
   expect(resolved.issues.filter(issue => issue.severity === "error")).toEqual([]);
   const files: string[] = [];
   const visit = (directory: string) => { for (const entry of readdirSync(directory, { withFileTypes: true })) { const path = join(directory, entry.name); if (entry.isDirectory()) visit(path); else if (entry.isFile()) files.push(path); } };
-  visit(join(ROOT, "specs"));
+  visit(join(ROOT, "docs"));
   const hash = (file: string) => createHash("sha256").update(readFileSync(file)).digest("hex");
   const before = files.map(hash);
-  expect(renderDirectory(join(ROOT, "specs"), join(ws.root, "rendered-specs"), new Identity(resolved.identity!), "fr")).toBe(files.length);
+  expect(renderDirectory(join(ROOT, "docs"), join(ws.root, "rendered-docs"), new Identity(resolved.identity!), "fr")).toBe(files.length);
   expect(files.map(hash)).toEqual(before);
-  expect(readFileSync(join(ws.root, "rendered-specs/00-cadre/SPEC-CAD-002-configuration-marque-blanche.md"), "utf8")).not.toContain("{{MODEL_DEFAULT}}");
+  expect(readFileSync(join(ROOT, "docs/marque-blanche.md"), "utf8")).toContain("{{MODEL_DEFAULT}}");
+  expect(readFileSync(join(ws.root, "rendered-docs/marque-blanche.md"), "utf8")).not.toContain("{{MODEL_DEFAULT}}");
 }, 30000);
