@@ -40,7 +40,10 @@ jobs:
             macOS) brew install ripgrep ;;
             Windows) choco install ripgrep -y ;;
           esac
-      - run: bun test
+      - if: runner.os == 'Windows'
+        run: ./.github/scripts/test-windows.ps1
+      - if: runner.os != 'Windows'
+        run: bun test
       - run: bun run trace
       - name: Construction et contrôle des livrables
         shell: bash

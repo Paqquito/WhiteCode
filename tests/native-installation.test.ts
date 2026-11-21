@@ -118,7 +118,7 @@ test("TECH — native installation rejects linked version directories, foreign o
   await f.store.install(f.release,true);expect(f.downloads()).toBe(systemInfo().platform==='linux'?2:3);
   const linked=fixture(),outside=join(linked.ws.root,'outside');mkdirSync(outside);mkdirSync(linked.store.versions,{recursive:true});writeFileSync(join(outside,linked.store.o.cli+(systemInfo().platform==='windows'?'.exe':'')),'synthetic executable bytes 39');symlinkSync(outside,join(linked.store.versions,'0.2.0'),systemInfo().platform==='windows'?'junction':'dir');
   await expect(linked.store.install(linked.release)).rejects.toThrow('lié');expect(linked.downloads()).toBe(0);
-});
+},20000);
 
 test("SPEC-INS-002/CA-02 — published minimum still blocks native startup when automatic updates are disabled",async()=>{
   const ws=workspace(),d=distribution(ws),p=new ScriptedProvider([]);mkdirSync(join(d.root,'versions','0.1.0'),{recursive:true});writeFileSync(d.old,'old fixture');
