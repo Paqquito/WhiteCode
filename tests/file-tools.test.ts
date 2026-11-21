@@ -1,5 +1,6 @@
 // Writing tools: write_file, edit_file (cascade, steps 1 to 4), update_notebook_cell, and read_file on notebooks and images.
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { existsSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { currentPlatform } from "../src/platform/system";
@@ -7,6 +8,7 @@ import { unifiedDiff } from "../src/shared/diff";
 import { editFileTool } from "../src/tools/edit-file";
 import { planEdit } from "../src/tools/edit-match";
 import { readFileTool } from "../src/tools/read-file";
+import { writeAtomic } from "../src/tools/text-file";
 import type { ToolContext, ToolOutcome } from "../src/tools/types";
 import { updateNotebookCellTool } from "../src/tools/update-notebook-cell";
 import { writeFileTool } from "../src/tools/write-file";
@@ -103,6 +105,23 @@ describe("SPEC-OUT-003 write_file", () => {
     const dir = await writeFileTool.execute({ path: ws.project, content: "x" }, ctx(ws));
     expect(text(dir)).toContain("directory");
     expect(writeFileTool.validate!({ path: join(ws.project, "n.ipynb"), content: "{}" }, ctx(ws))).toContain("update_notebook_cell");
+  });
+
+  test.skipIf(platform !== "windows")("TECH — atomic replacement survives a temporary Windows sharing denial and preserves the file on a lasting denial", () => {
+    const ws = workspace(), path = ws.write("project/state.json", "previous");
+    const denied = () => { throw Object.assign(new Error("sharing violation"), { code: "EPERM" }); };
+    const rename = spyOn(fs, "renameSync");
+    try {
+      rename.mockImplementationOnce(denied);
+      writeAtomic(path, Buffer.from("current"), platform);
+      expect(readFileSync(path, "utf8")).toBe("current");
+      expect(rename).toHaveBeenCalledTimes(2);
+
+      rename.mockImplementation(denied);
+      expect(() => writeAtomic(path, Buffer.from("unwritten"), platform)).toThrow("access denied");
+      expect(readFileSync(path, "utf8")).toBe("current");
+      expect(readdirSync(ws.project).filter(name => name.endsWith(".tmp"))).toEqual([]);
+    } finally { rename.mockRestore(); }
   });
 
   test("TECH — SPEC-OUT-003/RG-03 — a failed write is reported and leaves no temporary file", async () => {

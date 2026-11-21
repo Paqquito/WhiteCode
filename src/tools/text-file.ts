@@ -156,7 +156,17 @@ function writeAtomicRaw(path: string, bytes: Uint8Array, platform: PlatformName,
       } finally { closeSync(fd); }
     }
     if (!ownerOnly && mode !== undefined && platform !== "windows") chmodSync(temp, mode);
-    renameSync(temp, path);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        renameSync(temp, path);
+        break;
+      } catch (error) {
+        // A Windows reader can briefly hold the destination without granting delete sharing.
+        const code = (error as NodeJS.ErrnoException).code;
+        if (platform !== "windows" || attempt >= 3 || !["EPERM", "EACCES", "EBUSY"].includes(code ?? "")) throw error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10 * (attempt + 1));
+      }
+    }
   } catch (error) {
     // Best-effort cleanup: when the folder itself could not be created, removing the temporary file fails too
     // (EFAULT or ENOTDIR on POSIX systems); the original error is the one reported.
