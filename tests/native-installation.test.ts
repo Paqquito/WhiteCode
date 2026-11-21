@@ -7,6 +7,7 @@ import { NativeStore, type Release } from "../src/installation/native-store";
 import { InstallationMaintenance, packageAdvice, installationMethod } from "../src/installation/runtime";
 import { workspace } from "./helpers/env";
 import { systemInfo } from "../src/platform/system";
+import { verifyArtifactSignature } from "../src/platform/artifact-signature";
 import { cli, loadIdentity } from "./helpers/env";
 import { nativeTarget } from "../src/installation/runtime";
 import { ScriptedProvider } from "./helpers/scripted-provider";
@@ -110,6 +111,12 @@ test("SPEC-INS-005/CA-01 — two separate CLI processes install one complete ver
   for(const r of runs){expect(r.stderr).toBe('');expect(r.code).toBe(0);expect(JSON.parse(r.stdout).after).toBe('0.2.0');}
   expect(readFileSync(log,'utf8').trim().split('\n')).toHaveLength(1);expect(createHash('sha256').update(readFileSync(join(d.root,'versions','0.2.0',d.slug+(systemInfo().platform==='windows'?'.exe':'')))).digest('hex')).toBe(createHash('sha256').update(fixture.bytes).digest('hex'));
 },30000);
+
+test.skipIf(process.platform !== "win32")("TECH — the platform verifier accepts the signed Windows PowerShell executable", async () => {
+  const systemRoot = process.env["SystemRoot"]!;
+  const signed = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  await expect(verifyArtifactSignature(signed, "windows", systemRoot)).resolves.toBeUndefined();
+}, 20000);
 
 test("TECH — native installation rejects linked version directories, foreign origins and unsigned required signatures",async()=>{
   const f=fixture();await expect(f.store.install({...f.release,artifact:{...f.release.artifact,url:'https://other.invalid/file'}})).rejects.toThrow('origine');
