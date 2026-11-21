@@ -17,7 +17,7 @@ const exit = async (run: InteractiveRun) => { run.type(KEY.ctrlD); run.type(KEY.
 test("SPEC-IHM-019/CA-01 — a managed model: alternatives stay locked and name their policy source", async () => {
   const ws = workspace(), p = new ScriptedProvider([{ text: "modèle conservé" }]);
   const policy = ws.write("managed/policy.json", JSON.stringify({ models: { selected: "large" } }));
-  const run = interactive([], ws, { provider: p, rows: 40 });
+  const run = interactive([], ws, { provider: p, rows: 40, columns: Math.max(100, policy.length + 40) });
   await run.idle(); run.type("/switch-model"); run.type(KEY.enter);
   await run.waitFor((t) => t.includes("Choisir le modèle"));
   expect(run.screen().join("\n")).toContain("verrouillé");
