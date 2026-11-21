@@ -61,7 +61,30 @@ async function execute(input){
  const tab=await current(input.tab),state=tabs.get(tab.id);
  if(input.action==='console')return {text:JSON.stringify(state.console)};
  if(input.action==='network')return {text:JSON.stringify(state.network)};
- if(input.action==='screenshot'){const result=await command(tab.id,'Page.captureScreenshot',{format:'png',captureBeyondViewport:false});await current(tab.id);if(typeof result.data!=='string'||result.data.length>700000)throw Error('Screenshot exceeds the native bridge limit.');return {image:result.data,url:tab.url};}
+ if(input.action==='screenshot'){
+  // Chrome may never paint a background tab. Select it inside its own window for the capture.
+  let previous;
+  if(!tab.active&&(await chrome.windows.get(tab.windowId)).state!=='minimized'){
+   [previous]=await chrome.tabs.query({windowId:tab.windowId,active:true});
+   if(previous&&previous.id!==tab.id)await chrome.tabs.update(tab.id,{active:true});
+  }
+  let timer;
+  try{
+   await current(tab.id);
+   const capture=command(tab.id,'Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+   const result=previous?await Promise.race([capture,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Browser screenshot timed out.')),7000);})]):await capture;
+   await current(tab.id);
+   if(typeof result.data!=='string'||result.data.length>700000)throw Error('Screenshot exceeds the native bridge limit.');
+   return {image:result.data,url:tab.url};
+  }finally{
+   clearTimeout(timer);
+   if(previous&&previous.id!==tab.id){
+    const original=await chrome.tabs.get(previous.id).catch(()=>undefined);
+    const selected=await chrome.tabs.query({windowId:tab.windowId,active:true}).catch(()=>[]);
+    if(original?.windowId===tab.windowId&&selected[0]?.id===tab.id)await chrome.tabs.update(previous.id,{active:true}).catch(()=>{});
+   }
+  }
+ }
  if(['click','type'].includes(input.action)&&typeof input.ref!=='string')throw Error('Read the page and provide an element reference.');
  const result=await chrome.scripting.executeScript({target:{tabId:tab.id},world:'ISOLATED',func:pageAction,args:[input]});await current(tab.id);if(result.length!==1||result[0].frameId!==0||!result[0].result)throw Error('Page changed or action unavailable.');if(result[0].result.refused)throw Error(result[0].result.refused);return {text:JSON.stringify({tab:tab.id,...result[0].result})};
 }

@@ -40,7 +40,7 @@ export async function nativeBrowserFixture(shared?: { ws: Workspace; slug: strin
       await pageEvaluate("chrome.windows.getCurrent().then(w=>chrome.windows.update(w.id,{state:'normal',focused:true}))");
       expect(await pageEvaluate("chrome.windows.getCurrent().then(w=>w.state)")).toBe("normal");
     };
-    const captureState = async (tab: number) => { if (!Number.isSafeInteger(tab) || tab < 1) throw Error("Invalid owned fixture tab."); return evaluate(`chrome.tabs.get(${tab}).then(async t=>{const w=await chrome.windows.get(t.windowId);return{active:t.active,status:t.status,windowState:w.state,focused:w.focused,nativeConnected:port!==undefined,busy}})`); };
+    const captureState = async (tab: number) => { if (!Number.isSafeInteger(tab) || tab < 1) throw Error("Invalid owned fixture tab."); return evaluate(`chrome.tabs.get(${tab}).then(async t=>{const w=await chrome.windows.get(t.windowId);const [selected]=await chrome.tabs.query({windowId:t.windowId,active:true});return{active:t.active,selected:selected?.id,status:t.status,windowState:w.state,focused:w.focused,nativeConnected:port!==undefined,busy}})`); };
     const prepareCapture = async (tab: number) => {
       const before = await captureState(tab);
       // Only this fixture's profile is reachable. Keep the controlled tab in the background.

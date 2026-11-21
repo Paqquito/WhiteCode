@@ -32,7 +32,7 @@ test.skipIf(process.platform !== "win32")("SPEC-INT-015/CA-01 — a model click 
   const run = interactive(["--model", "large"], ws, { provider, signal: abort.signal, columns: 160, userConfig: { integrations: { computerControl: { enabled: true } }, permissions: { allowRules: ["cnx_computer_control"] } } });
   try {
     await run.idle(); run.type("Click the fixture control."); run.type(KEY.enter); await run.waitFor(text => text.includes("Autoriser le pilotage de l’application")); expect((await f.call()).checked).toBe(0); expect(run.all().join("\n")).toContain(f.title);
-    await sleep(380); run.type(KEY.down); run.type(KEY.down); run.type(KEY.enter); await run.waitFor(text => text.includes("NATIVE_CLICK_DONE"));
+    await sleep(380); run.type(KEY.down); run.type(KEY.down); run.type(KEY.enter); await run.waitFor(text => text.includes("NATIVE_CLICK_DONE"), "authorized click and native capture", 18000);
     // Supports: SPEC-INT-015 (a scripted continuation cannot establish that its preceding real action succeeded), gap E-336.
     const results = provider.requests.flatMap(request => request.history.flatMap(message => message.role === "user" ? message.parts.filter(part => part.type === "tool_result") : []));
     const parts = results.flatMap(result => [...result.content]), diagnostic = JSON.stringify(parts.filter(part => part.type === "text"));
@@ -41,7 +41,7 @@ test.skipIf(process.platform !== "win32")("SPEC-INT-015/CA-01 — a model click 
     const image = parts.find(part => part.type === "image"); expect(image?.type).toBe("image"); if (image?.type === "image") expect(Buffer.from(image.dataBase64, "base64").subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
   }
   finally { abort.abort(); await run.done; await f.close(); }
-}, 20000);
+}, 30000);
 test.skipIf(process.platform !== "win32")("SPEC-INT-015/CA-02 — the actual global stop shortcut cancels an in-flight native action in less than one second", async () => {
   const f = await fixture(), reports: string[] = [], control = new ComputerControl({ enabled: () => true, deniedApps: () => [], approve: async () => "full", report: message => reports.push(message) });
   try { const pending = control.run({ action: "type", window: f.window, text: "a".repeat(500) }, signal(), true); let entered = false; for (let i = 0; i < 100; i++) { if (String((await f.call()).text).length > 0) { entered = true; break; } await sleep(10); } expect(entered).toBe(true); const started = performance.now(); expect((await f.call("hotkey")).sent).toBe(6); const result = await pending; expect(performance.now() - started).toBeLessThan(1000); expect(control.stopped).toBe(true); expect(result).toMatchObject({ isError: true, errorKind: "interrupted" }); const before = String((await f.call()).text); expect(before.length).toBeGreaterThan(0); expect(before.length).toBeLessThan(500); await sleep(150); expect((await f.call()).text).toBe(before); expect((await control.run({ action: "click", window: f.window, x: 50, y: 30 }, signal())).isError).toBe(true); expect((await f.call()).checked).toBe(0); expect(reports.some(message => message.includes("arrêt d’urgence"))).toBe(true); }

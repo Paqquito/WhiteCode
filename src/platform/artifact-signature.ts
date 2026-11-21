@@ -8,6 +8,6 @@ export async function verifyArtifactSignature(path: string, platform: PlatformNa
   const script = `$ErrorActionPreference='Stop'; if ((Get-AuthenticodeSignature -LiteralPath '${path.replace(/'/g, "''")}').Status -ne 'Valid') { exit 1 }`;
   const args = platform === "windows" ? ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")] : ["--verify", "--deep", "--strict", path];
   if (platform !== "windows" && platform !== "macos") throw new Error("Signature de plateforme non prise en charge.");
-  const env=platform==='windows' ? {SystemRoot:systemRoot,PATH:join(systemRoot,'System32')} : {PATH:'/usr/bin:/bin'};
+  const env=platform==='windows' ? {SystemRoot:systemRoot,PATH:join(systemRoot,'System32'),PSModulePath:join(systemRoot,'System32/WindowsPowerShell/v1.0/Modules')} : {PATH:'/usr/bin:/bin'};
   await new Promise<void>((resolve, reject) => execFile(command, args, { env, timeout: 15000, maxBuffer: 8192, windowsHide: true }, error => error ? reject(new Error("Signature de plateforme invalide ; installation annulée.")) : resolve()));
 }

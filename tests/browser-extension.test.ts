@@ -39,6 +39,8 @@ test.skipIf(!nativeBrowserAvailable)("TECH — an installed real extension publi
     const preparation = await fixture.prepareCapture(tab), screenshot = await call({ action: "screenshot", tab });
     const captureDiagnostic = screenshot.isError ? JSON.stringify({ preparation, current: await fixture.captureState(tab).catch(error => ({ unavailable: String(error) })) }) : "";
     expect(screenshot.isError, text(screenshot) + captureDiagnostic).toBe(false); const image = screenshot.content.find(part => part.type === "image"); expect(image?.type).toBe("image"); if (image?.type === "image") expect(Buffer.from(image.dataBase64, "base64").subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    expect(preparation.after.active).toBe(false);
+    expect(await fixture.captureState(tab)).toMatchObject({ active: false, selected: preparation.after.selected });
     expect(await fixture.evaluate(`chrome.tabs.get(${tab}).then(t=>t.groupId>=0)`)).toBe(true);
     allowed = false; expect((await call({ action: "read", tab })).isError).toBe(true); expect(await bridge.tool()).toBeUndefined();
   } finally { await bridge.close(); await fixture.close(); site.stop(true); }
