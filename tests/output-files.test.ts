@@ -3,10 +3,10 @@ import { test, expect } from "bun:test";
 import { OutputFiles } from "../src/session/output-files";
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { systemInfo } from "../src/platform/system";
 import { spawnSync } from "node:child_process";
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "output-files-")),
+  const root = mkdtempSync(join(systemInfo().tmp, "output-files-")),
     directory = join(root, "outputs");
   mkdirSync(directory);
   spawnSync("git", ["init", "-q"], { cwd: root });

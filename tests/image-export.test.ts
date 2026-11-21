@@ -35,7 +35,8 @@ test("TECH — an absent rasterizer saves an explicit SVG fallback and rechecks 
 
 test("SPEC-OBS-017/CA-01 — exporting the selected coloured response from its actions produces a real PNG with its styling and excludes other messages", async () => {
   const ws = workspace(), controller = new AbortController(), provider = new ScriptedProvider([{ text: "**Selected reply**\n```ts\nconst amount = 17;\n```" }]);
-  const run = interactive([], ws, { signal: controller.signal, provider });
+  const environment = productEnv(ws);
+  const run = interactive([], ws, { signal: controller.signal, provider, env: environment });
   const waitFile = async (extension: string) => {
     const deadline = Date.now() + 12000;
     while (Date.now() < deadline) {
@@ -61,7 +62,7 @@ test("SPEC-OBS-017/CA-01 — exporting the selected coloured response from its a
     const colors = [...new Set(Array.from(svg.matchAll(/fill="(#[a-f0-9]{6})"/g), match => match[1]!))];
     expect(colors.length).toBeGreaterThan(2);
     // Decode the saved PNG in a fresh native decoder and check actual foreground pixels against the SVG palette.
-    const environment = productEnv(ws), executable = browserExecutable(environment);
+    const executable = browserExecutable(environment);
     if (!executable) throw Error("Native image decoder unavailable");
     const decoder = openBrowserPipe({ executable, headless: true, env: environment, event: () => {} });
     try {

@@ -9,9 +9,9 @@ import {
   existsSync,
 } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { systemInfo } from "../src/platform/system";
 test("SPEC-CAD-002/CA-16 — an explicitly declared previous profile is copied after human acceptance and remains intact", async () => {
-  const root = mkdtempSync(join(tmpdir(), "legacy-profile-")),
+  const root = mkdtempSync(join(systemInfo().tmp, "legacy-profile-")),
     old = join(root, "previous"),
     next = join(root, "current"),
     prompts: string[] = [];
@@ -35,7 +35,7 @@ test("SPEC-CAD-002/CA-16 — an explicitly declared previous profile is copied a
   expect(existsSync(old)).toBe(true);
 });
 test("TECH — legacy migration never runs automatically, overwrites a new profile or follows overlapping roots", async () => {
-  const root = mkdtempSync(join(tmpdir(), "legacy-refusal-")),
+  const root = mkdtempSync(join(systemInfo().tmp, "legacy-refusal-")),
     old = join(root, "previous"),
     next = join(root, "current");
   mkdirSync(old);

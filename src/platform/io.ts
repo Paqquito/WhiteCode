@@ -44,9 +44,8 @@ export function onTerminationSignal(onSignal: (signal: string) => void): () => v
 
 /** Flushes the standard streams, then terminates the process. The only process exit point of the product. */
 export async function terminate(code: number): Promise<never> {
-  await Promise.all([
-    new Promise<void>((r) => (process.stdout.writableNeedDrain ? process.stdout.once("drain", () => r()) : r())),
-    new Promise<void>((r) => (process.stderr.writableNeedDrain ? process.stderr.once("drain", () => r()) : r())),
-  ]);
+  await Promise.all([process.stdout, process.stderr].map(stream =>
+    new Promise<void>(resolve => stream.end(resolve)),
+  ));
   process.exit(code);
 }

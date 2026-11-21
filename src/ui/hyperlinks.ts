@@ -60,10 +60,8 @@ export class Hyperlinks {
             )
               href =
                 scheme +
-                "://file/" +
-                encodeURI(path.replaceAll("\\", "/"))
-                  .replaceAll("#", "%23")
-                  .replaceAll("?", "%3F") +
+                "://file" +
+                url.pathname +
                 (suffix ? ":" + suffix[1] + ":" + (suffix[2] ?? "1") : "");
             else {
               if (suffix) url.hash = "L" + suffix[1];

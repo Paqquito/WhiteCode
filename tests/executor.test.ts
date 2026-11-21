@@ -2,10 +2,10 @@
 import { test, expect } from "bun:test";
 import { Executor, ExecutorCredentialInvalid } from "../src/remote/executor";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { systemInfo } from "../src/platform/system";
 import { join } from "node:path";
 function fixture(kind: "session" | "job" = "job") {
-  const root = mkdtempSync(join(tmpdir(), "executor-proof-")),
+  const root = mkdtempSync(join(systemInfo().tmp, "executor-proof-")),
     calls: any[] = [],
     reports: string[] = [],
     runs: string[] = [];

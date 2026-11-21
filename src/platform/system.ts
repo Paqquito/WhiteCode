@@ -29,7 +29,7 @@ export function currentPlatform(): PlatformName {
 }
 
 export function systemInfo(): SystemInfo {
-  return { platform: currentPlatform(), arch: osArch(), release: osRelease(), home: osHomedir(), tmp: osTmpdir() };
+  return { platform: currentPlatform(), arch: osArch(), release: osRelease(), home: osHomedir(), tmp: realPathOrSelf(osTmpdir()) };
 }
 
 /** True for an absolute path on the current platform (drive letter or UNC on Windows). */

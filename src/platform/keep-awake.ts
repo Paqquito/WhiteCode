@@ -75,7 +75,7 @@ export async function acquireAwake(
     () => reject(Error("Power inhibition unavailable.")),
     3000,
   );
-  void child.exited.then(() => reject(Error("Power inhibitor closed.")));
+  void child.exited.then(() => reject(Error("Power inhibition unavailable: helper exited before acquiring the lease.")));
   try {
     await started;
   } catch (error) {

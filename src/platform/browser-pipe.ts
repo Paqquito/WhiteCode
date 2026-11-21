@@ -25,7 +25,7 @@ export function browserExecutable(
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
             "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
           ]
-        : ["chromium", "chromium-browser", "google-chrome", "microsoft-edge"]
+        : ["google-chrome", "chromium", "chromium-browser", "microsoft-edge"]
             .map((name) => Bun.which(name, { PATH: env["PATH"] ?? "" }))
             .filter((path): path is string => !!path);
   return candidates.find((path) => existsSync(path));

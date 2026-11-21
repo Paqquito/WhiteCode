@@ -6,6 +6,7 @@ import { ScriptedProvider } from "./helpers/scripted-provider";
 import { Host } from "./helpers/control";
 import { interactive, sleep } from "./helpers/interactive";
 import { sandboxDiagnostic } from "../src/permissions/sandbox-diagnostic";
+import { currentPlatform, findExecutable } from "../src/platform/system";
 import { parseSkill } from "../src/skills/registry";
 
 test("SPEC-CMD-004/CA-01 — assisted creation returns an English definition for review before a protected save", async () => {
@@ -31,7 +32,9 @@ test("SPEC-CMD-062/CA-01 — missing sandbox dependencies display specific insta
   expect(sandboxDiagnostic("linux", () => undefined)).toContain("installer bubblewrap");
   expect(sandboxDiagnostic("macos", () => "/tool")).toContain("indisponible");
   expect(sandboxDiagnostic("linux", () => "/tool")).toContain("ne vérifie pas les capacités du noyau");
-  const result = await cli(["--non-interactive", "/sandbox-settings"], workspace(), { provider: new ScriptedProvider([]) }); expect(result.code).toBe(0); expect(result.stdout + result.stderr).toContain("isolation");
+  const result = await cli(["--non-interactive", "/sandbox-settings"], workspace(), { provider: new ScriptedProvider([]) });
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain(sandboxDiagnostic(currentPlatform(), findExecutable));
 });
 test("SPEC-CMD-042/CA-01 — selecting missing local instructions creates a protected file and opens its editor", async () => {
   const ws = workspace(), path = join(ws.project, loadIdentity().get("LOCAL_INSTRUCTIONS_FILE")), stop = new AbortController();

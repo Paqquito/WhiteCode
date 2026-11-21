@@ -6,13 +6,13 @@ import { storeExists, storeMkdir, storeRead } from "./private-storage";
 import { writeAtomic } from "../tools/text-file";
 import { currentPlatform } from "../platform/system";
 import { lstatSync, mkdtempSync, rmdirSync, unlinkSync } from "node:fs";
-import { restrictFileToOwner } from "../platform/private-file";
+import { securePrivateDirectory } from "../platform/private-file";
 export function temporaryReportPage(
   root: string,
   summary: string,
 ): { path: string; close(): void } {
   const directory = mkdtempSync(join(root, "session-report-"));
-  restrictFileToOwner(directory);
+  securePrivateDirectory(directory);
   const owner = lstatSync(directory),
     path = join(directory, "report.html");
   const escaped = summary
