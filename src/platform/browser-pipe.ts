@@ -82,6 +82,7 @@ export function openBrowserPipe(options: {
   >();
   let serial = 0,
     buffer = Buffer.alloc(0),
+    receivedReply = false,
     closed = false,
     closing: Promise<void> | undefined;
   const fail = () => {
@@ -112,6 +113,7 @@ export function openBrowserPipe(options: {
         if (typeof message.id === "number") {
           const p = pending.get(message.id);
           if (!p) continue;
+          receivedReply = true;
           pending.delete(message.id);
           clearTimeout(p.timer);
           message.error
@@ -138,10 +140,11 @@ export function openBrowserPipe(options: {
       }
       const id = ++serial;
       return new Promise((resolve, reject) => {
+        // The first reply includes Chromium startup and initialization of its private profile.
         const timer = setTimeout(() => {
           pending.delete(id);
-          reject(Error("Browser operation timed out."));
-        }, 5000);
+          reject(Error(`Browser operation timed out (${method}).`));
+        }, receivedReply ? 5000 : 15000);
         pending.set(id, { resolve, reject, timer });
         input.write(
           JSON.stringify({
